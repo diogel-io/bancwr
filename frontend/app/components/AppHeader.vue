@@ -1,5 +1,5 @@
 <template>
-  <header class="border-b border-gray-200 dark:border-gray-800">
+  <header class="border-b border-default">
     <UContainer>
       <div class="flex items-center justify-between h-16">
         <div class="flex items-center gap-8">
@@ -7,10 +7,7 @@
             to="/"
             class="font-bold text-xl flex items-center gap-2"
           >
-            <UIcon
-              name="i-heroicons-shield-check"
-              class="w-6 h-6 text-primary"
-            />
+            <DiogelLogo size="sm" />
             Bancwr
           </NuxtLink>
 

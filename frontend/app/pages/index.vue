@@ -18,12 +18,12 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
         </template>
         <div class="flex items-center gap-2">
           <div
-            :class="status && status['status'] === 'healthy' ? 'bg-green-500' : 'bg-red-500'"
+            :class="status && status['status'] === 'healthy' ? 'bg-success' : 'bg-error'"
             class="w-3 h-3 rounded-full animate-pulse"
           />
           <span class="capitalize">{{ status ? status['status'] || 'Unknown' : 'Unknown' }}</span>
         </div>
-        <p class="text-sm text-gray-500 mt-2 truncate">
+        <p class="text-sm text-muted mt-2 truncate">
           {{ status ? status['pubkey'] : '' }}
         </p>
       </UCard>
@@ -61,7 +61,7 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
         <p class="text-3xl font-bold">
           {{ logs && Array.isArray(logs) ? logs.length : 0 }}
         </p>
-        <p class="text-sm text-gray-500">
+        <p class="text-sm text-muted">
           Total Signing Events
         </p>
       </UCard>
