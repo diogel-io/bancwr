@@ -37,6 +37,12 @@
   --ui-bg-elevated: #ffffff;
   --ui-text-muted: #64748b;
   --ui-border: rgb(0 0 0 / 0.12);
+
+  /* Dashboard chrome. Porwr defines --dashboard-sidebar-bg and --dashboard-border in
+     quasar.variables.scss for exactly this; the sidebar needs its own surface rather than sitting
+     flat on the page. */
+  --bancwr-sidebar-bg: #f3f6fb;
+  --bancwr-sidebar-border: rgb(15 23 42 / 0.08);
 }
 
 .dark {
@@ -45,6 +51,9 @@
   --ui-bg-elevated: #1d1d1d;
   --ui-text-muted: #94a3b8;
   --ui-border: rgb(255 255 255 / 0.16);
+
+  --bancwr-sidebar-bg: #171b21;
+  --bancwr-sidebar-border: rgb(255 255 255 / 0.12);
 }
 
 /* Bold orange headings, as on threenine.io and in Porwr. Driven by the theme token rather than a
