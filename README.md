@@ -1,10 +1,10 @@
 
 # Bancwr-Diogel
 
-[![CI](https://github.com/threenine/bancwr-diogel/actions/workflows/ci.yml/badge.svg)](https://github.com/threenine/bancwr-diogel/actions/workflows/ci.yml)
-[![Release Backend](https://github.com/threenine/bancwr-diogel/actions/workflows/release-backend.yml/badge.svg)](https://github.com/threenine/bancwr-diogel/actions/workflows/release-backend.yml)
-[![Release Frontend](https://github.com/threenine/bancwr-diogel/actions/workflows/release-frontend.yml/badge.svg)](https://github.com/threenine/bancwr-diogel/actions/workflows/release-frontend.yml)
-[![Trivy Security Scan](https://github.com/threenine/bancwr-diogel/actions/workflows/trivy-security.yml/badge.svg)](https://github.com/threenine/bancwr-diogel/actions/workflows/trivy-security.yml)
+[![CI](https://github.com/diogel-io/bancwr/actions/workflows/ci.yml/badge.svg)](https://github.com/diogel-io/bancwr/actions/workflows/ci.yml)
+[![Release Backend](https://github.com/diogel-io/bancwr/actions/workflows/release-backend.yml/badge.svg)](https://github.com/diogel-io/bancwr/actions/workflows/release-backend.yml)
+[![Release Frontend](https://github.com/diogel-io/bancwr/actions/workflows/release-frontend.yml/badge.svg)](https://github.com/diogel-io/bancwr/actions/workflows/release-frontend.yml)
+[![Trivy Security Scan](https://github.com/diogel-io/bancwr/actions/workflows/trivy-security.yml/badge.svg)](https://github.com/diogel-io/bancwr/actions/workflows/trivy-security.yml)
 
 ## Podman Images
 

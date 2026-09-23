@@ -40,7 +40,7 @@ const open = ref(false)
             icon="i-simple-icons-github"
             color="neutral"
             variant="ghost"
-            to="https://github.com/threenine/bancwr-diogel"
+            to="https://github.com/diogel-io/bancwr"
             target="_blank"
             aria-label="Source on GitHub"
           />
