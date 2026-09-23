@@ -8,7 +8,7 @@ const mockLogs = [
 ]
 
 describe('Index page', () => {
-  it('renders status and quick actions', async () => {
+  it('renders the bunker status', async () => {
     registerEndpoint('/api/bunker/status', () => mockStatus)
     registerEndpoint('/api/bunker/logs', () => mockLogs)
 
@@ -17,10 +17,20 @@ describe('Index page', () => {
     expect(component.text()).toContain('Bunker Status')
     expect(component.text()).toContain('healthy')
     expect(component.text()).toContain('npub1test')
+  })
 
-    expect(component.text()).toContain('Quick Actions')
-    expect(component.text()).toContain('Configure Bunker')
-    expect(component.text()).toContain('Manage Team')
+  it('does not carry a quick-actions card', async () => {
+    registerEndpoint('/api/bunker/status', () => mockStatus)
+    registerEndpoint('/api/bunker/logs', () => mockLogs)
+
+    const component = await mountSuspended(Index)
+
+    // Config and Team are permanent sidebar destinations, so the card was a second copy of
+    // navigation that already exists. Asserted rather than merely deleted, so that re-adding it
+    // is a deliberate act.
+    expect(component.text()).not.toContain('Quick Actions')
+    expect(component.text()).not.toContain('Configure Bunker')
+    expect(component.text()).not.toContain('Manage Team')
   })
 
   it('shows activity logs', async () => {
