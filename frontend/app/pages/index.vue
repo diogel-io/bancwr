@@ -21,49 +21,23 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
       <div class="space-y-6">
         <MetricsCards />
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <UCard>
-            <template #header>
-              <h3 class="font-bold">
-                Bunker Status
-              </h3>
-            </template>
-            <div class="flex items-center gap-2">
-              <div
-                :class="status && status['status'] === 'healthy' ? 'bg-success' : 'bg-error'"
-                class="w-3 h-3 rounded-full animate-pulse"
-              />
-              <span class="capitalize">{{ status ? status['status'] || 'Unknown' : 'Unknown' }}</span>
-            </div>
-            <p class="text-sm text-muted mt-2 truncate">
-              {{ status ? status['pubkey'] : '' }}
-            </p>
-          </UCard>
-
-          <UCard>
-            <template #header>
-              <h3 class="font-bold">
-                Quick Actions
-              </h3>
-            </template>
-            <div class="flex flex-col gap-2">
-              <UButton
-                to="/config"
-                variant="soft"
-                block
-              >
-                Configure Bunker
-              </UButton>
-              <UButton
-                to="/team"
-                variant="soft"
-                block
-              >
-                Manage Team
-              </UButton>
-            </div>
-          </UCard>
-        </div>
+        <UCard>
+          <template #header>
+            <h3 class="font-bold">
+              Bunker Status
+            </h3>
+          </template>
+          <div class="flex items-center gap-2">
+            <div
+              :class="status && status['status'] === 'healthy' ? 'bg-success' : 'bg-error'"
+              class="w-3 h-3 rounded-full animate-pulse"
+            />
+            <span class="capitalize">{{ status ? status['status'] || 'Unknown' : 'Unknown' }}</span>
+          </div>
+          <p class="text-sm text-muted mt-2 truncate">
+            {{ status ? status['pubkey'] : '' }}
+          </p>
+        </UCard>
 
         <UCard>
           <template #header>
