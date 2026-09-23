@@ -40,67 +40,69 @@ const addMember = async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h3 class="text-2xl font-bold">
-        Team Management
-      </h3>
-    </div>
+  <UDashboardPanel id="team">
+    <template #header>
+      <UDashboardNavbar title="Team Management">
+        <template #leading>
+          <UDashboardSidebarCollapse />
+        </template>
+      </UDashboardNavbar>
+    </template>
 
-    <TeamMemberList
-      :data="team || []"
-      @refresh="refresh"
-    />
+    <template #body>
+      <div class="space-y-6">
+        <TeamMemberList
+          :data="team || []"
+          @refresh="refresh"
+        />
 
-
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
+        <UCard>
+          <template #header>
             <h3 class="text-base font-semibold leading-6">
               Add Team Member
             </h3>
+          </template>
+
+          <div class="space-y-4">
+            <UFormField label="Name">
+              <UInput
+                v-model="state.name"
+                placeholder="Alice"
+              />
+            </UFormField>
+            <UFormField label="Pubkey">
+              <UInput
+                v-model="state.pubkey"
+                placeholder="npub1..."
+              />
+            </UFormField>
+            <UFormField label="Role">
+              <USelect
+                v-model="state.role"
+                :items="roles"
+              />
+            </UFormField>
           </div>
-        </template>
 
-        <div class="space-y-4">
-          <UFormField label="Name">
-            <UInput
-              v-model="state.name"
-              placeholder="Alice"
-            />
-          </UFormField>
-          <UFormField label="Pubkey">
-            <UInput
-              v-model="state.pubkey"
-              placeholder="npub1..."
-            />
-          </UFormField>
-          <UFormField label="Role">
-            <USelect
-              v-model="state.role"
-              :items="roles"
-            />
-          </UFormField>
-        </div>
-
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <UButton
-              color="neutral"
-              variant="ghost"
-            >
-              Cancel
-            </UButton>
-            <UButton
-              :loading="loading"
-              color="primary"
-              @click="addMember"
-            >
-              Add Member
-            </UButton>
-          </div>
-        </template>
-      </UCard>
-
-  </div>
+          <template #footer>
+            <div class="flex justify-end gap-2">
+              <UButton
+                color="neutral"
+                variant="ghost"
+              >
+                Cancel
+              </UButton>
+              <UButton
+                :loading="loading"
+                color="primary"
+                @click="addMember"
+              >
+                Add Member
+              </UButton>
+            </div>
+          </template>
+        </UCard>
+      </div>
+    </template>
+  </UDashboardPanel>
 </template>
