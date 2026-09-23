@@ -19,7 +19,7 @@ export default defineNuxtConfig({
       link: [
         // The Diogel mark. public/favicon.ico is the stock Nuxt file, kept as the legacy fallback.
         { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
-        { rel: 'alternate icon', type: 'image/x-icon', href: '/favicon.ico' }
+        { rel: 'shortcut icon', type: 'image/x-icon', href: '/favicon.ico' }
       ]
     }
   },
