@@ -14,6 +14,15 @@ export default defineNuxtConfig({
     '@nuxtjs/mdc'
   ],
   devtools: { enabled: true },
+  app: {
+    head: {
+      link: [
+        // The Diogel mark. public/favicon.ico is the stock Nuxt file, kept as the legacy fallback.
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+        { rel: 'alternate icon', type: 'image/x-icon', href: '/favicon.ico' }
+      ]
+    }
+  },
   css: ['~/assets/css/main.css'],
   devServer: {
     port: 3001
