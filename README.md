@@ -8,24 +8,35 @@
 
 ## Podman Images
 
-Images are published to GitHub Container Registry (GHCR).
+Images are published to GitHub Container Registry (GHCR) on every push to `master`.
+
+Available tags:
+
+| Tag | Points at |
+|-----|-----------|
+| `latest` | The current `master` commit. This is trunk, not a reviewed release. |
+| `master` | The same image as `latest`. |
+| `sha-<short>` | One specific commit, for pinning. |
+| `<version>` | Published when a `v*` tag is released, without the `v` prefix, so `v1.0.0` publishes `1.0.0`. No release has been cut yet. |
+
+Until a release exists, pin to a `sha-` tag if you need a fixed image.
 
 ### Backend
 ```bash
-# Pull latest
-podman pull ghcr.io/threenine/bancwr-diogel-backend:latest
+# Pull the current master build
+podman pull ghcr.io/diogel-io/bancwr-diogel-backend:latest
 
-# Pull specific version
-podman pull ghcr.io/threenine/bancwr-diogel-backend:v1.0.0
+# Pin to a specific commit
+podman pull ghcr.io/diogel-io/bancwr-diogel-backend:sha-1dbcab3
 ```
 
 ### Frontend
 ```bash
-# Pull latest
-podman pull ghcr.io/threenine/bancwr-diogel-frontend:latest
+# Pull the current master build
+podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:latest
 
-# Pull specific version
-podman pull ghcr.io/threenine/bancwr-diogel-frontend:v1.0.0
+# Pin to a specific commit
+podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:sha-1dbcab3
 ```
 
 ## Running the Environment
