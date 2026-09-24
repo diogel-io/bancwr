@@ -28,6 +28,10 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,format=short
+            # :latest tracks the default branch. Both the README quickstart and
+            # trivy-security.yml reference :latest, and neither worked before this,
+            # because metadata-action only adds it for a semver tag and none has been cut.
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/login-action@v3
         with:
