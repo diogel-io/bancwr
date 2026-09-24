@@ -1,6 +1,6 @@
 services:
     bunker:
-      image: ghcr.io/threenine/bancwr-diogel-backend:latest
+      image: ghcr.io/diogel-io/bancwr-diogel-backend:latest
       container_name: bancwr-bunker
       restart: unless-stopped
       ports:
@@ -14,7 +14,7 @@ services:
         - ./data:/data:Z
 
     frontend:
-      image: ghcr.io/threenine/bancwr-diogel-frontend:latest
+      image: ghcr.io/diogel-io/bancwr-diogel-frontend:latest
       container_name: bancwr-frontend
       restart: unless-stopped
       ports:
