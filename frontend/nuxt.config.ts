@@ -17,9 +17,11 @@ export default defineNuxtConfig({
   app: {
     head: {
       link: [
-        // The Diogel mark. public/favicon.ico is the stock Nuxt file, kept as the legacy fallback.
+        // The Diogel mark. The SVG follows the browser's colour scheme; the .ico cannot, and
+        // carries 16/32/48 for the contexts that fall back to it.
         { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
-        { rel: 'shortcut icon', type: 'image/x-icon', href: '/favicon.ico' }
+        { rel: 'shortcut icon', type: 'image/x-icon', href: '/favicon.ico' },
+        { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' }
       ]
     }
   },
