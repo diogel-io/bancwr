@@ -1,125 +1,68 @@
-# Nuxt Minimal Starter
+# Bancwr Frontend
 
-Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
+The Nuxt web interface for the Bancwr bunker. It serves the dashboard and proxies bunker API
+calls to the Rust backend, so the backend does not need to be exposed to the browser.
 
-## Quick Start
-
-```bash
-# 1. Start backend (port 3000)
-cd ../bancwr-diogel-backend
-cargo run
-
-# 2. Start frontend (port 3001)
-npm run dev
-
-# 3. Open http://localhost:3001
-```
+Package manager is pnpm, pinned in `package.json`. npm, yarn and bun are not supported here.
 
 ## Architecture
 
-- Frontend (Nuxt): http://localhost:3001
-- Backend (Rust): http://localhost:3000
-- Frontend proxies `/api/*` to backend
+| Part | Address | Source |
+|------|---------|--------|
+| Frontend (Nuxt) | <http://localhost:3001> | this directory |
+| Backend (Rust) | <http://localhost:3000> | [`../backend`](../backend) |
 
-## Development
-
-```bash
-# Terminal 1: Start backend
-cd ../backend
-cargo run
-
-# Terminal 2: Start frontend
-npm run dev
-# Frontend available at http://localhost:3001
-```
+Requests to `/api/bunker/*` are proxied to the backend by `server/api/bunker/[...].ts`. The
+target comes from `NUXT_PUBLIC_API_BASE` and defaults to `http://localhost:3000`. Nothing else
+is proxied.
 
 ## Setup
 
-Make sure to install dependencies:
-
 ```bash
-# npm
-npm install
-
-# pnpm
 pnpm install
-
-# yarn
-yarn install
-
-# bun
-bun install
 ```
 
-## Development Server
+## Running
 
-Start the development server on `http://localhost:3001`:
+The dashboard needs the backend running to show anything. Either start both from here:
 
 ```bash
-# npm
-npm run dev
+pnpm dev:all
+```
 
-# pnpm
+Or run them in separate terminals, which gives clearer logs:
+
+```bash
+# Terminal 1
+cd ../backend && cargo run
+
+# Terminal 2
 pnpm dev
-
-# yarn
-yarn dev
-
-# bun
-bun run dev
 ```
 
-## Testing
+Then open <http://localhost:3001>. The dev server port is set by `devServer.port` in
+`nuxt.config.ts`.
 
-Run unit tests with Vitest:
+To point the frontend at a backend somewhere other than `localhost:3000`:
 
 ```bash
-# pnpm
-pnpm test
+NUXT_PUBLIC_API_BASE=http://bunker.example:3000 pnpm dev
 ```
 
-## Linting
-
-Check code quality with ESLint:
+## Checks
 
 ```bash
-# pnpm
-pnpm lint
-pnpm lint:fix
+pnpm lint        # ESLint; pnpm lint:fix to apply fixes
+pnpm typecheck   # vue-tsc
+pnpm test        # Vitest
 ```
 
 ## Production
 
-Build the application for production:
-
 ```bash
-# npm
-npm run build
-
-# pnpm
-pnpm build
-
-# yarn
-yarn build
-
-# bun
-bun run build
+pnpm build       # build to .output
+pnpm preview     # run the built output locally
 ```
 
-Locally preview production build:
-
-```bash
-# npm
-npm run preview
-
-# pnpm
-pnpm preview
-
-# yarn
-yarn preview
-
-# bun
-bun run preview
-```
-
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+The container build runs `pnpm build` and serves `.output/server/index.mjs`; see `Dockerfile`.
+For running the full stack from published images, see the [root README](../README.md).

@@ -1,6 +1,10 @@
-# Bunker
+# Bancwr
 
-Enterprise Nsec Bunker for Nostr.
+The Bancwr bunker: a self-hosted Nostr signer that holds an nsec and signs on request,
+over HTTP and over NIP-46.
+
+`bunker` is the crate name and the vocabulary used throughout the API and the environment
+variables. Bancwr is the product.
 
 ## Running
 The project supports loading environment variables from a `.env` file in the project root.
@@ -165,6 +169,10 @@ NIP46_RELAYS=wss://relay.nsecbunker.com,wss://relay.damus.io
 
 ### Using GHCR
 
+Prebuilt images are published to GitHub Container Registry. The pull commands and the
+meaning of each tag are in the [root README](../README.md#podman-images); they are not
+repeated here so there is only one place for them to go stale.
+
 ## Testing
 
 To run all tests (unit and integration):
@@ -202,7 +210,7 @@ If you use an IDE that supports `.http` files (like RustRover or IntelliJ), you 
 - `main.rs` should remain minimal.
 - All tests live in the `tests/` directory.
 - Use `RUSTFLAGS="-D warnings" cargo clippy` for linting.
-- The project is named `bunker`.
+- The crate is named `bunker`; the product is Bancwr.
 - The database layer lives in `src/db.rs` and uses `rusqlite` with bundled SQLite.
   All UUIDs are stored as TEXT via `Uuid::to_string()` and all timestamps as TEXT
   via `DateTime<Utc>::to_rfc3339()`.
