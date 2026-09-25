@@ -13,8 +13,8 @@ Package manager is pnpm, pinned in `package.json`. npm, yarn and bun are not sup
 | Backend (Rust) | <http://localhost:3000> | [`../backend`](../backend) |
 
 Requests to `/api/bunker/*` are proxied to the backend by `server/api/bunker/[...].ts`. The
-target comes from `NUXT_PUBLIC_API_BASE` and defaults to `http://localhost:3000`. Nothing else
-is proxied.
+target comes from `NUXT_API_BASE` and defaults to `http://localhost:3000`. Nothing else is
+proxied. The proxy refuses a target that resolves to this server, rather than looping.
 
 ## Setup
 
@@ -46,7 +46,7 @@ Then open <http://localhost:3001>. The dev server port is set by `devServer.port
 To point the frontend at a backend somewhere other than `localhost:3000`:
 
 ```bash
-NUXT_PUBLIC_API_BASE=http://bunker.example:3000 pnpm dev
+NUXT_API_BASE=http://bunker.example:3000 pnpm dev
 ```
 
 ## Checks

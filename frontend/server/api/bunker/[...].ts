@@ -1,7 +1,28 @@
 // Nitro server route to proxy all /api/bunker/* to backend
+// Imported rather than left to Nitro's auto-import: nothing in this file's type context
+// resolves auto-imports, so an explicit path keeps our own symbols checkable.
+import { resolveBackendUrl, BackendTargetError } from '../../utils/backend'
+
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
-  const backendUrl = config.public.apiBase || 'http://localhost:3000'
+
+  // No inline fallback: runtimeConfig already supplies the default, and two of them hide which
+  // one is in force. resolveBackendUrl refuses a target that is this server — see #20. Its own
+  // try/catch, because a misconfigured target is ours to explain, not a backend failure to
+  // forward, and the catch below is shaped for $fetch errors.
+  let backendUrl: string
+  try {
+    backendUrl = resolveBackendUrl(config.apiBase, {
+      requestOrigin: getRequestURL(event).origin,
+      selfPort: process.env.PORT,
+    })
+  } catch (error) {
+    if (error instanceof BackendTargetError) {
+      throw createError({ statusCode: 500, statusMessage: error.message })
+    }
+
+    throw error
+  }
 
   // Get the path after /api/bunker/
   const path = event.context.params?._ || ''

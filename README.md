@@ -54,3 +54,8 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:sha-1dbcab3
    ```bash
    podman compose up -d
    ```
+
+The frontend reaches the bunker over the compose network at `http://bunker:3000`, set as
+`NUXT_API_BASE` on the frontend service in `compose.yaml`. If you run the frontend image outside
+compose, set `NUXT_API_BASE` to the bunker's address yourself; it defaults to
+`http://localhost:3000`, which is the frontend's own port inside the container.
