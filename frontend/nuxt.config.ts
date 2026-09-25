@@ -3,9 +3,10 @@ import { defineNuxtConfig } from 'nuxt/config'
 
 export default defineNuxtConfig({
   runtimeConfig: {
-    public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:3000'
-    }
+    // Only the /api/bunker proxy reads this, so it stays private: a public key would ship the
+    // bunker's address in the client payload for no reason, and the NUXT_PUBLIC_ prefix it
+    // required is what made compose.yaml's variable name look plausible. See #20.
+    apiBase: process.env.NUXT_API_BASE || 'http://localhost:3000'
   },
   modules: [
     '@nuxt/eslint',
