@@ -30,17 +30,17 @@ jobs:
             context: ./backend
             dockerfile: ./backend/Dockerfile
             image_name: ${{ github.repository_owner }}/bancwr-diogel-backend
+            # Shared with release-backend.yml, so a release reuses the layers CI built.
+            cache_scope: backend-cargo-chef
           - component: frontend
             context: ./frontend
             dockerfile: ./frontend/Dockerfile
             image_name: ${{ github.repository_owner }}/bancwr-diogel-frontend
+            cache_scope: frontend
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -68,12 +68,15 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          # amd64 only, matching the release workflows. Emulated arm64 took ~93 min of a
+          # 98 min backend build (#39); build arm64 on a native runner if it is ever published.
+          platforms: linux/amd64
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # One scope per component: unscoped, the two matrix jobs overwrote each other's cache.
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master

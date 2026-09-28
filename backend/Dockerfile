@@ -9,9 +9,30 @@ WORKDIR /usr/src/bunker
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    curl \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef
+# Install cargo-chef from its pinned, checksum-verified release binary rather than compiling it,
+# which cost ~2 min per cold build natively and ~25 min under emulation (#39).
+ARG CARGO_CHEF_VERSION=0.1.78
+ARG CARGO_CHEF_SHA256_X86_64=aca691abfbfbbe00d482e0ed2249eec3091b65e96a0ce92947fb5b254d48b16d
+ARG CARGO_CHEF_SHA256_AARCH64=cd59b90fce5fa84c4189648fec33404ec5491791eebdb812df5e7fca8336408d
+RUN set -eu; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) sha="$CARGO_CHEF_SHA256_X86_64" ;; \
+      aarch64) sha="$CARGO_CHEF_SHA256_AARCH64" ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    name="cargo-chef-${arch}-unknown-linux-musl"; \
+    curl -fsSL -o /tmp/cargo-chef.tar.xz \
+      "https://github.com/LukeMathWalker/cargo-chef/releases/download/v${CARGO_CHEF_VERSION}/${name}.tar.xz"; \
+    echo "${sha}  /tmp/cargo-chef.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/cargo-chef.tar.xz -C /tmp; \
+    install -m 0755 "/tmp/${name}/cargo-chef" /usr/local/cargo/bin/cargo-chef; \
+    rm -rf /tmp/cargo-chef.tar.xz "/tmp/${name}"; \
+    cargo chef --version
 
 # Stage 2: Planner - generates the recipe.json
 FROM chef AS planner
