@@ -86,9 +86,13 @@ Making `latest` release-only and adding an `edge` tag for trunk is tracked in
 
 ### Push the tag yourself
 
-A tag pushed with the workflow `GITHUB_TOKEN` does not start `on: push: tags` workflows; GitHub
-blocks it to prevent workflow loops. A workflow that created the tag would publish nothing. Until
-release automation has a personal access token or GitHub App token, a person pushes the tag.
+Release tagging is deliberately manual
+([#38](https://github.com/diogel-io/bancwr/issues/38)): a person is accountable for every release
+of a component that holds signing keys. Do not add a workflow that creates `v*` tags.
+
+It would not work with the default credential anyway. A tag pushed with the workflow
+`GITHUB_TOKEN` does not start `on: push: tags` workflows, because GitHub blocks it to prevent
+workflow loops, so a workflow that created the tag would publish nothing.
 
 ### Choosing the next version
 
