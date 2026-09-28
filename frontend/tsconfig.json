@@ -1,15 +1,13 @@
 {
   // https://nuxt.com/docs/guide/concepts/typescript
-  "extends": "./.nuxt/tsconfig.json",
-  "compilerOptions": {
-    "lib": ["ESNext", "DOM", "DOM.Iterable"]
-  },
-  "include": [
-    "app/**/*.ts",
-    "app/**/*.vue",
-    "server/**/*.ts",
-    "tests/**/*.ts",
-    "tests/**/*.tsx",
-    "*.ts"
+  // Nuxt 4 generates one context per runtime: app (Vue), server (Nitro auto-imports), shared, and
+  // node (config files). Each file is checked in the context it runs in; tests/ joins the app
+  // context through typescript.tsConfig in nuxt.config.ts.
+  "files": [],
+  "references": [
+    { "path": "./.nuxt/tsconfig.app.json" },
+    { "path": "./.nuxt/tsconfig.server.json" },
+    { "path": "./.nuxt/tsconfig.shared.json" },
+    { "path": "./.nuxt/tsconfig.node.json" }
   ]
 }

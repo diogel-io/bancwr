@@ -30,5 +30,11 @@ export default defineNuxtConfig({
   devServer: {
     port: 3001
   },
+  typescript: {
+    // The vitest suites run in the nuxt environment, so they are type-checked as app code.
+    tsConfig: {
+      include: ['../tests/**/*.ts']
+    }
+  },
   compatibilityDate: '2025-07-15',
 })

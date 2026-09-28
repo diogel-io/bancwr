@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
-
-// GET /api/bunker/metrics — served by the backend (backend/src/server.rs) but not previously used
-// by the frontend.
-interface Metrics {
-  http_requests: number
-  nip46_connections: number
-  total_signatures: number
-}
+import type { Metrics } from '#shared/types/bunker'
 
 const { data: metrics } = await useFetch<Metrics>('/api/bunker/metrics', { key: 'bunker-metrics' })
 

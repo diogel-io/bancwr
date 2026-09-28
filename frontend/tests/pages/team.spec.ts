@@ -36,7 +36,7 @@ describe('Team page', () => {
   })
 
   it('refreshes TeamMemberList after adding a member', async () => {
-    let teamMembers = [
+    const teamMembers = [
       { id: '1', name: 'Alice', pubkey: 'npub1', role: 'admin' }
     ]
 
@@ -59,8 +59,9 @@ describe('Team page', () => {
 
     // Find and fill inputs
     const inputs = component.findAll('input')
-    await inputs[0].setValue('Bob')
-    await inputs[1].setValue('npub2')
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
+    await inputs[0]!.setValue('Bob')
+    await inputs[1]!.setValue('npub2')
 
     // Click add button
     const addButton = component.findAll('button').find(b => b.text().includes('Add Member'))
