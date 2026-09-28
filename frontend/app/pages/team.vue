@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useFetch, ref, reactive, useToast } from '#imports'
+import type { TeamMember } from '#shared/types/bunker'
 
-const { data: team, refresh } = await useFetch('/api/bunker/team', { key: 'team-list' })
+const { data: team, refresh } = await useFetch<TeamMember[]>('/api/bunker/team', { key: 'team-list' })
 
 const state = reactive({
   name: '',

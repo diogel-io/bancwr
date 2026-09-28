@@ -1,20 +1,28 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
+import type { TableColumn } from '@nuxt/ui'
+import type { LogEntry } from '#shared/types/bunker'
 
-const props = defineProps({
-  rows: {
-    type: Array,
-    default: () => []
-  }
+const props = withDefaults(defineProps<{
+  rows?: LogEntry[]
+}>(), {
+  rows: () => []
 })
 
-const { data: logs } = await useFetch('/api/bunker/logs', {
+const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs', {
   immediate: !props.rows
 })
 
-const displayLogs = computed(() => props.rows || logs.value || [])
+const displayLogs = computed<LogEntry[]>(() => props.rows || logs.value || [])
 
-const formatDate = (date) => {
+// Columns follow LogEntry. There is no status column: the backend logs successful signatures only.
+const columns: TableColumn<LogEntry>[] = [
+  { accessorKey: 'timestamp', header: 'Timestamp' },
+  { accessorKey: 'event_kind', header: 'Event Kind' },
+  { accessorKey: 'pubkey', header: 'Member' }
+]
+
+const formatDate = (date: string) => {
   return new Date(date).toLocaleString()
 }
 </script>
@@ -22,23 +30,10 @@ const formatDate = (date) => {
 <template>
   <UTable
     :data="displayLogs"
-    :columns="[
-      { accessorKey: 'timestamp', header: 'Timestamp' },
-      { accessorKey: 'kind', header: 'Event Kind' },
-      { accessorKey: 'member', header: 'Member' },
-      { accessorKey: 'status', header: 'Status' }
-    ]"
+    :columns="columns"
   >
     <template #timestamp-cell="{ row }">
-      {{ formatDate(row.timestamp) }}
-    </template>
-    <template #status-cell="{ row }">
-      <UBadge
-        :color="row.status === 'success' ? 'success' : 'error'"
-        variant="subtle"
-      >
-        <span class="status-text">{{ row.status }}</span>
-      </UBadge>
+      {{ formatDate(row.original.timestamp) }}
     </template>
   </UTable>
 </template>

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useFetch, reactive, ref, useToast } from '#imports'
+import type { ConfigResponse } from '#shared/types/bunker'
 
-const { data: config } = await useFetch('/api/bunker/config')
+const { data: config } = await useFetch<ConfigResponse>('/api/bunker/config')
 
+// Always starts empty: the backend never returns the nsec (ConfigResponse).
 const state = reactive({
-  nsec: config.value ? config.value['nsec'] : '',
+  nsec: '',
   nsecFile: ''
 })
 
@@ -45,7 +47,7 @@ const saveConfig = async () => {
             help="This is the public key for this bunker."
           >
             <UInput
-              :model-value="config ? config['pubkey'] : ''"
+              :model-value="config?.pubkey ?? ''"
               disabled
               icon="i-heroicons-key"
             />

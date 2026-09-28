@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
+import type { BunkerStatus, LogEntry } from '#shared/types/bunker'
 
-const { data: status } = await useFetch('/api/bunker/status')
-const { data: logs } = await useFetch('/api/bunker/logs')
+const { data: status } = await useFetch<BunkerStatus>('/api/bunker/status')
+const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs')
 
 const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(0, 5) : []))
 </script>
@@ -29,13 +30,13 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
           </template>
           <div class="flex items-center gap-2">
             <div
-              :class="status && status['status'] === 'healthy' ? 'bg-success' : 'bg-error'"
+              :class="status?.status === 'healthy' ? 'bg-success' : 'bg-error'"
               class="w-3 h-3 rounded-full animate-pulse"
             />
-            <span class="capitalize">{{ status ? status['status'] || 'Unknown' : 'Unknown' }}</span>
+            <span class="capitalize">{{ status?.status || 'Unknown' }}</span>
           </div>
           <p class="text-sm text-muted mt-2 truncate">
-            {{ status ? status['pubkey'] : '' }}
+            {{ status?.pubkey ?? '' }}
           </p>
         </UCard>
 

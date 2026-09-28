@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import type { BunkerStatus, LogEntry } from '#shared/types/bunker'
 import Index from '../../app/pages/index.vue'
 
-const mockStatus = { status: 'healthy', pubkey: 'npub1test' }
-const mockLogs = [
-  { id: '1', timestamp: '2025-01-01T10:00:00Z', kind: 1, member: 'Alice', status: 'success' }
+const mockStatus: BunkerStatus = { status: 'healthy', pubkey: 'npub1test' }
+// The real LogEntry shape from backend/src/server.rs.
+const mockLogs: LogEntry[] = [
+  { id: '1', event_id: 'e1', pubkey: 'npub1alice', event_kind: 1, timestamp: '2025-01-01T10:00:00Z' }
 ]
 
 describe('Index page', () => {
@@ -40,6 +42,6 @@ describe('Index page', () => {
     const component = await mountSuspended(Index)
 
     expect(component.text()).toContain('Recent Activity')
-    expect(component.text()).toContain('Alice')
+    expect(component.text()).toContain('npub1alice')
   })
 })

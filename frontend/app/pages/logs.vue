@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useFetch } from '#imports'
+import type { LogEntry } from '#shared/types/bunker'
 
-const { data: logs } = await useFetch('/api/bunker/logs', { key: 'logs-full' })
+const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs', { key: 'logs-full' })
 </script>
 
 <template>
@@ -16,7 +17,7 @@ const { data: logs } = await useFetch('/api/bunker/logs', { key: 'logs-full' })
 
     <template #body>
       <UCard>
-        <ActivityLog :rows="logs" />
+        <ActivityLog :rows="logs ?? []" />
       </UCard>
     </template>
   </UDashboardPanel>
