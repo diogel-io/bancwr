@@ -1,0 +1,39 @@
+name: Version
+
+# Computes the release version once, from GitVersion.yml and the repository's tags, for the
+# release workflows to share. See docs/releasing.md.
+on:
+  workflow_call:
+    outputs:
+      majorMinorPatch:
+        description: The version core, for example 0.1.0.
+        value: ${{ jobs.version.outputs.majorMinorPatch }}
+      semVer:
+        description: The version with any pre-release label, for example 0.1.0-49. Safe as an image tag.
+        value: ${{ jobs.version.outputs.semVer }}
+      fullSemVer:
+        description: semVer plus any build metadata after a '+'. Not safe as an image tag.
+        value: ${{ jobs.version.outputs.fullSemVer }}
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      majorMinorPatch: ${{ steps.gitversion.outputs.majorMinorPatch }}
+      semVer: ${{ steps.gitversion.outputs.semVer }}
+      fullSemVer: ${{ steps.gitversion.outputs.fullSemVer }}
+    steps:
+      # GitVersion needs the full history and every tag; a depth-1 checkout makes it fail.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: gittools/actions/gitversion/setup@v4.7.0
+        with:
+          versionSpec: '6.x'
+
+      - uses: gittools/actions/gitversion/execute@v4.7.0
+        id: gitversion

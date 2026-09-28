@@ -51,6 +51,10 @@ WORKDIR /app
 # Copy the binary
 COPY --from=builder /usr/src/bunker/target/release/bunker /usr/local/bin/bunker
 
+# Release version, supplied by the release workflow from GitVersion. See docs/releasing.md.
+ARG BANCWR_VERSION=0.0.0
+ENV BANCWR_VERSION=${BANCWR_VERSION}
+
 # Default port configuration
 ARG DEFAULT_PORT=3000
 ENV BUNKER_PORT=${DEFAULT_PORT}

@@ -1,0 +1,5 @@
+# The single version authority for Bancwr. Backend and frontend are released together under one
+# v<major>.<minor>.<patch> tag; Cargo.toml and package.json are not release inputs.
+# See docs/releasing.md.
+workflow: GitHubFlow/v1
+next-version: 0.1.0

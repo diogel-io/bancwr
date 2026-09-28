@@ -1,6 +1,7 @@
 [package]
 name = "bunker"
-version = "0.1.0"
+# Not the release version. GitVersion.yml is the version authority; see docs/releasing.md.
+version = "0.0.0"
 edition = "2021"
 
 [dependencies]

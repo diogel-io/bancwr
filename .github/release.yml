@@ -1,0 +1,18 @@
+# Groups GitHub's generated release notes by pull request label. See docs/releasing.md.
+changelog:
+  categories:
+    - title: Features
+      labels:
+        - enhancement
+    - title: Fixes
+      labels:
+        - bug
+    - title: Build and delivery
+      labels:
+        - devOps
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Other changes
+      labels:
+        - '*'
