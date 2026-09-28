@@ -13,7 +13,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    uses: ./.github/workflows/version.yml
+
   release:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +32,9 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,format=short
+            # The GitVersion version: 0.1.0-49 on master, 0.1.0 on the v0.1.0 tag.
+            # semVer, not fullSemVer: fullSemVer can carry '+' build metadata, which image tags reject.
+            type=raw,value=${{ needs.version.outputs.semVer }}
             # :latest tracks the default branch. Both the README quickstart and
             # trivy-security.yml reference :latest, and neither worked before this,
             # because metadata-action only adds it for a semver tag and none has been cut.
@@ -45,6 +52,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BANCWR_VERSION=${{ needs.version.outputs.semVer }}
           cache-from: type=gha,scope=backend-cargo-chef
           cache-to: type=gha,scope=backend-cargo-chef,mode=max
           provenance: false
