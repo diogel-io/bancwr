@@ -14,6 +14,9 @@ services:
       - BUNKER_PORT=3000
       - RUST_LOG=info
       - DATABASE_PATH=/data/bancwr.db
+      # Set at runtime rather than as a build arg, so version.spec.ts checks what the running
+      # container reports without depending on a rebuild (#35).
+      - BANCWR_VERSION=0.0.0-e2e
     # Every run starts with an empty database and leaves nothing on disk. NIP46_ENABLED is left
     # unset, so the bunker makes no relay connections.
     tmpfs:
@@ -26,6 +29,7 @@ services:
     build: ..
     environment:
       - NUXT_API_BASE=http://bunker:3000
+      - BANCWR_VERSION=0.0.0-e2e
     ports:
       # 3100, not 3000 or 3001, so the suite can run beside `pnpm dev` and the quickstart compose.
       - "${E2E_PORT:-3100}:3000"

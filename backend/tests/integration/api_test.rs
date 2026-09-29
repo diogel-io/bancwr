@@ -22,6 +22,7 @@ async fn setup_app() -> (String, PublicKey, reqwest::Client) {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -59,7 +60,9 @@ async fn test_api_health_check() {
 
     assert_eq!(res.status(), StatusCode::OK);
     let body: Value = res.json().await.expect("Failed to parse JSON");
-    assert_eq!(body["status"], "ok");
+    // Exactly this and nothing more: /health stays a cheap container probe. The version is on
+    // /api/bunker/status instead (#35).
+    assert_eq!(body, serde_json::json!({ "status": "ok" }));
 }
 
 #[tokio::test]
@@ -76,6 +79,7 @@ async fn test_api_status() {
     let body: Value = res.json().await.expect("Failed to parse JSON");
     assert_eq!(body["status"], "healthy");
     assert_eq!(body["pubkey"], expected_pubkey.to_bech32().unwrap());
+    assert_eq!(body["version"], "0.0.0");
 }
 
 #[tokio::test]

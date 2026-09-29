@@ -3,7 +3,7 @@ import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import type { BunkerStatus, LogEntry } from '#shared/types/bunker'
 import Index from '../../app/pages/index.vue'
 
-const mockStatus: BunkerStatus = { status: 'healthy', pubkey: 'npub1test' }
+const mockStatus: BunkerStatus = { status: 'healthy', pubkey: 'npub1test', version: '0.1.0' }
 // The real LogEntry shape from backend/src/server.rs.
 const mockLogs: LogEntry[] = [
   { id: '1', event_id: 'e1', pubkey: 'npub1alice', event_kind: 1, timestamp: '2025-01-01T10:00:00Z' }

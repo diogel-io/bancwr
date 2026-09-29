@@ -31,19 +31,22 @@ const open = ref(false)
       </template>
 
       <template #footer="{ collapsed }">
-        <div
-          class="flex items-center gap-2 w-full"
-          :class="collapsed ? 'flex-col' : 'justify-between'"
-        >
-          <UColorModeSwitch />
-          <UButton
-            icon="i-simple-icons-github"
-            color="neutral"
-            variant="ghost"
-            to="https://github.com/diogel-io/bancwr"
-            target="_blank"
-            aria-label="Source on GitHub"
-          />
+        <div class="flex flex-col gap-3 w-full">
+          <AppVersion :collapsed="collapsed" />
+          <div
+            class="flex items-center gap-2 w-full"
+            :class="collapsed ? 'flex-col' : 'justify-between'"
+          >
+            <UColorModeSwitch />
+            <UButton
+              icon="i-simple-icons-github"
+              color="neutral"
+              variant="ghost"
+              to="https://github.com/diogel-io/bancwr"
+              target="_blank"
+              aria-label="Source on GitHub"
+            />
+          </div>
         </div>
       </template>
     </UDashboardSidebar>

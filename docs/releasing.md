@@ -19,6 +19,22 @@ The manifests are not release inputs:
 The release workflows pass the computed version into both images as the `BANCWR_VERSION` build
 argument, which is set as an environment variable of the same name in the running container.
 
+### Checking the running version
+
+Each image reports its own `BANCWR_VERSION` (#35):
+
+- **Bunker:** the `version` field of `GET /api/bunker/status`, for example
+  `curl -s http://localhost:3000/api/bunker/status | jq .version`. The first log line also carries
+  it: `Bancwr Diogel 0.1.0-49 starting...`. `/health` does not, and stays `{"status":"ok"}` for
+  container probes.
+- **Frontend:** `GET /api/version` on the frontend, for example
+  `curl -s http://localhost:3001/api/version`.
+- **Dashboard:** the sidebar footer shows both, and warns when they differ, which means the two
+  containers were not updated together.
+
+`0.0.0` means an unversioned build: `cargo run`, `pnpm dev`, or an image built without the build
+argument.
+
 ## How the version is computed
 
 `.github/workflows/version.yml` runs GitVersion once per release run and exposes
