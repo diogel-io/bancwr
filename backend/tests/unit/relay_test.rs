@@ -20,6 +20,7 @@ async fn test_relay_client_new() {
         nip46_enabled: true,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let client = RelayClient::new(relays, state).await;
@@ -41,6 +42,7 @@ async fn test_relay_client_empty_relays() {
         nip46_enabled: true,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let client = RelayClient::new(relays, state).await;

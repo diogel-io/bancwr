@@ -1,5 +1,5 @@
 use bunker::config::Config;
-use bunker::db::Database;
+use bunker::db::{Database, SeedOutcome};
 use bunker::relay::RelayClient;
 use bunker::server::{create_router, shutdown_signal};
 use bunker::state::AppState;
@@ -24,6 +24,21 @@ async fn main() -> anyhow::Result<()> {
              used: the signing key comes from BUNKER_NSEC_FILE or BUNKER_NSEC. It was stored in plain \
              text, so if this database was ever copied or backed up, rotate that key."
         );
+    }
+
+    // First-administrator bootstrap (#24). Nobody can administer the bunker until someone holds
+    // the administrator role, and once #25 enforces roles only an administrator can add members.
+    match &config.admin_pubkey {
+        Some(pubkey) => match db.seed_administrator(pubkey)? {
+            SeedOutcome::AdministratorExists => {}
+            SeedOutcome::Added => info!("Registered BANCWR_ADMIN_PUBKEY as the first administrator"),
+            SeedOutcome::Promoted => info!("Promoted BANCWR_ADMIN_PUBKEY to administrator: there was none"),
+        },
+        None if db.administrator_count()? == 0 => warn!(
+            "No administrator is registered, so nobody can administer this bunker. Set \
+             BANCWR_ADMIN_PUBKEY to the first administrator's npub and restart."
+        ),
+        None => {}
     }
 
     let signer = Signer::new(config.secret_key.clone());

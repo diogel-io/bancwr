@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import Team from '../../app/pages/team.vue'
 import { clearNuxtData, nextTick } from '#imports'
+import { readBody } from 'h3'
 
 describe('Team page', () => {
   beforeEach(async () => {
@@ -26,7 +27,7 @@ describe('Team page', () => {
     registerEndpoint('/api/bunker/team', {
       method: 'GET',
       handler: () => [
-        { id: '1', name: 'Alice', pubkey: 'npub1', role: 'admin' }
+        { id: '1', name: 'Alice', pubkey: 'a'.repeat(64), npub: 'npub1alice', role: 'administrator' }
       ]
     })
 
@@ -37,7 +38,7 @@ describe('Team page', () => {
 
   it('refreshes TeamMemberList after adding a member', async () => {
     const teamMembers = [
-      { id: '1', name: 'Alice', pubkey: 'npub1', role: 'admin' }
+      { id: '1', name: 'Alice', pubkey: 'a'.repeat(64), npub: 'npub1alice', role: 'administrator' }
     ]
 
     registerEndpoint('/api/bunker/team', {
@@ -45,10 +46,12 @@ describe('Team page', () => {
       handler: () => teamMembers
     })
 
+    let posted: unknown
     registerEndpoint('/api/bunker/team', {
       method: 'POST',
-      handler: () => {
-        teamMembers.push({ id: '2', name: 'Bob', pubkey: 'npub2', role: 'signer' })
+      handler: async (event) => {
+        posted = await readBody(event)
+        teamMembers.push({ id: '2', name: 'Bob', pubkey: 'b'.repeat(64), npub: 'npub1bob', role: 'signer' })
         return { success: true }
       }
     })
@@ -74,5 +77,7 @@ describe('Team page', () => {
 
     // Assert the list is refreshed and contains Bob
     expect(component.text()).toContain('Bob')
+    // The default role is sent with its settled value (#24).
+    expect(posted).toEqual({ name: 'Bob', pubkey: 'npub2', role: 'signer' })
   })
 })

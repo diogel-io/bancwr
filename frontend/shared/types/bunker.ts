@@ -38,19 +38,32 @@ export interface ConfigResponse {
   nsec_file: string | null
 }
 
-/** GET /api/bunker/team */
+/** The three roles (#24). Stored and sent lowercase. */
+export type Role = 'administrator' | 'user' | 'signer'
+
+export const ROLE_LABELS: Record<Role, string> = {
+  administrator: 'Administrator',
+  user: 'User',
+  signer: 'Signer'
+}
+
+/** GET /api/bunker/team, GET /api/bunker/team/by-pubkey/:pubkey */
 export interface TeamMember {
   id: string
   name: string
+  /** Canonical lowercase hex. */
   pubkey: string
+  /** For display. Null only for a row stored before #24 whose key is not valid. */
+  npub: string | null
+  /** A Role; a row stored before #24 may hold another value, which grants nothing. */
   role: string
 }
 
-/** POST /api/bunker/team */
+/** POST /api/bunker/team. `pubkey` may be an npub or hex. */
 export interface AddTeamMemberRequest {
   name: string
   pubkey: string
-  role: string
+  role: Role
 }
 
 /** POST /api/bunker/team */

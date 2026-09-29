@@ -7,6 +7,8 @@ services:
         - "3000:3000"
       environment:
         - BUNKER_NSEC=${BUNKER_NSEC}
+        # The first administrator's npub, registered at startup while no administrator exists.
+        - BANCWR_ADMIN_PUBKEY=${BANCWR_ADMIN_PUBKEY:-}
         - BUNKER_PORT=3000
         - RUST_LOG=info
         - DATABASE_PATH=/data/bancwr.db

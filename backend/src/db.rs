@@ -6,6 +6,8 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+use crate::registry::Role;
+
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
@@ -24,9 +26,31 @@ pub struct SigningLog {
 pub struct TeamMember {
     pub id: Uuid,
     pub name: String,
+    /// Lowercase hex (#24). Rows stored before #24 that could not be canonicalised keep their
+    /// original value, which never matches a lookup.
     pub pubkey: String,
-    pub role: String, // "admin", "signer", "viewer"
+    /// As stored. Use `role()`: a value outside the three roles can only come from before #24,
+    /// and grants nothing.
+    pub role: String,
     pub created_at: DateTime<Utc>,
+}
+
+impl TeamMember {
+    /// The member's role, or `None` for a stored value that is not one of the three.
+    pub fn role(&self) -> Option<Role> {
+        self.role.parse().ok()
+    }
+}
+
+/// What `seed_administrator` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SeedOutcome {
+    /// An administrator already exists, so nothing was changed.
+    AdministratorExists,
+    /// The key was not registered, and was added as an administrator.
+    Added,
+    /// The key was registered with another role, and was promoted to administrator.
+    Promoted,
 }
 
 impl Database {
@@ -41,7 +65,7 @@ impl Database {
             }
         }
 
-        let conn = Connection::open(db_path)?;
+        let mut conn = Connection::open(db_path)?;
 
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -73,6 +97,8 @@ impl Database {
                 created_at TEXT NOT NULL
             );",
         )?;
+
+        crate::migrations::run(&mut conn)?;
 
         info!("Database initialized at {}", db_path);
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
@@ -181,12 +207,12 @@ impl Database {
         Ok(count as u64)
     }
 
-    /// Add a team member
+    /// Add a team member. `pubkey` must already be canonical hex (`registry::canonical_pubkey`).
     pub fn add_team_member(
         &self,
         name: &str,
         pubkey: &str,
-        role: &str,
+        role: Role,
     ) -> anyhow::Result<Uuid> {
         let id = Uuid::new_v4();
         let id_str = id.to_string();
@@ -194,7 +220,7 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         conn.execute(
             "INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id_str, name, pubkey, role, now],
+            params![id_str, name, pubkey, role.as_str(), now],
         )?;
         Ok(id)
     }
@@ -217,15 +243,54 @@ impl Database {
 
         let mut members = Vec::new();
         for row in rows {
-            let (id_str, name, pubkey, role, created_at_str) = row?;
-            let id = Uuid::parse_str(&id_str)
-                .map_err(|e| anyhow::anyhow!("Malformed UUID in team_members.id '{}': {}", id_str, e))?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| anyhow::anyhow!("Malformed timestamp in team_members.created_at '{}': {}", created_at_str, e))?
-                .with_timezone(&Utc);
-            members.push(TeamMember { id, name, pubkey, role, created_at });
+            members.push(team_member_from_row(row?)?);
         }
         Ok(members)
+    }
+
+    /// The member registered under this key, if any. `pubkey` must be canonical hex. The
+    /// single-key lookup #25 and #11 authorise against.
+    pub fn find_member_by_pubkey(&self, pubkey: &str) -> anyhow::Result<Option<TeamMember>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let row = conn
+            .query_row(
+                "SELECT id, name, pubkey, role, created_at FROM team_members WHERE pubkey = ?1",
+                params![pubkey],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        row.map(team_member_from_row).transpose()
+    }
+
+    /// How many members hold the administrator role.
+    pub fn administrator_count(&self) -> anyhow::Result<u64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM team_members WHERE role = ?1",
+            params![Role::Administrator.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    /// First-administrator bootstrap (`BANCWR_ADMIN_PUBKEY`). When no administrator exists, add
+    /// this key as one, or promote it if it is already a member. Once any administrator exists it
+    /// changes nothing, so it never re-adds a removed key or demotes anyone. `pubkey` must be
+    /// canonical hex.
+    pub fn seed_administrator(&self, pubkey: &str) -> anyhow::Result<SeedOutcome> {
+        if self.administrator_count()? > 0 {
+            return Ok(SeedOutcome::AdministratorExists);
+        }
+        if self.find_member_by_pubkey(pubkey)?.is_some() {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+            conn.execute(
+                "UPDATE team_members SET role = ?1 WHERE pubkey = ?2",
+                params![Role::Administrator.as_str(), pubkey],
+            )?;
+            return Ok(SeedOutcome::Promoted);
+        }
+        self.add_team_member("Administrator (bootstrap)", pubkey, Role::Administrator)?;
+        Ok(SeedOutcome::Added)
     }
 
     /// Remove a team member. Returns false when no member has that id.
@@ -238,4 +303,15 @@ impl Database {
         )?;
         Ok(removed > 0)
     }
+}
+
+fn team_member_from_row(
+    (id_str, name, pubkey, role, created_at_str): (String, String, String, String, String),
+) -> anyhow::Result<TeamMember> {
+    let id = Uuid::parse_str(&id_str)
+        .map_err(|e| anyhow::anyhow!("Malformed UUID in team_members.id '{}': {}", id_str, e))?;
+    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+        .map_err(|e| anyhow::anyhow!("Malformed timestamp in team_members.created_at '{}': {}", created_at_str, e))?
+        .with_timezone(&Utc);
+    Ok(TeamMember { id, name, pubkey, role, created_at })
 }

@@ -144,3 +144,39 @@ fn test_default_version_when_unset() {
 
     env::remove_var("BUNKER_NSEC");
 }
+
+#[test]
+fn test_admin_pubkey_is_canonicalised() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let admin = Keys::generate();
+    env::set_var("BUNKER_NSEC", Keys::generate().secret_key().to_bech32().unwrap());
+    env::remove_var("BUNKER_NSEC_FILE");
+    env::set_var("BANCWR_ADMIN_PUBKEY", admin.public_key().to_bech32().unwrap());
+
+    let config = Config::load().expect("Should load config");
+    assert_eq!(config.admin_pubkey, Some(admin.public_key().to_hex()));
+
+    env::set_var("BANCWR_ADMIN_PUBKEY", "  ");
+    assert_eq!(Config::load().unwrap().admin_pubkey, None, "blank means unset");
+
+    env::remove_var("BANCWR_ADMIN_PUBKEY");
+    assert_eq!(Config::load().unwrap().admin_pubkey, None);
+    env::remove_var("BUNKER_NSEC");
+}
+
+#[test]
+fn test_admin_pubkey_must_be_a_key_and_not_the_bunkers() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let bunker = Keys::generate();
+    env::set_var("BUNKER_NSEC", bunker.secret_key().to_bech32().unwrap());
+    env::remove_var("BUNKER_NSEC_FILE");
+
+    env::set_var("BANCWR_ADMIN_PUBKEY", "npub1notakey");
+    assert!(matches!(Config::load(), Err(bunker::config::ConfigError::InvalidAdminPubkey)));
+
+    env::set_var("BANCWR_ADMIN_PUBKEY", bunker.public_key().to_bech32().unwrap());
+    assert!(matches!(Config::load(), Err(bunker::config::ConfigError::AdminPubkeyIsBunkerKey)));
+
+    env::remove_var("BANCWR_ADMIN_PUBKEY");
+    env::remove_var("BUNKER_NSEC");
+}

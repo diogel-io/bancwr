@@ -10,8 +10,8 @@ mockNuxtImport('useToast', () => () => ({ add: addToast }))
 
 // The real TeamMember shape from backend/src/server.rs: ids are UUIDs.
 const mockTeam: TeamMember[] = [
-  { id: '5b0f3c2e-8a51-4d6e-9f3a-1c2b3d4e5f60', name: 'Alice', pubkey: 'npub1alice', role: 'admin' },
-  { id: 'c7d8e9f0-1a2b-4c3d-8e4f-5a6b7c8d9e0f', name: 'Bob', pubkey: 'npub1bob', role: 'signer' }
+  { id: '5b0f3c2e-8a51-4d6e-9f3a-1c2b3d4e5f60', name: 'Alice', pubkey: 'a'.repeat(64), npub: 'npub1alice', role: 'administrator' },
+  { id: 'c7d8e9f0-1a2b-4c3d-8e4f-5a6b7c8d9e0f', name: 'Bob', pubkey: 'b'.repeat(64), npub: 'npub1bob', role: 'signer' }
 ]
 
 const bob = mockTeam[1]!
@@ -34,8 +34,20 @@ describe('TeamMemberList', () => {
 
     expect(component.text()).toContain('Alice')
     expect(component.text()).toContain('Bob')
-    expect(component.text()).toContain('admin')
-    expect(component.text()).toContain('signer')
+    // The npub, not the stored hex, and the role's label, not its value (#24).
+    expect(component.text()).toContain('npub1alice')
+    expect(component.text()).not.toContain('a'.repeat(64))
+    expect(component.text()).toContain('Administrator')
+    expect(component.text()).toContain('Signer')
+  })
+
+  it('shows a row from before #24 as stored', async () => {
+    // An unmigratable key has no npub, and an unrecognised role has no label.
+    const legacy: TeamMember = { id: 'd1e2f3a4-5b6c-4d7e-8f90-a1b2c3d4e5f6', name: 'Oscar', pubkey: 'npub1notakey', npub: null, role: 'owner' }
+    const component = await mountSuspended(TeamMemberList, { props: { data: [legacy] } })
+
+    expect(component.text()).toContain('npub1notakey')
+    expect(component.text()).toContain('owner')
   })
 
   it('handles empty state', async () => {

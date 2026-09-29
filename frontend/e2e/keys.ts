@@ -19,3 +19,12 @@ export function npubFromNsec(nsec: string): string {
 export function randomNpub(): string {
   return npubEncode(getPublicKey(generateSecretKey()))
 }
+
+/** The hex form of an npub, to register the same key in its other encoding. */
+export function npubToHex(npub: string): string {
+  const decoded = decode(npub)
+  if (decoded.type !== 'npub') {
+    throw new Error('not an npub')
+  }
+  return decoded.data
+}
