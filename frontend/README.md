@@ -118,6 +118,52 @@ pnpm test:e2e:stack:down   # stop and remove it
 
 Keep the version in that command in step with `.mcp.json`.
 
+## Nostr (`nostr-tools`)
+
+[`nostr-tools`](https://github.com/nbd-wtf/nostr-tools) is the frontend's Nostr library, for
+profile, follow, relay and connection work (#30–#33). It is pinned to an exact version in
+`package.json`, and Renovate proposes upgrades as pull requests. `tests/nostr/` holds a smoke test
+that runs the same checks in the Nuxt environment and in plain Node.
+
+### Where each part may run
+
+| Part | Server (SSR, Nitro routes) | Client |
+|------|---------------------------|--------|
+| `nostr-tools/nip19`, `nostr-tools/pure` (`getPublicKey`, `finalizeEvent`, `verifyEvent`) | yes | yes |
+| Relay I/O: `nostr-tools/pool` (`SimplePool`), `nostr-tools/relay` | **no** | yes |
+| NIP-07 signing (`window.nostr`) | no | yes |
+
+**Relay I/O is client-only.** The production image runs Node 20 (`node:20-slim` in the
+`Dockerfile`), which has no global `WebSocket`, so `SimplePool` on the server fails with
+`ReferenceError: WebSocket is not defined`. Local development runs a newer Node that has one, so
+the same code works under `pnpm dev` and breaks only once deployed. Open relays from `onMounted`, a
+`.client` plugin, inside `<ClientOnly>`, or behind `import.meta.client`, and never from a
+server-side `useAsyncData` or a route in `server/`. If the image moves to Node 22 or later (#16),
+this stops being a hard failure, but relays still belong in the browser: the server would otherwise
+hold relay connections on behalf of every visitor.
+
+### Rules
+
+- **Import from the subpaths** (`nostr-tools/pure`, `nostr-tools/nip19`, `nostr-tools/pool`), never
+  from `nostr-tools` itself. The package root is a separate bundle with its own copy of every
+  module, so mixing the two ships the code twice.
+- **Never re-verify an edited copy of a verified event.** `verifyEvent` and `finalizeEvent` cache
+  `true` on the event object under a symbol, and object spread copies it: `{ ...event, content }`
+  still passes `verifyEvent` after its content changes. Verify events as they arrive (parsed from
+  JSON), and sign a new event with `finalizeEvent` rather than editing a signed one.
+- The bunker's own key never reaches the frontend. A signed-in user's events are signed through
+  NIP-07 or NIP-46 with their key; see #30.
+
+### Differences from Porwr
+
+Porwr resolves `nostr-tools` 2.23.5; Bancwr pins 2.25.2. Changes between the two that matter when
+matching Porwr's behaviour:
+
+- `SimplePool.publish()` rejects on a connection failure, where it used to resolve.
+- Relay connections left unused are closed automatically after a while.
+- `subscribeMap`'s `onClose` receives `{ url, reason }[]` instead of `reason[]`.
+- NIP-46 requires a secret in `nostrconnect://` URIs.
+
 ## Production
 
 ```bash
