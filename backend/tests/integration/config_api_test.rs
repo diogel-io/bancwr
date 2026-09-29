@@ -7,7 +7,6 @@ use nostr::prelude::*;
 use tokio::net::TcpListener;
 use reqwest::StatusCode;
 use serde_json::Value;
-use tempfile::NamedTempFile;
 
 async fn setup_app() -> (String, reqwest::Client, Keys) {
     let keys = Keys::generate();
@@ -61,80 +60,17 @@ async fn test_get_config() {
 }
 
 #[tokio::test]
-async fn test_update_config_nsec() {
-    let (address, client, _keys) = setup_app().await;
-    
-    let new_keys = Keys::generate();
-    let new_nsec = new_keys.secret_key().to_bech32().unwrap();
-    let new_pubkey = new_keys.public_key().to_bech32().unwrap();
-
-    // 1. Update config
-    let res = client
-        .post(format!("{}/api/bunker/config", address))
-        .json(&serde_json::json!({
-            "nsec": new_nsec
-        }))
-        .send()
-        .await
-        .expect("Failed to execute request");
-
-    // 2. Verify response
-    let body: Value = res.json().await.expect("Failed to parse JSON");
-    assert_eq!(body["success"], true);
-    assert_eq!(body["pubkey"], new_pubkey);
-    assert!(body["message"].as_str().unwrap().contains("Restart required"));
-
-    // 3. Verify it is NOT immediately reflected in GET /config (stays old pubkey)
-    let res = client
-        .get(format!("{}/api/bunker/config", address))
-        .send()
-        .await
-        .expect("Failed to execute request");
-    
-    let body: Value = res.json().await.expect("Failed to parse JSON");
-    // Should still be the old pubkey from setup_app
-    assert_ne!(body["pubkey"], new_pubkey);
-}
-
-#[tokio::test]
-async fn test_update_config_invalid_nsec() {
+async fn test_update_config_is_gone() {
+    // The Config page is read-only (#42): the signing key is set with BUNKER_NSEC_FILE or
+    // BUNKER_NSEC, and the API no longer accepts a key.
     let (address, client, _keys) = setup_app().await;
 
     let res = client
         .post(format!("{}/api/bunker/config", address))
-        .json(&serde_json::json!({
-            "nsec": "invalid-nsec"
-        }))
+        .json(&serde_json::json!({ "nsec": Keys::generate().secret_key().to_bech32().unwrap() }))
         .send()
         .await
         .expect("Failed to execute request");
 
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn test_update_config_nsec_file() {
-    let (address, client, _keys) = setup_app().await;
-    
-    // Create a temporary file
-    let temp_file = NamedTempFile::new().unwrap();
-    let temp_path = temp_file.path().to_str().unwrap().to_string();
-
-    // 1. Update config with nsec_file
-    let res = client
-        .post(format!("{}/api/bunker/config", address))
-        .json(&serde_json::json!({
-            "nsec_file": temp_path
-        }))
-        .send()
-        .await
-        .expect("Failed to execute request");
-
-    assert_eq!(res.status(), StatusCode::OK);
-    let body: Value = res.json().await.expect("Failed to parse JSON");
-    assert_eq!(body["success"], true);
-    assert!(body["message"].as_str().unwrap().contains("Restart required"));
-
-    // 2. Verify change (persisted to DB, but not necessarily reflected in memory)
-    // In this test setup, we don't easily check the DB, but we check that memory IS NOT updated if that's the policy
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
 }

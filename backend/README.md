@@ -47,11 +47,9 @@ Returns the status and public key of the bunker.
 
 ### Get Config
 `GET /api/bunker/config`
-Returns the current configuration (public key and nsec file path if set).
-
-### Update Config
-`POST /api/bunker/config`
-Updates the bunker's nsec or nsec file path. **Restart is required to apply the new configuration.**
+Returns the public key and, if the key was loaded from a file, that file's path. The configuration
+is read-only over the API: the signing key is set with `BUNKER_NSEC_FILE` or `BUNKER_NSEC` when the
+bunker starts, and the nsec is never returned.
 
 ### Team Management
 `GET /api/bunker/team`
@@ -65,13 +63,6 @@ Example:
 curl -X POST http://localhost:3000/api/bunker/team \
   -H "Content-Type: application/json" \
   -d '{"name":"Alice","pubkey":"npub1...","role":"signer"}'
-```
-
-Example:
-```bash
-curl -X POST http://localhost:3000/api/bunker/config \
-  -H "Content-Type: application/json" \
-  -d '{"nsec":"nsec1..."}'
 ```
 
 Example:
