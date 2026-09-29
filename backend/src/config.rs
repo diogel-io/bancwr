@@ -13,6 +13,19 @@ pub enum ConfigError {
     InvalidNsec(String),
 }
 
+/// The version reported when BANCWR_VERSION is unset or blank, as under `cargo run`. Matches the
+/// `ARG BANCWR_VERSION` default in the Dockerfile.
+pub const DEFAULT_VERSION: &str = "0.0.0";
+
+/// The running version from a BANCWR_VERSION value. The release workflows set it to the
+/// GitVersion semVer (see docs/releasing.md); unset or blank means an unversioned build.
+pub fn version_or_default(value: Option<String>) -> String {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_VERSION.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub secret_key: SecretKey,
@@ -21,6 +34,7 @@ pub struct Config {
     pub relay_urls: Vec<String>,  // NIP-46 relays to connect to
     pub nip46_enabled: bool,      // Enable NIP-46 protocol
     pub nsec_file: Option<String>,
+    pub version: String,          // BANCWR_VERSION, reported by /api/bunker/status (#35)
 }
 
 impl Config {
@@ -59,6 +73,8 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let version = version_or_default(env::var("BANCWR_VERSION").ok());
+
         Ok(Config {
             secret_key,
             port,
@@ -66,6 +82,7 @@ impl Config {
             relay_urls,
             nip46_enabled,
             nsec_file,
+            version,
         })
     }
 }

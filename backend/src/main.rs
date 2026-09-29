@@ -11,9 +11,9 @@ use tracing::{error, info, warn};
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt::init();
-    info!("Bancwr Diogel starting...");
 
     let config = Config::load()?;
+    info!("Bancwr Diogel {} starting...", config.version);
     let db = Database::new(&config.db_path)?;
 
     // Earlier versions stored a key submitted on the Config page in SQLite, in plain text, and

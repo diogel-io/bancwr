@@ -28,6 +28,7 @@ async fn test_health_check_handler() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -62,6 +63,7 @@ async fn test_status_handler() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "1.2.3-test".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -82,6 +84,8 @@ async fn test_status_handler() {
     let status: BunkerStatus = from_slice(&body).unwrap();
     assert_eq!(status.status, "healthy");
     assert_eq!(status.pubkey, expected_pubkey);
+    // From the config, which Config::load fills from BANCWR_VERSION (#35).
+    assert_eq!(status.version, "1.2.3-test");
 }
 
 #[tokio::test]
@@ -96,6 +100,7 @@ async fn test_sign_event_handler_success() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -136,6 +141,7 @@ async fn test_sign_event_handler_empty_content() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -173,6 +179,7 @@ async fn test_sign_event_handler_forbidden_kind() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -221,6 +228,7 @@ async fn test_get_logs_handler() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: None,
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -259,6 +267,7 @@ async fn test_get_config_handler() {
         relay_urls: vec![],
         nip46_enabled: false,
         nsec_file: Some("/tmp/nsec".to_string()),
+        version: "0.0.0".to_string(),
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);

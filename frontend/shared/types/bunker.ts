@@ -6,6 +6,13 @@
 export interface BunkerStatus {
   status: string
   pubkey: string
+  /** The bunker's release version, from its BANCWR_VERSION; `0.0.0` when unversioned. */
+  version: string
+}
+
+/** GET /api/version — served by the frontend itself, not proxied to the bunker. */
+export interface VersionResponse {
+  version: string
 }
 
 /** GET /api/bunker/logs — one successful signature. The backend logs no failures. */
