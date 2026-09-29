@@ -1,5 +1,12 @@
-use bunker::db::Database;
+use bunker::db::{Database, SeedOutcome};
+use bunker::registry::Role;
 use chrono::Utc;
+use nostr::prelude::*;
+
+/// A valid key in the vault's stored form, lowercase hex.
+fn new_pubkey() -> String {
+    Keys::generate().public_key().to_hex()
+}
 use tempfile::NamedTempFile;
 
 #[test]
@@ -67,14 +74,16 @@ fn test_db_team_management() {
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
 
     // Add member
-    let id = db.add_team_member("Alice", "npub1...", "admin").expect("Failed to add member");
+    let alice = new_pubkey();
+    let id = db.add_team_member("Alice", &alice, Role::Administrator).expect("Failed to add member");
 
     // Get members
     let members = db.get_team_members().expect("Failed to get members");
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].name, "Alice");
-    assert_eq!(members[0].pubkey, "npub1...");
-    assert_eq!(members[0].role, "admin");
+    assert_eq!(members[0].pubkey, alice);
+    assert_eq!(members[0].role, "administrator");
+    assert_eq!(members[0].role(), Some(Role::Administrator));
     assert_eq!(members[0].id, id);
 
     // Remove member
@@ -148,7 +157,7 @@ fn test_db_file_backed_persistence() {
         db.set_config("persist_key", "persist_value").expect("Failed to set config");
         db.log_signing_event("evt_persist", "pubkey_persist", 1, Utc::now())
             .expect("Failed to log event");
-        db.add_team_member("Bob", "npub1bob", "signer")
+        db.add_team_member("Bob", &new_pubkey(), Role::Signer)
             .expect("Failed to add member");
     } // db handle dropped here
 
@@ -186,9 +195,10 @@ fn test_db_timestamp_ordering_rfc3339() {
 #[test]
 fn test_db_duplicate_team_member_pubkey_rejected() {
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
-    db.add_team_member("Alice", "npub1unique", "admin")
+    let key = new_pubkey();
+    db.add_team_member("Alice", &key, Role::Administrator)
         .expect("First insert should succeed");
-    let result = db.add_team_member("Alice2", "npub1unique", "signer");
+    let result = db.add_team_member("Alice2", &key, Role::Signer);
     assert!(result.is_err(), "Duplicate pubkey should be rejected by UNIQUE constraint");
 }
 
@@ -204,4 +214,65 @@ fn test_db_signature_count() {
 
     db.log_signing_event("e2", "pub", 1, now + chrono::Duration::seconds(1)).unwrap();
     assert_eq!(db.signature_count().unwrap(), 2);
+}
+
+#[test]
+fn test_find_member_by_pubkey() {
+    let db = Database::new(":memory:").expect("Failed to create in-memory database");
+    let alice = new_pubkey();
+    db.add_team_member("Alice", &alice, Role::User).unwrap();
+
+    let found = db.find_member_by_pubkey(&alice).unwrap().expect("Alice is registered");
+    assert_eq!(found.name, "Alice");
+    assert_eq!(found.role(), Some(Role::User));
+
+    assert!(db.find_member_by_pubkey(&new_pubkey()).unwrap().is_none(), "an unregistered key is a clear miss");
+}
+
+#[test]
+fn test_administrator_count() {
+    let db = Database::new(":memory:").expect("Failed to create in-memory database");
+    assert_eq!(db.administrator_count().unwrap(), 0);
+    db.add_team_member("Alice", &new_pubkey(), Role::Administrator).unwrap();
+    db.add_team_member("Bob", &new_pubkey(), Role::User).unwrap();
+    db.add_team_member("Carol", &new_pubkey(), Role::Administrator).unwrap();
+    assert_eq!(db.administrator_count().unwrap(), 2);
+}
+
+#[test]
+fn test_seed_administrator_adds_when_there_is_none() {
+    let db = Database::new(":memory:").unwrap();
+    let key = new_pubkey();
+    db.add_team_member("Bob", &new_pubkey(), Role::User).unwrap();
+
+    assert_eq!(db.seed_administrator(&key).unwrap(), SeedOutcome::Added);
+    let seeded = db.find_member_by_pubkey(&key).unwrap().unwrap();
+    assert_eq!(seeded.role(), Some(Role::Administrator));
+    assert_eq!(seeded.name, "Administrator (bootstrap)");
+
+    // A second start changes nothing.
+    assert_eq!(db.seed_administrator(&key).unwrap(), SeedOutcome::AdministratorExists);
+    assert_eq!(db.administrator_count().unwrap(), 1);
+}
+
+#[test]
+fn test_seed_administrator_promotes_an_existing_member() {
+    let db = Database::new(":memory:").unwrap();
+    let key = new_pubkey();
+    db.add_team_member("Alice", &key, Role::Signer).unwrap();
+
+    assert_eq!(db.seed_administrator(&key).unwrap(), SeedOutcome::Promoted);
+    let member = db.find_member_by_pubkey(&key).unwrap().unwrap();
+    assert_eq!(member.role(), Some(Role::Administrator));
+    assert_eq!(member.name, "Alice", "promotion keeps the member's name");
+}
+
+#[test]
+fn test_seed_administrator_never_acts_while_an_administrator_exists() {
+    let db = Database::new(":memory:").unwrap();
+    db.add_team_member("Alice", &new_pubkey(), Role::Administrator).unwrap();
+    let removed_or_other = new_pubkey();
+
+    assert_eq!(db.seed_administrator(&removed_or_other).unwrap(), SeedOutcome::AdministratorExists);
+    assert!(db.find_member_by_pubkey(&removed_or_other).unwrap().is_none(), "never re-adds a key");
 }

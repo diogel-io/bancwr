@@ -9,7 +9,14 @@ use reqwest::StatusCode;
 use serde_json::Value;
 
 async fn setup_app() -> (String, reqwest::Client) {
+    let (address, client, _) = setup_app_with_bunker_key().await;
+    (address, client)
+}
+
+/// Also returns the bunker's own npub, which must never be registrable.
+async fn setup_app_with_bunker_key() -> (String, reqwest::Client, String) {
     let keys = Keys::generate();
+    let bunker_npub = keys.public_key().to_bech32().unwrap();
     let signer = Signer::new(keys.secret_key().clone());
     
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
@@ -21,6 +28,7 @@ async fn setup_app() -> (String, reqwest::Client) {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -40,7 +48,11 @@ async fn setup_app() -> (String, reqwest::Client) {
     let address = format!("http://127.0.0.1:{}", port);
     let client = reqwest::Client::new();
     
-    (address, client)
+    (address, client, bunker_npub)
+}
+
+fn new_npub() -> String {
+    Keys::generate().public_key().to_bech32().unwrap()
 }
 
 #[tokio::test]
@@ -60,7 +72,8 @@ async fn test_team_management_flow() {
 
     // 2. Add a team member
     let member_name = "Alice";
-    let member_pubkey = "npub1663u3p9a7lcs64a5940u3l9j764a5940u3l9j764a5940u3l9j764a5940u3"; // Mock npub
+    let member_keys = Keys::generate();
+    let member_pubkey = member_keys.public_key().to_bech32().unwrap();
     let member_role = "signer";
 
     let res = client
@@ -89,7 +102,9 @@ async fn test_team_management_flow() {
     let body: Vec<Value> = res.json().await.expect("Failed to parse JSON");
     assert_eq!(body.len(), 1);
     assert_eq!(body[0]["name"], member_name);
-    assert_eq!(body[0]["pubkey"], member_pubkey);
+    // Stored and returned as hex, with the npub alongside for display (#24).
+    assert_eq!(body[0]["pubkey"], member_keys.public_key().to_hex());
+    assert_eq!(body[0]["npub"], member_pubkey);
     assert_eq!(body[0]["role"], member_role);
     assert!(body[0]["id"].is_string());
 }
@@ -102,7 +117,7 @@ async fn test_add_team_member_invalid_role() {
         .post(format!("{}/api/bunker/team", address))
         .json(&serde_json::json!({
             "name": "Bob",
-            "pubkey": "npub1663u3p9a7lcs64a5940u3l9j764a5940u3l9j764a5940u3l9j764a5940u3",
+            "pubkey": new_npub(),
             "role": "hacker"
         }))
         .send()
@@ -121,7 +136,7 @@ async fn test_add_team_member_invalid_pubkey_format() {
         .json(&serde_json::json!({
             "name": "Charlie",
             "pubkey": "invalid-pubkey",
-            "role": "viewer"
+            "role": "signer"
         }))
         .send()
         .await
@@ -135,10 +150,7 @@ async fn test_remove_team_member() {
     let (address, client) = setup_app().await;
 
     // Add two members, so removing one can be shown to leave the other.
-    for (name, pubkey) in [
-        ("Alice", "npub1663u3p9a7lcs64a5940u3l9j764a5940u3l9j764a5940u3l9j764a5940u3"),
-        ("Bob", "npub1bob0000000000000000000000000000000000000000000000000000000000"),
-    ] {
+    for (name, pubkey) in [("Alice", new_npub()), ("Bob", new_npub())] {
         let res = client
             .post(format!("{}/api/bunker/team", address))
             .json(&serde_json::json!({ "name": name, "pubkey": pubkey, "role": "signer" }))
@@ -214,5 +226,86 @@ async fn test_remove_team_member_invalid_id() {
         .await
         .expect("Failed to execute request");
 
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+async fn add(address: &str, client: &reqwest::Client, pubkey: &str, role: &str) -> reqwest::Response {
+    client
+        .post(format!("{}/api/bunker/team", address))
+        .json(&serde_json::json!({ "name": "Member", "pubkey": pubkey, "role": role }))
+        .send()
+        .await
+        .expect("Failed to execute request")
+}
+
+#[tokio::test]
+async fn test_add_team_member_accepts_the_three_roles_only() {
+    let (address, client) = setup_app().await;
+    for role in ["administrator", "user", "signer"] {
+        assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::OK, "{} is accepted", role);
+    }
+    // The pre-#24 names are refused, not translated.
+    for role in ["admin", "viewer"] {
+        assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::BAD_REQUEST, "{} is refused", role);
+    }
+}
+
+#[tokio::test]
+async fn test_add_team_member_rejects_a_prefix_that_is_not_a_key() {
+    let (address, client) = setup_app().await;
+    // Accepted before #24, which only checked for the npub1 prefix.
+    let res = add(&address, &client, "npub1bob0000000000000000000000000000000000000000000000000000000000", "user").await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_add_team_member_accepts_hex_and_refuses_a_duplicate_in_either_form() {
+    let (address, client) = setup_app().await;
+    let keys = Keys::generate();
+    let npub = keys.public_key().to_bech32().unwrap();
+    let hex = keys.public_key().to_hex();
+
+    assert_eq!(add(&address, &client, &hex, "user").await.status(), StatusCode::OK);
+    assert_eq!(add(&address, &client, &hex, "signer").await.status(), StatusCode::CONFLICT);
+    assert_eq!(add(&address, &client, &npub, "signer").await.status(), StatusCode::CONFLICT, "the same key as an npub");
+    assert_eq!(add(&address, &client, &hex.to_uppercase(), "signer").await.status(), StatusCode::CONFLICT, "the same key in upper case");
+}
+
+#[tokio::test]
+async fn test_add_team_member_refuses_the_bunkers_own_key() {
+    let (address, client, bunker_npub) = setup_app_with_bunker_key().await;
+    let res = add(&address, &client, &bunker_npub, "administrator").await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert!(res.text().await.unwrap().contains("bunker's own key"));
+}
+
+#[tokio::test]
+async fn test_lookup_by_pubkey_in_either_form() {
+    let (address, client) = setup_app().await;
+    let keys = Keys::generate();
+    let npub = keys.public_key().to_bech32().unwrap();
+    let hex = keys.public_key().to_hex();
+    assert_eq!(add(&address, &client, &npub, "administrator").await.status(), StatusCode::OK);
+
+    for key in [&npub, &hex] {
+        let res = client.get(format!("{}/api/bunker/team/by-pubkey/{}", address, key)).send().await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "found by {}", key);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["pubkey"], hex);
+        assert_eq!(body["npub"], npub);
+        assert_eq!(body["role"], "administrator");
+    }
+}
+
+#[tokio::test]
+async fn test_lookup_by_pubkey_misses_clearly() {
+    let (address, client) = setup_app().await;
+
+    let res = client.get(format!("{}/api/bunker/team/by-pubkey/{}", address, new_npub())).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"], "not_registered");
+
+    let res = client.get(format!("{}/api/bunker/team/by-pubkey/not-a-key", address)).send().await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }

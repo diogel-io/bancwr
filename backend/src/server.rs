@@ -1,3 +1,4 @@
+use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -60,8 +61,24 @@ pub struct ConfigResponse {
 pub struct TeamMemberResponse {
     pub id: String,
     pub name: String,
+    /// Canonical lowercase hex (#24).
     pub pubkey: String,
+    /// For display. `None` only for a row stored before #24 whose key is not valid.
+    pub npub: Option<String>,
+    /// `administrator`, `user` or `signer`; a row from before #24 may hold another value.
     pub role: String,
+}
+
+impl From<crate::db::TeamMember> for TeamMemberResponse {
+    fn from(m: crate::db::TeamMember) -> Self {
+        TeamMemberResponse {
+            id: m.id.to_string(),
+            npub: crate::registry::npub(&m.pubkey),
+            name: m.name,
+            pubkey: m.pubkey,
+            role: m.role,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -200,15 +217,7 @@ pub async fn get_team(
 ) -> Result<Json<Vec<TeamMemberResponse>>, (StatusCode, String)> {
     match state.db.get_team_members() {
         Ok(members) => {
-            let response: Vec<TeamMemberResponse> = members
-                .into_iter()
-                .map(|m| TeamMemberResponse {
-                    id: m.id.to_string(),
-                    name: m.name,
-                    pubkey: m.pubkey,
-                    role: m.role,
-                })
-                .collect();
+            let response: Vec<TeamMemberResponse> = members.into_iter().map(Into::into).collect();
             Ok(Json(response))
         }
         Err(e) => {
@@ -224,18 +233,32 @@ pub async fn add_team_member(
     State(state): State<AppState>,
     Json(request): Json<AddTeamMemberRequest>,
 ) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
-    // Validate role
-    let valid_roles = ["admin", "signer", "viewer"];
-    if !valid_roles.contains(&request.role.as_str()) {
-        return Err((StatusCode::BAD_REQUEST, "Invalid role".to_string()));
+    // The three roles settled in #24; the old `admin` and `viewer` are refused.
+    let role: Role = request
+        .role
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid role".to_string()))?;
+
+    // Any valid key, as an npub or hex, stored in one canonical form.
+    let pubkey = canonical_pubkey(&request.pubkey)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid pubkey".to_string()))?;
+
+    // Never the bunker's own key: its NIP-46 connect is open (#53), so anyone could obtain its
+    // signature and sign in as it. See the sign-in decision record, rule 10.
+    if pubkey == state.signer.read().await.public_key_hex() {
+        return Err((StatusCode::BAD_REQUEST, "The bunker's own key cannot be registered".to_string()));
     }
 
-    // Validate pubkey format (should be npub1...)
-    if !request.pubkey.starts_with("npub1") {
-        return Err((StatusCode::BAD_REQUEST, "Invalid pubkey format".to_string()));
+    match state.db.find_member_by_pubkey(&pubkey) {
+        Ok(Some(_)) => return Err((StatusCode::CONFLICT, "This key is already registered".to_string())),
+        Ok(None) => {}
+        Err(e) => {
+            error!("Failed to look up team member: {}", e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()));
+        }
     }
 
-    match state.db.add_team_member(&request.name, &request.pubkey, &request.role) {
+    match state.db.add_team_member(&request.name, &pubkey, role) {
         Ok(_) => {
             info!("Added team member: {}", request.name);
             Ok(Json(TeamOperationResponse {
@@ -246,6 +269,28 @@ pub async fn add_team_member(
         Err(e) => {
             error!("Failed to add team member: {}", e);
             Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+/// Look up one member by key
+/// GET /api/bunker/team/by-pubkey/:pubkey
+///
+/// Takes an npub or hex. 200 with the member, 404 `{"error":"not_registered"}` for a key not in
+/// the vault, 400 for a value that is not a key. The lookup #25 and #11 authorise against (#24).
+pub async fn get_team_member_by_pubkey(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<TeamMemberResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let pubkey = canonical_pubkey(&key).map_err(|_| {
+        (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid_pubkey" })))
+    })?;
+    match state.db.find_member_by_pubkey(&pubkey) {
+        Ok(Some(member)) => Ok(Json(member.into())),
+        Ok(None) => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "not_registered" })))),
+        Err(e) => {
+            error!("Failed to look up team member: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "database_error" }))))
         }
     }
 }
@@ -293,6 +338,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/config", get(get_config))
         .route("/api/bunker/team", get(get_team).post(add_team_member))
         .route("/api/bunker/team/:id", delete(remove_team_member))
+        .route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey))
         .route(SIGN_PATH, post(sign_event))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

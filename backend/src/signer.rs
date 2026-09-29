@@ -65,4 +65,9 @@ impl Signer {
     pub fn public_key_bech32(&self) -> String {
         self.keys.public_key().to_bech32().unwrap_or_default()
     }
+
+    /// Lowercase hex, the form the vault stores keys in (#24).
+    pub fn public_key_hex(&self) -> String {
+        self.keys.public_key().to_hex()
+    }
 }

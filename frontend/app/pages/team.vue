@@ -1,20 +1,18 @@
 <script setup lang="ts">
 import { useFetch, ref, reactive, useToast } from '#imports'
-import type { TeamMember } from '#shared/types/bunker'
+import { ROLE_LABELS } from '#shared/types/bunker'
+import type { AddTeamMemberRequest, Role, TeamMember } from '#shared/types/bunker'
 
 const { data: team, refresh } = await useFetch<TeamMember[]>('/api/bunker/team', { key: 'team-list' })
 
-const state = reactive({
+const state = reactive<AddTeamMemberRequest>({
   name: '',
   pubkey: '',
   role: 'signer'
 })
 
-const roles = [
-  { label: 'Admin', value: 'admin' },
-  { label: 'Signer', value: 'signer' },
-  { label: 'Viewer', value: 'viewer' }
-]
+// The three roles settled in #24, in order of access.
+const roles = (['administrator', 'user', 'signer'] as Role[]).map(value => ({ label: ROLE_LABELS[value], value }))
 
 const loading = ref(false)
 const toast = useToast()
@@ -74,7 +72,7 @@ const addMember = async () => {
             <UFormField label="Pubkey">
               <UInput
                 v-model="state.pubkey"
-                placeholder="npub1..."
+                placeholder="npub1… or hex"
               />
             </UFormField>
             <UFormField label="Role">

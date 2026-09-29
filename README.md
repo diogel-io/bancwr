@@ -48,7 +48,8 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:sha-1dbcab3
    ```bash
    cp .env.example .env
    ```
-2. Edit `.env` and set your `BUNKER_NSEC`.
+2. Edit `.env` and set your `BUNKER_NSEC`, and `BANCWR_ADMIN_PUBKEY` to your own npub (see
+   [The first administrator](#the-first-administrator)).
 3. (Optional) Ensure the Podman socket is running (required for `podman compose`):
    ```bash
    systemctl --user enable --now podman.socket
@@ -62,3 +63,23 @@ The frontend reaches the bunker over the compose network at `http://bunker:3000`
 `NUXT_API_BASE` on the frontend service in `compose.yaml`. If you run the frontend image outside
 compose, set `NUXT_API_BASE` to the bunker's address yourself; it defaults to
 `http://localhost:3000`, which is the frontend's own port inside the container.
+
+### The first administrator
+
+Only keys registered with the bunker can use it, each with one of three roles: `administrator`,
+`user` or `signer`. Only an administrator can register keys, so the first one comes from the
+environment:
+
+- Set `BANCWR_ADMIN_PUBKEY` to your own npub (or hex). It must not be the bunker's key; the bunker
+  refuses to start if it is, or if the value is not a valid key.
+- At startup, if no administrator is registered, the bunker registers that key as an administrator,
+  or promotes it if it is already a member, and logs which.
+- Once any administrator exists it does nothing: it never re-adds a key you have removed, and never
+  demotes anyone. You can leave it set, but it is tidier to remove it once you have signed in.
+
+Without it, and with no administrator registered, the bunker logs a warning at every start.
+
+Keys are stored in hex and shown as npubs. Upgrading from a version before this change migrates
+existing members at startup: the roles `admin` and `viewer` become `administrator` and `user`, and
+pubkeys are stored in hex. If the same key was registered twice, once as an npub and once as hex,
+the older registration is kept and the other is removed; the log names both.

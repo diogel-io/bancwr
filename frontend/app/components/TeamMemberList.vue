@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useToast } from '#imports'
 import type { TableColumn } from '@nuxt/ui'
-import type { TeamMember } from '#shared/types/bunker'
+import { ROLE_LABELS } from '#shared/types/bunker'
+import type { Role, TeamMember } from '#shared/types/bunker'
 
 defineProps<{
   data: TeamMember[]
@@ -15,8 +16,8 @@ const toast = useToast()
 
 const columns: TableColumn<TeamMember>[] = [
   { accessorKey: 'name', header: 'Name' },
-  { accessorKey: 'pubkey', header: 'Nostr Pubkey' },
-  { accessorKey: 'role', header: 'Role' },
+  { id: 'npub', header: 'Nostr Pubkey' },
+  { id: 'role', header: 'Role' },
   { id: 'actions', header: 'Actions' }
 ]
 
@@ -42,6 +43,14 @@ const removeMember = async (member: TeamMember) => {
       :data="data"
       :columns="columns"
     >
+      <!-- The npub, or the stored value for a row from before #24 whose key is not valid. -->
+      <template #npub-cell="{ row }">
+        <span class="font-mono text-xs break-all">{{ row.original.npub ?? row.original.pubkey }}</span>
+      </template>
+      <!-- A value outside the three roles can only be from before #24; shown as stored. -->
+      <template #role-cell="{ row }">
+        {{ ROLE_LABELS[row.original.role as Role] ?? row.original.role }}
+      </template>
       <template #actions-cell="{ row }">
         <UButton
           color="error"

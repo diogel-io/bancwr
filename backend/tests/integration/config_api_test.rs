@@ -21,6 +21,7 @@ async fn setup_app() -> (String, reqwest::Client, Keys) {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);

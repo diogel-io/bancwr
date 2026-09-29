@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { test, expect } from './fixtures'
-import { randomNpub } from './keys'
+import { npubToHex, randomNpub } from './keys'
 
 // One bunker database serves the whole run, so every member gets a name no other test uses.
 let counter = 0
@@ -14,11 +14,11 @@ test('adds a member through the bunker', async ({ page }) => {
   const name = uniqueName('Alice')
   const pubkey = randomNpub()
 
-  await addMember(page, name, pubkey, 'Admin')
+  await addMember(page, name, pubkey, 'Administrator')
 
   await expect(page.getByText('Member added successfully', { exact: true })).toBeVisible()
   await expect(memberRow(page, name)).toContainText(pubkey)
-  await expect(memberRow(page, name)).toContainText('admin')
+  await expect(memberRow(page, name)).toContainText('Administrator')
 
   // The form is ready for the next member.
   await expect(page.getByLabel('Name')).toHaveValue('')
@@ -47,7 +47,7 @@ test('removes a member once confirmed (#43)', async ({ page }) => {
 
 test('keeps a member when removal is cancelled', async ({ page }) => {
   const name = uniqueName('Carol')
-  await addMember(page, name, randomNpub(), 'Viewer')
+  await addMember(page, name, randomNpub(), 'User')
   await expect(memberRow(page, name)).toBeVisible()
 
   let message = ''
@@ -60,6 +60,25 @@ test('keeps a member when removal is cancelled', async ({ page }) => {
   expect(message).toBe(`Are you sure you want to remove ${name}?`)
   await page.reload()
   await expect(memberRow(page, name)).toBeVisible()
+})
+
+test('offers exactly the three roles (#24)', async ({ page }) => {
+  await page.getByRole('combobox').click()
+  await expect(page.getByRole('option')).toHaveText(['Administrator', 'User', 'Signer'])
+})
+
+test('refuses the same key twice, even as hex (#24)', async ({ page }) => {
+  const name = uniqueName('Dave')
+  const key = randomNpub()
+  await addMember(page, name, key, 'User')
+  await expect(memberRow(page, name)).toBeVisible()
+
+  const refused = page.waitForResponse(response =>
+    response.url().endsWith('/api/bunker/team') && response.request().method() === 'POST'
+  )
+  await addMember(page, uniqueName('Dave again'), npubToHex(key), 'Signer')
+  expect((await refused).status()).toBe(409)
+  await expect(page.getByText('Failed to add member', { exact: true })).toBeVisible()
 })
 
 test('rejects a pubkey that is not an npub', async ({ page }) => {

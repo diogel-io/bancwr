@@ -11,6 +11,10 @@ pub enum ConfigError {
     FileReadError(#[from] std::io::Error),
     #[error("Invalid nsec: {0}")]
     InvalidNsec(String),
+    #[error("BANCWR_ADMIN_PUBKEY is not a valid npub or hex public key")]
+    InvalidAdminPubkey,
+    #[error("BANCWR_ADMIN_PUBKEY is the bunker's own public key, which can never be registered; set it to the first administrator's key")]
+    AdminPubkeyIsBunkerKey,
 }
 
 /// The version reported when BANCWR_VERSION is unset or blank, as under `cargo run`. Matches the
@@ -35,6 +39,9 @@ pub struct Config {
     pub nip46_enabled: bool,      // Enable NIP-46 protocol
     pub nsec_file: Option<String>,
     pub version: String,          // BANCWR_VERSION, reported by /api/bunker/status (#35)
+    /// BANCWR_ADMIN_PUBKEY as canonical hex: the first administrator, seeded when there is none
+    /// (#24). Never the bunker's own key.
+    pub admin_pubkey: Option<String>,
 }
 
 impl Config {
@@ -75,6 +82,17 @@ impl Config {
 
         let version = version_or_default(env::var("BANCWR_VERSION").ok());
 
+        let admin_pubkey = match env::var("BANCWR_ADMIN_PUBKEY") {
+            Ok(value) if !value.trim().is_empty() => {
+                let hex = crate::registry::canonical_pubkey(&value).map_err(|_| ConfigError::InvalidAdminPubkey)?;
+                if hex == Keys::new(secret_key.clone()).public_key().to_hex() {
+                    return Err(ConfigError::AdminPubkeyIsBunkerKey);
+                }
+                Some(hex)
+            }
+            _ => None,
+        };
+
         Ok(Config {
             secret_key,
             port,
@@ -83,6 +101,7 @@ impl Config {
             nip46_enabled,
             nsec_file,
             version,
+            admin_pubkey,
         })
     }
 }

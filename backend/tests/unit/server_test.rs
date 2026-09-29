@@ -29,6 +29,7 @@ async fn test_health_check_handler() {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -64,6 +65,7 @@ async fn test_status_handler() {
         nip46_enabled: false,
         nsec_file: None,
         version: "1.2.3-test".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -101,6 +103,7 @@ async fn test_sign_event_handler_success() {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -142,6 +145,7 @@ async fn test_sign_event_handler_empty_content() {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -180,6 +184,7 @@ async fn test_sign_event_handler_forbidden_kind() {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -229,6 +234,7 @@ async fn test_get_logs_handler() {
         nip46_enabled: false,
         nsec_file: None,
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -268,6 +274,7 @@ async fn test_get_config_handler() {
         nip46_enabled: false,
         nsec_file: Some("/tmp/nsec".to_string()),
         version: "0.0.0".to_string(),
+        admin_pubkey: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
