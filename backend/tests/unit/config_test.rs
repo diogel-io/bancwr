@@ -106,3 +106,9 @@ fn test_load_nsec_fails_on_invalid_nsec() {
 
     env::remove_var("BUNKER_NSEC");
 }
+
+// Deliberately failing: negative check for the test gate in #47. Never merged.
+#[test]
+fn negative_check_must_fail() {
+    assert_eq!(1 + 1, 3, "deliberate failure to prove the test gate blocks");
+}
