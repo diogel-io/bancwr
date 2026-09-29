@@ -16,8 +16,13 @@ jobs:
   version:
     uses: ./.github/workflows/version.yml
 
+  # Publish nothing unless the full test suite passes for this commit (#36). CI does not run on
+  # v* tags, so for a release tag this is the only test gate.
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
-    needs: version
+    needs: [version, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
