@@ -128,3 +128,90 @@ async fn test_add_team_member_invalid_pubkey_format() {
 
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn test_remove_team_member() {
+    let (address, client) = setup_app().await;
+
+    // Add two members, so removing one can be shown to leave the other.
+    for (name, pubkey) in [
+        ("Alice", "npub1663u3p9a7lcs64a5940u3l9j764a5940u3l9j764a5940u3l9j764a5940u3"),
+        ("Bob", "npub1bob0000000000000000000000000000000000000000000000000000000000"),
+    ] {
+        let res = client
+            .post(format!("{}/api/bunker/team", address))
+            .json(&serde_json::json!({ "name": name, "pubkey": pubkey, "role": "signer" }))
+            .send()
+            .await
+            .expect("Failed to execute request");
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    let team: Vec<Value> = client
+        .get(format!("{}/api/bunker/team", address))
+        .send()
+        .await
+        .expect("Failed to execute request")
+        .json()
+        .await
+        .expect("Failed to parse JSON");
+    let alice = team.iter().find(|m| m["name"] == "Alice").expect("Alice is listed");
+    let alice_id = alice["id"].as_str().expect("id is a string");
+
+    // Remove Alice by her id
+    let res = client
+        .delete(format!("{}/api/bunker/team/{}", address, alice_id))
+        .send()
+        .await
+        .expect("Failed to execute request");
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = res.json().await.expect("Failed to parse JSON");
+    assert_eq!(body["success"], true);
+
+    // Only Bob remains
+    let team: Vec<Value> = client
+        .get(format!("{}/api/bunker/team", address))
+        .send()
+        .await
+        .expect("Failed to execute request")
+        .json()
+        .await
+        .expect("Failed to parse JSON");
+    assert_eq!(team.len(), 1);
+    assert_eq!(team[0]["name"], "Bob");
+
+    // Removing Alice again finds nothing
+    let res = client
+        .delete(format!("{}/api/bunker/team/{}", address, alice_id))
+        .send()
+        .await
+        .expect("Failed to execute request");
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_remove_team_member_unknown_id() {
+    let (address, client) = setup_app().await;
+
+    let res = client
+        .delete(format!("{}/api/bunker/team/{}", address, uuid::Uuid::new_v4()))
+        .send()
+        .await
+        .expect("Failed to execute request");
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_remove_team_member_invalid_id() {
+    let (address, client) = setup_app().await;
+
+    // A table row index, which is what the frontend used to send (#43)
+    let res = client
+        .delete(format!("{}/api/bunker/team/0", address))
+        .send()
+        .await
+        .expect("Failed to execute request");
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

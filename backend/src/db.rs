@@ -202,14 +202,14 @@ impl Database {
         Ok(members)
     }
 
-    /// Remove a team member
-    pub fn remove_team_member(&self, id: Uuid) -> anyhow::Result<()> {
+    /// Remove a team member. Returns false when no member has that id.
+    pub fn remove_team_member(&self, id: Uuid) -> anyhow::Result<bool> {
         let id_str = id.to_string();
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        conn.execute(
+        let removed = conn.execute(
             "DELETE FROM team_members WHERE id = ?1",
             params![id_str],
         )?;
-        Ok(())
+        Ok(removed > 0)
     }
 }
