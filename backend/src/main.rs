@@ -5,7 +5,7 @@ use bunker::server::{create_router, shutdown_signal};
 use bunker::state::AppState;
 use bunker::signer::Signer;
 use std::net::SocketAddr;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -15,6 +15,16 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load()?;
     let db = Database::new(&config.db_path)?;
+
+    // Earlier versions stored a key submitted on the Config page in SQLite, in plain text, and
+    // never used it (#42). Remove it on every start.
+    if db.purge_stored_key_config()? {
+        warn!(
+            "Deleted an nsec stored in the database by an earlier version's Config page. It was never \
+             used: the signing key comes from BUNKER_NSEC_FILE or BUNKER_NSEC. It was stored in plain \
+             text, so if this database was ever copied or backed up, rotate that key."
+        );
+    }
 
     let signer = Signer::new(config.secret_key.clone());
     info!("Nsec loaded. Public key: {}", signer.public_key_bech32());

@@ -25,23 +25,10 @@ export interface Metrics {
   total_signatures: number
 }
 
-/** GET /api/bunker/config — the nsec is never returned. */
+/** GET /api/bunker/config — read-only; the nsec is never returned. */
 export interface ConfigResponse {
   pubkey: string
   nsec_file: string | null
-}
-
-/** POST /api/bunker/config — set one of nsec or nsec_file, not both. */
-export interface ConfigUpdateRequest {
-  nsec?: string
-  nsec_file?: string
-}
-
-/** POST /api/bunker/config */
-export interface ConfigUpdateResponse {
-  success: boolean
-  message: string
-  pubkey: string | null
 }
 
 /** GET /api/bunker/team */

@@ -88,6 +88,54 @@ fn test_db_team_management() {
     assert!(!removed_again, "removing an unknown id reports no removal");
 }
 
+// --- Stored keys from the removed Config page write path (#42) ---
+
+#[test]
+fn test_purge_stored_key_config_removes_the_nsec_from_disk() {
+    let tmp = NamedTempFile::new().expect("Failed to create temp file");
+    let path = tmp.path().to_str().unwrap().to_string();
+    // A distinctive value, so finding its bytes on disk can only mean the key survived.
+    let nsec = "nsec1purgetestpurgetestpurgetestpurgetestpurgetestpurgetest00000";
+
+    {
+        let db = Database::new(&path).expect("Failed to create file-backed database");
+        db.set_config("nsec", nsec).expect("Failed to set config");
+        db.set_config("nsec_file", "/run/secrets/old_nsec").expect("Failed to set config");
+        db.set_config("bunker_secret", "keep-me").expect("Failed to set config");
+    }
+
+    let db = Database::new(&path).expect("Failed to reopen database");
+    let removed_nsec = db.purge_stored_key_config().expect("Failed to purge");
+
+    assert!(removed_nsec, "reports that an nsec was stored");
+    assert_eq!(db.get_config("nsec").unwrap(), None);
+    assert_eq!(db.get_config("nsec_file").unwrap(), None);
+    // NIP-46's secret is used, so it stays
+    assert_eq!(db.get_config("bunker_secret").unwrap(), Some("keep-me".to_string()));
+
+    // Neither the database file nor its WAL still holds the key's bytes.
+    for file in [path.clone(), format!("{}-wal", path)] {
+        if let Ok(bytes) = std::fs::read(&file) {
+            assert!(
+                !bytes.windows(nsec.len()).any(|w| w == nsec.as_bytes()),
+                "{} still contains the purged nsec",
+                file
+            );
+        }
+    }
+}
+
+#[test]
+fn test_purge_stored_key_config_on_a_clean_database() {
+    let db = Database::new(":memory:").expect("Failed to create in-memory database");
+    db.set_config("bunker_secret", "keep-me").expect("Failed to set config");
+
+    let removed_nsec = db.purge_stored_key_config().expect("Failed to purge");
+
+    assert!(!removed_nsec, "nothing to purge");
+    assert_eq!(db.get_config("bunker_secret").unwrap(), Some("keep-me".to_string()));
+}
+
 // --- New checks required by the migration plan ---
 
 #[test]

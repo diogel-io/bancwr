@@ -1,32 +1,16 @@
 <script setup lang="ts">
-import { useFetch, reactive, ref, useToast } from '#imports'
+import { useFetch, computed } from '#imports'
 import type { ConfigResponse } from '#shared/types/bunker'
 
+// Read-only (#42). The signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC when the bunker
+// starts; the API does not accept a key, and never returns one.
 const { data: config } = await useFetch<ConfigResponse>('/api/bunker/config')
 
-// Always starts empty: the backend never returns the nsec (ConfigResponse).
-const state = reactive({
-  nsec: '',
-  nsecFile: ''
-})
-
-const loading = ref(false)
-const toast = useToast()
-
-const saveConfig = async () => {
-  loading.value = true
-  try {
-    await $fetch('/api/bunker/config', {
-      method: 'POST',
-      body: state
-    })
-    toast.add({ title: 'Config saved successfully', color: 'success' })
-  } catch (e) {
-    toast.add({ title: 'Failed to save config', color: 'error' })
-  } finally {
-    loading.value = false
-  }
-}
+const keySource = computed(() =>
+  config.value?.nsec_file
+    ? { label: 'File', value: config.value.nsec_file }
+    : { label: 'Environment variable', value: 'BUNKER_NSEC' }
+)
 </script>
 
 <template>
@@ -41,64 +25,34 @@ const saveConfig = async () => {
 
     <template #body>
       <UCard class="max-w-2xl">
-        <div class="space-y-6">
-          <UFormField
-            label="Current Pubkey"
-            help="This is the public key for this bunker."
-          >
-            <UInput
-              :model-value="config?.pubkey ?? ''"
-              disabled
-              icon="i-heroicons-key"
-            />
-          </UFormField>
-
-          <div class="border-t border-neutral-200 dark:border-neutral-800 pt-6">
-            <h4 class="font-medium mb-4">
-              Update NSEC Source
-            </h4>
-
-            <div class="space-y-4">
-              <UFormField
-                label="BUNKER_NSEC"
-                help="Enter the hex or bech32 nsec."
-              >
-                <UInput
-                  v-model="state.nsec"
-                  type="password"
-                  placeholder="nsec1..."
-                />
-              </UFormField>
-
-              <div class="flex items-center gap-4">
-                <div class="h-px bg-neutral-200 dark:bg-neutral-800 flex-grow" />
-                <span class="text-xs text-neutral-500 font-medium">OR</span>
-                <div class="h-px bg-neutral-200 dark:bg-neutral-800 flex-grow" />
-              </div>
-
-              <UFormField
-                label="BUNKER_NSEC_FILE"
-                help="Path to file containing nsec."
-              >
-                <UInput
-                  v-model="state.nsecFile"
-                  placeholder="/etc/bunker/nsec"
-                />
-              </UFormField>
-            </div>
+        <dl class="space-y-6">
+          <div>
+            <dt class="text-sm font-medium">
+              Current Pubkey
+            </dt>
+            <dd class="mt-1">
+              <code class="text-sm break-all">{{ config?.pubkey ?? '' }}</code>
+            </dd>
+            <p class="text-sm text-muted mt-1">
+              This is the public key for this bunker.
+            </p>
           </div>
-        </div>
+
+          <div>
+            <dt class="text-sm font-medium">
+              Key Source
+            </dt>
+            <dd class="mt-1 text-sm">
+              {{ keySource.label }}: <code class="break-all">{{ keySource.value }}</code>
+            </dd>
+          </div>
+        </dl>
 
         <template #footer>
-          <div class="flex justify-end">
-            <UButton
-              :loading="loading"
-              color="primary"
-              @click="saveConfig"
-            >
-              Save Configuration
-            </UButton>
-          </div>
+          <p class="text-sm text-muted">
+            To change the signing key, set <code>BUNKER_NSEC_FILE</code> (recommended) or
+            <code>BUNKER_NSEC</code> for the bunker service in <code>compose.yaml</code> and restart it.
+          </p>
         </template>
       </UCard>
     </template>

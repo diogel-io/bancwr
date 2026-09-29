@@ -68,10 +68,4 @@ impl Config {
             nsec_file,
         })
     }
-
-    pub fn update_nsec(&mut self, nsec: SecretKey) -> anyhow::Result<()> {
-        self.secret_key = nsec;
-        // Optionally save to secure storage
-        Ok(())
-    }
 }

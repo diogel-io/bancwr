@@ -148,6 +148,32 @@ impl Database {
         Ok(value)
     }
 
+    /// Securely delete the `nsec` and `nsec_file` rows that the removed
+    /// `POST /api/bunker/config` used to write (#42). They were never read, and the nsec was
+    /// stored in plain text. Returns true if an nsec was found and deleted.
+    ///
+    /// `secure_delete` makes SQLite overwrite deleted content instead of leaving it in free
+    /// space, and the TRUNCATE checkpoint copies the change into the database file and empties the
+    /// WAL file, which still held the frames that originally wrote the key. Afterwards the live
+    /// `.db` and `-wal` files no longer contain it; copies of the database made earlier still do.
+    pub fn purge_stored_key_config(&self) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let had_nsec: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM config WHERE key = 'nsec')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Must be on before the DELETE, or the deleted bytes stay where they were.
+        conn.execute_batch("PRAGMA secure_delete = ON;")?;
+        let removed = conn.execute("DELETE FROM config WHERE key IN ('nsec', 'nsec_file')", [])?;
+        if removed > 0 {
+            // Returns a (busy, log, checkpointed) row, so query it rather than execute it.
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        }
+        Ok(had_nsec)
+    }
+
     /// Get total number of signatures
     pub fn signature_count(&self) -> anyhow::Result<u64> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;

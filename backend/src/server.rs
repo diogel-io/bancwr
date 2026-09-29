@@ -54,19 +54,6 @@ pub struct ConfigResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ConfigUpdateRequest {
-    pub nsec: Option<String>,
-    pub nsec_file: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ConfigUpdateResponse {
-    pub success: bool,
-    pub message: String,
-    pub pubkey: Option<String>, // New pubkey if nsec was updated
-}
-
-#[derive(Serialize, Deserialize, Debug)]
 pub struct TeamMemberResponse {
     pub id: String,
     pub name: String,
@@ -202,80 +189,6 @@ pub async fn get_config(
     })
 }
 
-/// Update configuration
-/// POST /api/bunker/config
-pub async fn update_config(
-    State(state): State<AppState>,
-    Json(request): Json<ConfigUpdateRequest>,
-) -> Result<Json<ConfigUpdateResponse>, (StatusCode, String)> {
-    // Validate: can't have both nsec and nsec_file
-    if request.nsec.is_some() && request.nsec_file.is_some() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Cannot specify both nsec and nsec_file".to_string()
-        ));
-    }
-    
-    // Handle nsec update
-    if let Some(nsec_str) = request.nsec {
-        // Parse nsec (try bech32 first, then hex)
-        let secret_key = parse_nsec(&nsec_str)
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid nsec: {}", e)))?;
-        
-        // Store in database config
-        state.db.set_config("nsec", &nsec_str)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        
-        let new_pubkey = Keys::new(secret_key).public_key().to_bech32()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        
-        return Ok(Json(ConfigUpdateResponse {
-            success: true,
-            message: "Configuration updated. Restart required to apply new nsec.".to_string(),
-            pubkey: Some(new_pubkey),
-        }));
-    }
-    
-    // Handle nsec_file update
-    if let Some(nsec_file) = request.nsec_file {
-        // Validate file exists
-        if !std::path::Path::new(&nsec_file).exists() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("File not found: {}", nsec_file)
-            ));
-        }
-        
-        // Store in database config
-        state.db.set_config("nsec_file", &nsec_file)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        
-        return Ok(Json(ConfigUpdateResponse {
-            success: true,
-            message: "Configuration updated. Restart required to apply.".to_string(),
-            pubkey: None,
-        }));
-    }
-    
-    // Nothing to update
-    Ok(Json(ConfigUpdateResponse {
-        success: true,
-        message: "No changes made".to_string(),
-        pubkey: None,
-    }))
-}
-
-/// Parse nsec from bech32 or hex string
-fn parse_nsec(nsec_str: &str) -> anyhow::Result<SecretKey> {
-    if nsec_str.starts_with("nsec1") {
-        SecretKey::from_bech32(nsec_str)
-            .map_err(|e| anyhow::anyhow!("Invalid nsec: {}", e))
-    } else {
-        SecretKey::parse(nsec_str)
-            .map_err(|e| anyhow::anyhow!("Invalid secret key: {}", e))
-    }
-}
-
 /// Get team members
 /// GET /api/bunker/team
 pub async fn get_team(
@@ -372,7 +285,8 @@ pub fn create_router(state: AppState) -> Router {
         .route(STATUS_PATH, get(get_status))
         .route("/api/bunker/logs", get(get_logs))
         .route("/api/bunker/metrics", get(get_metrics))
-        .route("/api/bunker/config", get(get_config).post(update_config))
+        // Read-only: the signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC (#42).
+        .route("/api/bunker/config", get(get_config))
         .route("/api/bunker/team", get(get_team).post(add_team_member))
         .route("/api/bunker/team/:id", delete(remove_team_member))
         .route(SIGN_PATH, post(sign_event))
