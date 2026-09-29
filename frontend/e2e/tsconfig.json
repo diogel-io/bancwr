@@ -1,0 +1,17 @@
+{
+  // The Playwright specs and their helpers. They run in Node under Playwright, not in Nuxt, so
+  // they sit outside the Nuxt tsconfig contexts; `pnpm typecheck` checks them with this file.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    // stack-cli.ts is run by Node directly, which needs the .ts in its import specifiers.
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts", "../playwright.config.ts"]
+}

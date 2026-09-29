@@ -1,0 +1,33 @@
+# The stack the end-to-end suite runs against: the real bunker behind the real frontend proxy.
+# global-setup.ts starts it with a throwaway BUNKER_NSEC and tears it down afterwards; see the
+# "End-to-end tests" section of ../README.md. It is not a deployment example: use ../../compose.yaml.
+name: bancwr-e2e
+
+services:
+  bunker:
+    image: bancwr-backend:e2e
+    build: ../../backend
+    environment:
+      # Required, with no default, so a run can never fall back to a known key. It is only ever
+      # passed through the environment, never written to a file.
+      - BUNKER_NSEC=${BUNKER_NSEC:?BUNKER_NSEC must be set; global-setup.ts generates one}
+      - BUNKER_PORT=3000
+      - RUST_LOG=info
+      - DATABASE_PATH=/data/bancwr.db
+    # Every run starts with an empty database and leaves nothing on disk. NIP46_ENABLED is left
+    # unset, so the bunker makes no relay connections.
+    tmpfs:
+      - /data
+    # No published port: the browser reaches the bunker only through the frontend proxy, which is
+    # the path under test.
+
+  frontend:
+    image: bancwr-frontend:e2e
+    build: ..
+    environment:
+      - NUXT_API_BASE=http://bunker:3000
+    ports:
+      # 3100, not 3000 or 3001, so the suite can run beside `pnpm dev` and the quickstart compose.
+      - "${E2E_PORT:-3100}:3000"
+    depends_on:
+      - bunker

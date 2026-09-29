@@ -57,6 +57,64 @@ pnpm typecheck   # vue-tsc
 pnpm test        # Vitest
 ```
 
+## End-to-end tests
+
+`pnpm test:e2e` runs the Playwright suite in `e2e/` against the real stack: the backend and
+frontend images, started from `e2e/compose.e2e.yaml`, with the browser going through the frontend
+proxy to the bunker. Vitest's `tests/` covers components in isolation; this covers the pages,
+navigation, adding and removing team members, and the Config page staying read-only and never
+showing a key.
+
+Each run:
+
+1. generates a throwaway bunker key, held only in the environment;
+2. builds and starts the stack on <http://localhost:3100>, with the database on a tmpfs, so every
+   run starts empty and leaves nothing on disk. The bunker is not published on any host port;
+3. waits until `GET /api/bunker/status` answers `healthy` through the proxy;
+4. runs the specs in Chromium, one at a time;
+5. saves the container logs to `test-results/compose.log` and removes the stack.
+
+Prerequisites: Docker Compose or Podman Compose, and Chromium for Playwright, installed once:
+
+```bash
+pnpm exec playwright install chromium
+```
+
+| Variable | Default | Use |
+|----------|---------|-----|
+| `E2E_COMPOSE` | the first of `docker compose`, `podman compose`, `docker-compose` that works | Compose command |
+| `E2E_PORT` | `3100` | Host port for the frontend |
+| `E2E_BUILD` | build | `0` reuses images already tagged `bancwr-backend:e2e` and `bancwr-frontend:e2e`, as CI does |
+| `E2E_BASE_URL` | unset | Test a stack that is already running instead of starting one. Pass its `BUNKER_NSEC` too, or the public-key check is skipped |
+| `E2E_READY_TIMEOUT` | `120000` | Milliseconds to wait for the bunker |
+
+A failed test keeps its trace. Open the HTML report with `pnpm exec playwright show-report`, or
+a single trace with `pnpm exec playwright show-trace test-results/<test>/trace.zip`.
+`pnpm test:e2e:ui` runs the suite in Playwright's UI mode.
+
+In CI, the `e2e` job in `.github/workflows/ci.yml` runs the suite on pull requests and pushes to
+`master`. It is not a required check yet. When it fails, the report, traces and container logs
+are uploaded as the `playwright-report` artifact.
+
+### Driving the app with Playwright MCP
+
+`.mcp.json` at the repository root registers the [Playwright MCP](https://playwright.dev/mcp/installation)
+server, so an agent such as Claude Code can drive a browser while writing or debugging tests.
+The MCP server bundles its own Playwright, so it needs its own Chromium build, installed once:
+
+```bash
+npx @playwright/mcp@0.0.83 install-browser chromium
+```
+
+Start the stack on its own, and point the agent at <http://localhost:3100>:
+
+```bash
+pnpm test:e2e:stack        # start, with a fresh key and empty database; prints the bunker npub
+pnpm test:e2e:stack:down   # stop and remove it
+```
+
+Keep the version in that command in step with `.mcp.json`.
+
 ## Production
 
 ```bash
