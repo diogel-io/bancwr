@@ -65,6 +65,9 @@ proxy to the bunker. Vitest's `tests/` covers components in isolation; this cove
 navigation, adding and removing team members, and the Config page staying read-only and never
 showing a key.
 
+Run these commands from this `frontend/` directory, or from the repository root with
+`pnpm -C frontend`, for example `pnpm -C frontend test:e2e`: the root has no `package.json`.
+
 Each run:
 
 1. generates a throwaway bunker key, held only in the environment;
