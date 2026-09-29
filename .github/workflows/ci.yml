@@ -1,10 +1,9 @@
 name: CI
 
 on:
+  # No paths filter: test / backend-test and test / frontend-check are required checks on master,
+  # so they must report on every pull request, or one that touches only docs could never merge.
   pull_request:
-    paths:
-      - 'backend/**'
-      - 'frontend/**'
   push:
     branches: [main, master]
 
@@ -19,40 +18,9 @@ permissions:
   security-events: write
 
 jobs:
-  # Lint and typecheck the frontend, so the errors fixed in #37 cannot come back. Tests join this
-  # job in #36.
-  frontend-check:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # Version from the packageManager field in frontend/package.json.
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          package_json_file: frontend/package.json
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: frontend/.nvmrc
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
+  # Backend and frontend tests, lint and typecheck (#36). Also run by both release workflows.
+  test:
+    uses: ./.github/workflows/test.yml
 
   build:
     runs-on: ubuntu-latest

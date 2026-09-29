@@ -1,0 +1,71 @@
+name: Test
+
+# The test gate (#36). Called by ci.yml for pull requests and master, and by both release
+# workflows, which publish nothing unless these jobs pass for the same commit. The job names are
+# the required status checks on master: "test / backend-test" and "test / frontend-check".
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-test:
+    name: backend-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Installs and prints the toolchain from backend/rust-toolchain.toml.
+      - name: Show Rust toolchain
+        run: rustup show
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: backend
+
+      - name: Run tests
+        run: cargo test --locked
+
+  frontend-check:
+    name: frontend-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Version from the packageManager field in frontend/package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Lint and typecheck keep the errors fixed in #37 from coming back.
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test --run

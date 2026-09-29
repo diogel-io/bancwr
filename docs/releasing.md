@@ -74,7 +74,9 @@ Making `latest` release-only and adding an `edge` tag for trunk is tracked in
    ```
 
 4. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
-   images carry the `0.1.0` tag in GHCR.
+   images carry the `0.1.0` tag in GHCR. Each runs the full test suite first (see
+   [The test gate](#the-test-gate)); if a test fails, nothing is published and the job graph shows
+   `test` failed before `release`.
 5. Create the GitHub release from the tag with generated notes. `.github/release.yml` groups them
    by pull request label.
 
@@ -83,6 +85,17 @@ Making `latest` release-only and adding an `edge` tag for trunk is tracked in
    ```
 
 6. Close the milestone.
+
+### The test gate
+
+`.github/workflows/test.yml` runs `cargo test`, and the frontend's lint, typecheck and
+`pnpm test` ([#36](https://github.com/diogel-io/bancwr/issues/36)). Three workflows call it:
+
+- **CI**, on every pull request and every push to `master`. Its `test / backend-test` and
+  `test / frontend-check` checks are required before a pull request can merge into `master`.
+- **Release Backend** and **Release Frontend**, whose `release` job needs `test`. An image is
+  only published for a commit or tag whose tests pass. CI does not run on `v*` tags, so for a
+  release tag this is the only gate.
 
 ### Push the tag yourself
 
