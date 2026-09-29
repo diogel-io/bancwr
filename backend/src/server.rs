@@ -1,8 +1,8 @@
 use crate::state::AppState;
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{Method, StatusCode},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -12,6 +12,7 @@ use tokio::signal;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
+use uuid::Uuid;
 
 const HEALTH_PATH: &str = "/health";
 const STATUS_PATH: &str = "/api/bunker/status";
@@ -332,8 +333,35 @@ pub async fn add_team_member(
     }
 }
 
+/// Remove team member
+/// DELETE /api/bunker/team/:id
+///
+/// An id that is not a UUID is rejected with 400 by the `Path<Uuid>` extractor.
+pub async fn remove_team_member(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
+    match state.db.remove_team_member(id) {
+        Ok(true) => {
+            info!("Removed team member: {}", id);
+            Ok(Json(TeamOperationResponse {
+                success: true,
+                message: "Team member removed".to_string(),
+            }))
+        }
+        Ok(false) => Err((StatusCode::NOT_FOUND, "Team member not found".to_string())),
+        Err(e) => {
+            error!("Failed to remove team member {}: {}", id, e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()))
+        }
+    }
+}
+
 /// Creates the Axum router with all routes
 pub fn create_router(state: AppState) -> Router {
+    // DELETE is deliberately not allowed cross-origin. The frontend reaches this API through its
+    // own server-side proxy, which CORS does not apply to, and while the API is unauthenticated
+    // (#25) a browser on another site must not be able to remove team members.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
@@ -346,6 +374,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/metrics", get(get_metrics))
         .route("/api/bunker/config", get(get_config).post(update_config))
         .route("/api/bunker/team", get(get_team).post(add_team_member))
+        .route("/api/bunker/team/:id", delete(remove_team_member))
         .route(SIGN_PATH, post(sign_event))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

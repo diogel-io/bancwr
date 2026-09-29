@@ -78,9 +78,14 @@ fn test_db_team_management() {
     assert_eq!(members[0].id, id);
 
     // Remove member
-    db.remove_team_member(id).expect("Failed to remove member");
+    let removed = db.remove_team_member(id).expect("Failed to remove member");
+    assert!(removed, "removing an existing member reports a removal");
     let members = db.get_team_members().expect("Failed to get members");
     assert_eq!(members.len(), 0);
+
+    // Removing it again finds nothing
+    let removed_again = db.remove_team_member(id).expect("Failed to remove member");
+    assert!(!removed_again, "removing an unknown id reports no removal");
 }
 
 // --- New checks required by the migration plan ---
