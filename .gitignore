@@ -12,3 +12,5 @@
 *.sqlite-shm
 *.sqlite-wal
 
+# Playwright MCP output (see .mcp.json)
+.playwright-mcp/

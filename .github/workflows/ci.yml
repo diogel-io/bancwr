@@ -96,3 +96,95 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
           category: trivy-${{ matrix.component }}
+
+  # End-to-end tests against the real stack: both images, the frontend proxy and the bunker (#46).
+  # Report-only: it is not a required check, so a failure shows on the PR without blocking it.
+  # It lives here, not in a workflow the release workflows call, so the stack is built and booted
+  # once per push rather than once per workflow.
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # After `build`, so these are cache hits. cache-from only: the build job owns those caches.
+      - name: Load backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: bancwr-backend:e2e
+          cache-from: type=gha,scope=backend-cargo-chef
+
+      - name: Load frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: bancwr-frontend:e2e
+          cache-from: type=gha,scope=frontend
+
+      # Version from the packageManager field in frontend/package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Read Playwright version
+        id: playwright
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Chromium system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      # Global setup generates a throwaway bunker key, starts e2e/compose.e2e.yaml from the images
+      # loaded above (E2E_BUILD=0), and tears it down after saving the container logs.
+      - name: Run end-to-end tests
+        run: pnpm test:e2e
+        env:
+          E2E_BUILD: '0'
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 14
