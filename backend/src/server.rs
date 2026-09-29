@@ -275,6 +275,26 @@ pub async fn remove_team_member(
 }
 
 /// Creates the Axum router with all routes
+/// SPIKE (#23): one route behind the proxy-signature check, to prove the trust mechanism. It is
+/// only mounted when BANCWR_PROXY_SECRET is set; #25 moves every /api/bunker/* route behind it.
+fn spike_identity_routes() -> Router<AppState> {
+    let Ok(secret) = std::env::var("BANCWR_PROXY_SECRET") else {
+        return Router::new();
+    };
+    let secret: std::sync::Arc<[u8]> = secret.into_bytes().into();
+    Router::new()
+        .route(
+            "/api/bunker/whoami",
+            get(|axum::Extension(identity): axum::Extension<crate::proxy_auth::ProxyIdentity>| async move {
+                Json(serde_json::json!({ "pubkey": identity.pubkey }))
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            secret,
+            crate::proxy_auth::require_proxy_identity,
+        ))
+}
+
 pub fn create_router(state: AppState) -> Router {
     // DELETE is deliberately not allowed cross-origin. The frontend reaches this API through its
     // own server-side proxy, which CORS does not apply to, and while the API is unauthenticated
@@ -294,6 +314,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/team", get(get_team).post(add_team_member))
         .route("/api/bunker/team/:id", delete(remove_team_member))
         .route(SIGN_PATH, post(sign_event))
+        .merge(spike_identity_routes())
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

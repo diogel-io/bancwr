@@ -77,3 +77,7 @@ path = "tests/unit/nip46_test.rs"
 [[test]]
 name = "team_api_test"
 path = "tests/integration/team_api_test.rs"
+
+[[test]]
+name = "proxy_auth_test"
+path = "tests/unit/proxy_auth_test.rs"

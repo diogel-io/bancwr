@@ -8,3 +8,4 @@ pub mod db;
 pub mod relay;
 pub mod nip46;
 pub mod state;
+pub mod proxy_auth;

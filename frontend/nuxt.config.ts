@@ -6,7 +6,15 @@ export default defineNuxtConfig({
     // Only the /api/bunker proxy reads this, so it stays private: a public key would ship the
     // bunker's address in the client payload for no reason, and the NUXT_PUBLIC_ prefix it
     // required is what made compose.yaml's variable name look plausible. See #20.
-    apiBase: process.env.NUXT_API_BASE || 'http://localhost:3000'
+    apiBase: process.env.NUXT_API_BASE || 'http://localhost:3000',
+    // SPIKE (#23). All three are required in production; none has a usable default.
+    // NUXT_SESSION_PASSWORD: seals the session cookie, 32+ characters.
+    sessionPassword: '',
+    // NUXT_PROXY_SECRET: shared with the bunker (BANCWR_PROXY_SECRET) to sign proxied identity.
+    proxySecret: '',
+    // NUXT_SITE_ORIGIN: the origin users reach Bancwr on, e.g. https://bancwr.example. Sign-in
+    // events must name it; the request's own Host header is never trusted for this.
+    siteOrigin: ''
   },
   modules: [
     '@nuxt/eslint',

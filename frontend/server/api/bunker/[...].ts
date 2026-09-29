@@ -2,6 +2,8 @@
 // Imported rather than left to Nitro's auto-import: nothing in this file's type context
 // resolves auto-imports, so an explicit path keeps our own symbols checkable.
 import { resolveBackendUrl, BackendTargetError } from '../../utils/backend'
+import { PROXY_HEADERS, proxySignature } from '../../utils/auth/proxy-signature'
+import { useBancwrSession } from '../../utils/auth/session'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -28,6 +30,28 @@ export default defineEventHandler(async (event) => {
   const path = event.context.params?._ || ''
   const url = `${backendUrl}/api/bunker/${path}`
 
+  // SPIKE (#23): identity. With NUXT_PROXY_SECRET set, only a signed-in session is proxied, and the
+  // bunker is told who it is with a signature it can check. Unset, the proxy behaves as it does on
+  // master, so the rest of the app still works while the spike is incomplete. Production requires it.
+  const identityHeaders: Record<string, string> = {}
+  if (config.proxySecret) {
+    const session = await useBancwrSession(event, config.sessionPassword)
+    const pubkey = session.data.pubkey
+    if (!pubkey) {
+      throw createError({ statusCode: 401, statusMessage: 'Not signed in', data: { error: 'not_authenticated' } })
+    }
+    const requestUrl = getRequestURL(event)
+    const timestamp = Math.floor(Date.now() / 1000)
+    identityHeaders[PROXY_HEADERS.pubkey] = pubkey
+    identityHeaders[PROXY_HEADERS.timestamp] = String(timestamp)
+    identityHeaders[PROXY_HEADERS.signature] = proxySignature(config.proxySecret, {
+      timestamp,
+      method: getMethod(event),
+      path: `/api/bunker/${path}${requestUrl.search}`,
+      pubkey
+    })
+  }
+
   // Forward the request
   const method = getMethod(event)
   const body = method !== 'GET' ? await readBody(event) : undefined
@@ -41,6 +65,8 @@ export default defineEventHandler(async (event) => {
       headers: {
         // Forward relevant headers
         'Content-Type': 'application/json',
+        // Built here, never copied from the browser's request, so a client cannot supply its own.
+        ...identityHeaders,
       },
     })
   } catch (error: any) {
