@@ -41,6 +41,14 @@ async fn main() -> anyhow::Result<()> {
         None => {}
     }
 
+    if config.proxy_secret.is_none() {
+        warn!(
+            "BANCWR_PROXY_SECRET is not set, so /api/bunker/* is unauthenticated: anyone who can \
+             reach this port can read and change the team. Set it (and NUXT_PROXY_SECRET on the \
+             frontend) to the same value; sign-in (#11) will require it."
+        );
+    }
+
     let signer = Signer::new(config.secret_key.clone());
     info!("Nsec loaded. Public key: {}", signer.public_key_bech32());
 

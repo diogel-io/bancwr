@@ -37,9 +37,43 @@ version control. Do not commit database files; use explicit seed fixtures instea
 
 ## API
 
+### Authentication and roles
+
+The browser never calls the bunker: it calls the frontend's Nitro server, which proxies
+`/api/bunker/*` and attaches the caller's identity. When `BANCWR_PROXY_SECRET` is set, every
+`/api/bunker/*` request must carry:
+
+| Header | Value |
+|--------|-------|
+| `x-bancwr-identity` | the signed-in user's pubkey, lowercase hex, or `service` (the frontend acting for itself during sign-in) |
+| `x-bancwr-timestamp` | Unix time, within 30 s of the bunker's clock |
+| `x-bancwr-signature` | lowercase hex HMAC-SHA256 of `v1\n<timestamp>\n<METHOD>\n<path?query>\n<identity>` under `BANCWR_PROXY_SECRET` |
+
+The frontend holds the same secret as `NUXT_PROXY_SECRET`. The bunker then looks the pubkey up in
+the vault on every request:
+
+| Route | administrator | user | signer | `service` |
+|-------|:---:|:---:|:---:|:---:|
+| `GET /health` | open | open | open | open |
+| `GET /api/bunker/status` | yes | yes | yes | yes |
+| `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | | |
+| `GET`, `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
+| `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | | yes |
+
+Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
+`403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
+for a role the route does not allow.
+
+**Until the frontend's sign-in (#11) lands, `BANCWR_PROXY_SECRET` is optional.** Unset, the API is
+unauthenticated, as before, and the bunker logs a warning at every start; the frontend cannot sign
+requests yet, so setting it now locks the dashboard out. The bunker has no CORS headers: browsers
+never call it directly.
+
+The examples below show the routes without the headers, as they behave with the secret unset.
+
 ### Health Check
 `GET /health`
-Returns `{"status": "ok"}` when the server is running. Used for health checks.
+Returns `{"status": "ok"}` when the server is running. Used for health checks. Never authenticated.
 
 ### Bunker Status
 `GET /api/bunker/status`
@@ -56,7 +90,14 @@ bunker starts, and the nsec is never returned.
 Returns an array of team members.
 
 `POST /api/bunker/team`
-Adds a new team member. Valid roles are `admin`, `signer`, and `viewer`. Pubkey must start with `npub1`.
+Adds a new team member. Valid roles are `administrator`, `user` and `signer`. The pubkey may be an
+npub or hex; it is stored as hex, and a key already registered, in either form, gets 409. The
+bunker's own key cannot be registered.
+
+`DELETE /api/bunker/team/:id` removes a member, except the only administrator (409).
+
+`GET /api/bunker/team/by-pubkey/:pubkey` returns one member by npub or hex, or 404
+`{"error":"not_registered"}`.
 
 Example:
 ```bash
@@ -98,23 +139,6 @@ Response:
     "timestamp": "2024-01-01T12:00:00Z"
   }
 ]
-```
-
-### Sign Event
-`POST /sign`
-Accepts a JSON unsigned event and returns a signed event.
-
-Example:
-```bash
-curl -X POST http://localhost:3000/sign \
-  -H "Content-Type: application/json" \
-  -d '{
-    "pubkey": "32e18276ca5d706231bfa266c2231571bc950186194165952d79040702d7667d",
-    "created_at": 1700000000,
-    "kind": 1,
-    "tags": [],
-    "content": "Hello, Nostr!"
-  }'
 ```
 
 ## NIP-46 Remote Signing
@@ -191,7 +215,7 @@ cargo test --test server_test
 If you use an IDE that supports `.http` files (like RustRover or IntelliJ), you can run the endpoint tests located in `tests/endpoints/tests/`.
 
 1. Ensure the server is running (e.g., `cargo run`).
-2. Open `tests/endpoints/tests/health/health_get.http` or `tests/endpoints/tests/sign/sign_post.http`.
+2. Open `tests/endpoints/tests/health/health_get.http`.
 3. Select the `local` environment from the environment selector.
 4. Run the requests.
 

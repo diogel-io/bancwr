@@ -1,23 +1,22 @@
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
+use crate::db::RemoveOutcome;
+use crate::proxy_auth::{Access, Guard};
 use axum::{
     extract::{Path, State},
-    http::{Method, StatusCode},
-    routing::{delete, get, post},
+    http::StatusCode,
+    routing::{delete, get},
     Json, Router,
 };
-use chrono::Utc;
 use nostr::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::signal;
-use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
 const HEALTH_PATH: &str = "/health";
 const STATUS_PATH: &str = "/api/bunker/status";
-const SIGN_PATH: &str = "/sign";
 
 // Removed local AppState struct as it is now in state.rs
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -156,49 +155,6 @@ pub async fn get_logs(
     }
 }
 
-/// Sign event endpoint
-/// POST /sign
-pub async fn sign_event(
-    State(state): State<AppState>,
-    Json(unsigned_event): Json<UnsignedEvent>,
-) -> Result<Json<Event>, (StatusCode, String)> {
-    info!("Received sign request for event kind: {}", unsigned_event.kind);
-
-    // Basic validation
-    if unsigned_event.content.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Content cannot be empty".to_string()));
-    }
-    
-    if unsigned_event.kind == Kind::from(0) {
-        return Err((StatusCode::BAD_REQUEST, "Kind 0 not allowed via this bunker".to_string()));
-    }
-
-    let event = state.signer
-        .read()
-        .await
-        .sign_event(unsigned_event.clone())
-        .await
-        .map_err(|e| {
-            error!("Signing failed: {}", e);
-            (StatusCode::BAD_REQUEST, e.to_string())
-        })?;
-
-    // Increment request count in state
-    state.increment_http_request_count();
-
-    // Log the signing event to DuckDB
-    if let Err(e) = state.db.log_signing_event(
-        &event.id.to_hex(),
-        &event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex()),
-        event.kind.as_u16() as u32,
-        Utc::now(),
-    ) {
-        error!("Failed to log signing event to database: {}", e);
-    }
-
-    Ok(Json(event))
-}
-
 /// Get current configuration
 /// GET /api/bunker/config
 pub async fn get_config(
@@ -304,14 +260,19 @@ pub async fn remove_team_member(
     Path(id): Path<Uuid>,
 ) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
     match state.db.remove_team_member(id) {
-        Ok(true) => {
+        Ok(RemoveOutcome::Removed) => {
             info!("Removed team member: {}", id);
             Ok(Json(TeamOperationResponse {
                 success: true,
                 message: "Team member removed".to_string(),
             }))
         }
-        Ok(false) => Err((StatusCode::NOT_FOUND, "Team member not found".to_string())),
+        Ok(RemoveOutcome::NotFound) => Err((StatusCode::NOT_FOUND, "Team member not found".to_string())),
+        // Removing the only administrator would leave nobody able to administer the bunker (#25).
+        Ok(RemoveOutcome::LastAdministrator) => Err((
+            StatusCode::CONFLICT,
+            "Cannot remove the last administrator".to_string(),
+        )),
         Err(e) => {
             error!("Failed to remove team member {}: {}", id, e);
             Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()))
@@ -321,26 +282,45 @@ pub async fn remove_team_member(
 
 /// Creates the Axum router with all routes
 pub fn create_router(state: AppState) -> Router {
-    // DELETE is deliberately not allowed cross-origin. The frontend reaches this API through its
-    // own server-side proxy, which CORS does not apply to, and while the API is unauthenticated
-    // (#25) a browser on another site must not be able to remove team members.
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers(Any);
+    // Enforcement is on when BANCWR_PROXY_SECRET is set, and off (as before #25) when it is not,
+    // until the frontend's sign-in (#11) can sign every request; #11 makes the secret required.
+    // Nothing else holds the config lock while the router is built.
+    let secret = state
+        .config
+        .try_read()
+        .expect("config is not locked while the router is built")
+        .proxy_secret
+        .clone()
+        .map(|secret| -> std::sync::Arc<[u8]> { secret.into_bytes().into() });
 
-    Router::new()
-        .route(HEALTH_PATH, get(health_check))
-        .route(STATUS_PATH, get(get_status))
+    // Each group of /api/bunker/* routes, behind the guard for who may call it (#25).
+    let guarded = |routes: Router<AppState>, access: Access| match &secret {
+        Some(secret) => routes.route_layer(axum::middleware::from_fn_with_state(
+            Guard { secret: secret.clone(), db: state.db.clone(), access },
+            crate::proxy_auth::guard,
+        )),
+        None => routes,
+    };
+
+    let health = Router::new().route(STATUS_PATH, get(get_status));
+    let administration = Router::new()
         .route("/api/bunker/logs", get(get_logs))
         .route("/api/bunker/metrics", get(get_metrics))
         // Read-only: the signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC (#42).
         .route("/api/bunker/config", get(get_config))
         .route("/api/bunker/team", get(get_team).post(add_team_member))
-        .route("/api/bunker/team/:id", delete(remove_team_member))
-        .route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey))
-        .route(SIGN_PATH, post(sign_event))
-        .layer(cors)
+        .route("/api/bunker/team/:id", delete(remove_team_member));
+    // Also the service identity's: sign-in looks the presented key up before any session exists.
+    let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
+
+    // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
+    // server-side. Without CORS headers, a browser on another site cannot call it. There is no
+    // POST /sign either: it signed anything for anyone who could reach this port (#25).
+    Router::new()
+        .route(HEALTH_PATH, get(health_check))
+        .merge(guarded(health, Access::Health))
+        .merge(guarded(administration, Access::Administrator))
+        .merge(guarded(lookup, Access::AdministratorOrService))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

@@ -42,6 +42,15 @@ impl TeamMember {
     }
 }
 
+/// What `remove_team_member` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RemoveOutcome {
+    Removed,
+    NotFound,
+    /// Refused: the member is the only administrator.
+    LastAdministrator,
+}
+
 /// What `seed_administrator` did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SeedOutcome {
@@ -293,15 +302,27 @@ impl Database {
         Ok(SeedOutcome::Added)
     }
 
-    /// Remove a team member. Returns false when no member has that id.
-    pub fn remove_team_member(&self, id: Uuid) -> anyhow::Result<bool> {
+    /// Remove a team member, unless they are the only administrator: removing them would leave
+    /// nobody able to administer the bunker (#25). One statement, so the check cannot race.
+    pub fn remove_team_member(&self, id: Uuid) -> anyhow::Result<RemoveOutcome> {
         let id_str = id.to_string();
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let removed = conn.execute(
-            "DELETE FROM team_members WHERE id = ?1",
+            "DELETE FROM team_members WHERE id = ?1 AND NOT (
+                role = 'administrator'
+                AND (SELECT count(*) FROM team_members WHERE role = 'administrator') = 1
+            )",
             params![id_str],
         )?;
-        Ok(removed > 0)
+        if removed > 0 {
+            return Ok(RemoveOutcome::Removed);
+        }
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM team_members WHERE id = ?1)",
+            params![id_str],
+            |row| row.get(0),
+        )?;
+        Ok(if exists { RemoveOutcome::LastAdministrator } else { RemoveOutcome::NotFound })
     }
 }
 

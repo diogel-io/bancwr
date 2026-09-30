@@ -29,6 +29,7 @@ async fn setup_app_with_bunker_key() -> (String, reqwest::Client, String) {
         nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
+        proxy_secret: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -308,4 +309,24 @@ async fn test_lookup_by_pubkey_misses_clearly() {
 
     let res = client.get(format!("{}/api/bunker/team/by-pubkey/not-a-key", address)).send().await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_the_last_administrator_cannot_be_removed() {
+    // Removing the only administrator would lock everyone out of administration (#25).
+    let (address, client) = setup_app().await;
+    for role in ["administrator", "user"] {
+        assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::OK);
+    }
+    let team: Vec<Value> = client.get(format!("{}/api/bunker/team", address)).send().await.unwrap().json().await.unwrap();
+    let id_of = |role: &str| team.iter().find(|m| m["role"] == role).unwrap()["id"].as_str().unwrap().to_string();
+
+    let res = client.delete(format!("{}/api/bunker/team/{}", address, id_of("administrator"))).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert!(res.text().await.unwrap().contains("last administrator"));
+
+    // A second administrator makes the first removable.
+    assert_eq!(add(&address, &client, &new_npub(), "administrator").await.status(), StatusCode::OK);
+    let res = client.delete(format!("{}/api/bunker/team/{}", address, id_of("administrator"))).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }

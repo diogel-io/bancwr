@@ -3,12 +3,15 @@ services:
       image: ghcr.io/diogel-io/bancwr-diogel-backend:latest
       container_name: bancwr-bunker
       restart: unless-stopped
-      ports:
-        - "3000:3000"
+      # No published port: only the frontend reaches the bunker, over the compose network. Check
+      # health from inside: podman exec bancwr-bunker curl -fs localhost:3000/health
       environment:
         - BUNKER_NSEC=${BUNKER_NSEC}
         # The first administrator's npub, registered at startup while no administrator exists.
         - BANCWR_ADMIN_PUBKEY=${BANCWR_ADMIN_PUBKEY:-}
+        # Signs the caller's identity between frontend and bunker. Set both services to the same
+        # value; sign-in (#11) makes it required. Until then, setting it locks the dashboard out.
+        - BANCWR_PROXY_SECRET=${BANCWR_PROXY_SECRET:-}
         - BUNKER_PORT=3000
         - RUST_LOG=info
         - DATABASE_PATH=/data/bancwr.db
@@ -23,5 +26,6 @@ services:
         - "3001:3000"
       environment:
         - NUXT_API_BASE=http://bunker:3000
+        - NUXT_PROXY_SECRET=${BANCWR_PROXY_SECRET:-}
       depends_on:
         - bunker
