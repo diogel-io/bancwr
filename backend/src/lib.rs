@@ -10,3 +10,4 @@ pub mod nip46;
 pub mod state;
 pub mod registry;
 pub mod migrations;
+pub mod proxy_auth;

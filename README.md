@@ -64,6 +64,20 @@ The frontend reaches the bunker over the compose network at `http://bunker:3000`
 compose, set `NUXT_API_BASE` to the bunker's address yourself; it defaults to
 `http://localhost:3000`, which is the frontend's own port inside the container.
 
+### Reaching the bunker
+
+`compose.yaml` does not publish the bunker's port: only the frontend reaches it, over the compose
+network. To check its health from the host:
+
+```bash
+podman exec bancwr-bunker curl -fs localhost:3000/health
+```
+
+The API behind it is protected by `BANCWR_PROXY_SECRET`, which the frontend also holds, to sign who
+is calling. Until sign-in (#11) ships, leave it empty: the frontend cannot sign requests yet, so
+setting it locks the dashboard out. Unset, the API is unauthenticated and the bunker logs a warning
+at every start. There is no `POST /sign`: it signed any event for anyone who could reach the port.
+
 ### The first administrator
 
 Only keys registered with the bunker can use it, each with one of three roles: `administrator`,

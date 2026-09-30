@@ -11,6 +11,8 @@ pub enum ConfigError {
     FileReadError(#[from] std::io::Error),
     #[error("Invalid nsec: {0}")]
     InvalidNsec(String),
+    #[error("BANCWR_PROXY_SECRET must be at least 32 characters; generate one with `openssl rand -hex 32`")]
+    ProxySecretTooShort,
     #[error("BANCWR_ADMIN_PUBKEY is not a valid npub or hex public key")]
     InvalidAdminPubkey,
     #[error("BANCWR_ADMIN_PUBKEY is the bunker's own public key, which can never be registered; set it to the first administrator's key")]
@@ -42,6 +44,9 @@ pub struct Config {
     /// BANCWR_ADMIN_PUBKEY as canonical hex: the first administrator, seeded when there is none
     /// (#24). Never the bunker's own key.
     pub admin_pubkey: Option<String>,
+    /// BANCWR_PROXY_SECRET: shared with the frontend (NUXT_PROXY_SECRET) to sign the caller's
+    /// identity on /api/bunker/* (#25). Unset, the API is unauthenticated until #11 requires it.
+    pub proxy_secret: Option<String>,
 }
 
 impl Config {
@@ -93,6 +98,17 @@ impl Config {
             _ => None,
         };
 
+        let proxy_secret = match env::var("BANCWR_PROXY_SECRET") {
+            Ok(value) if !value.trim().is_empty() => {
+                let value = value.trim().to_string();
+                if value.len() < 32 {
+                    return Err(ConfigError::ProxySecretTooShort);
+                }
+                Some(value)
+            }
+            _ => None,
+        };
+
         Ok(Config {
             secret_key,
             port,
@@ -102,6 +118,7 @@ impl Config {
             nsec_file,
             version,
             admin_pubkey,
+            proxy_secret,
         })
     }
 }

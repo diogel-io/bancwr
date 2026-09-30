@@ -1,4 +1,4 @@
-use bunker::db::{Database, SeedOutcome};
+use bunker::db::{Database, RemoveOutcome, SeedOutcome};
 use bunker::registry::Role;
 use chrono::Utc;
 use nostr::prelude::*;
@@ -86,15 +86,33 @@ fn test_db_team_management() {
     assert_eq!(members[0].role(), Some(Role::Administrator));
     assert_eq!(members[0].id, id);
 
-    // Remove member
+    // Remove member. A second administrator first, so Alice is not the last one (#25).
+    db.add_team_member("Carol", &new_pubkey(), Role::Administrator).unwrap();
     let removed = db.remove_team_member(id).expect("Failed to remove member");
-    assert!(removed, "removing an existing member reports a removal");
+    assert_eq!(removed, RemoveOutcome::Removed);
     let members = db.get_team_members().expect("Failed to get members");
-    assert_eq!(members.len(), 0);
+    assert_eq!(members.len(), 1);
 
     // Removing it again finds nothing
     let removed_again = db.remove_team_member(id).expect("Failed to remove member");
-    assert!(!removed_again, "removing an unknown id reports no removal");
+    assert_eq!(removed_again, RemoveOutcome::NotFound);
+}
+
+#[test]
+fn test_the_last_administrator_cannot_be_removed() {
+    let db = Database::new(":memory:").unwrap();
+    let alice = db.add_team_member("Alice", &new_pubkey(), Role::Administrator).unwrap();
+    let bob = db.add_team_member("Bob", &new_pubkey(), Role::User).unwrap();
+
+    assert_eq!(db.remove_team_member(alice).unwrap(), RemoveOutcome::LastAdministrator);
+    assert_eq!(db.administrator_count().unwrap(), 1, "she is still there");
+    // Other members are unaffected.
+    assert_eq!(db.remove_team_member(bob).unwrap(), RemoveOutcome::Removed);
+
+    // With a second administrator, either can go, but not both.
+    let carol = db.add_team_member("Carol", &new_pubkey(), Role::Administrator).unwrap();
+    assert_eq!(db.remove_team_member(alice).unwrap(), RemoveOutcome::Removed);
+    assert_eq!(db.remove_team_member(carol).unwrap(), RemoveOutcome::LastAdministrator);
 }
 
 // --- Stored keys from the removed Config page write path (#42) ---

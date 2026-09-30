@@ -21,6 +21,7 @@ async fn test_relay_client_new() {
         nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
+        proxy_secret: None,
     };
     let state = AppState::new(signer, db, config);
     let client = RelayClient::new(relays, state).await;
@@ -43,6 +44,7 @@ async fn test_relay_client_empty_relays() {
         nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
+        proxy_secret: None,
     };
     let state = AppState::new(signer, db, config);
     let client = RelayClient::new(relays, state).await;
