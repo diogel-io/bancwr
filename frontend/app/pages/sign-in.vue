@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Sign in with a NIP-07 extension or a NIP-46 remote signer (#11). No nsec field: Bancwr exists so
 // that nobody hands a raw private key to a web page.
+import { npubEncode } from 'nostr-tools/nip19'
 import { Nip46Cancelled, Nip46Timeout } from '~/composables/useNip46'
 import { signInWithNostr, type NostrSigner, type SignInResult } from '~/utils/nostr-sign-in'
 
@@ -11,6 +12,8 @@ const nip07 = useNip07()
 const nip46 = useNip46()
 
 const bunkerUri = ref('')
+/** The key the extension will sign with, shown before its prompt so the user can check it. */
+const extensionNpub = ref<string>()
 const busy = ref<'extension' | 'bunker' | undefined>()
 const error = ref<string>()
 
@@ -42,7 +45,11 @@ async function withExtension() {
   if (!signer) return
   busy.value = 'extension'
   error.value = undefined
+  extensionNpub.value = undefined
   try {
+    // NIP-07 order: which key, then the signature. Showing the key first lets the user notice the
+    // wrong account before approving anything. The server still takes the key from the signature.
+    extensionNpub.value = npubEncode(await signer.getPublicKey())
     await finish(await signInWithNostr(signer, window.location.origin))
   } catch {
     // Extensions reject when the user declines, each with its own message.
@@ -115,6 +122,13 @@ const phaseText = computed(() => ({
       >
         Sign in with extension
       </UButton>
+      <p
+        v-if="busy === 'extension' && extensionNpub"
+        class="text-xs text-muted break-all"
+        data-testid="extension-npub"
+      >
+        Signing in as {{ extensionNpub }}
+      </p>
       <p
         v-else-if="nip07.available.value === false"
         class="text-sm text-muted"

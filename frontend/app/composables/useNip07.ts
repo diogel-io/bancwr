@@ -1,6 +1,11 @@
 // A NIP-07 browser extension (window.nostr), if there is one (#11). Client-only.
 import type { NostrSigner } from '~/utils/nostr-sign-in'
 
+/** NIP-07's window.nostr: signEvent, and getPublicKey (hex), which the page asks first. */
+export interface Nip07Extension extends NostrSigner {
+  getPublicKey(): Promise<string>
+}
+
 /**
  * `undefined` until checked, then whether an extension is present. Extensions inject
  * window.nostr at document_end (NIP-07), which can land just after the app mounts, so this waits
@@ -16,9 +21,9 @@ export function useNip07() {
     available.value = !!extension()
   })
 
-  return { available, signer: (): NostrSigner | undefined => extension() }
+  return { available, signer: (): Nip07Extension | undefined => extension() }
 }
 
-function extension(): NostrSigner | undefined {
-  return (window as unknown as { nostr?: NostrSigner }).nostr
+function extension(): Nip07Extension | undefined {
+  return (window as unknown as { nostr?: Nip07Extension }).nostr
 }

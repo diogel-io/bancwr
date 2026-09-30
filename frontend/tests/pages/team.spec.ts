@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import Team from '../../app/pages/team.vue'
-import { clearNuxtData, nextTick } from '#imports'
+import { clearNuxtData } from '#imports'
 import { readBody } from 'h3'
 
 describe('Team page', () => {
@@ -70,13 +70,9 @@ describe('Team page', () => {
     const addButton = component.findAll('button').find(b => b.text().includes('Add Member'))
     await addButton!.trigger('click')
 
-    // Wait for async actions and refresh
-    await nextTick()
-    await new Promise(resolve => setTimeout(resolve, 50))
-    await nextTick()
-
-    // Assert the list is refreshed and contains Bob
-    expect(component.text()).toContain('Bob')
+    // Wait for the POST and the refresh to land, rather than for a fixed time: a 50 ms sleep here
+    // failed whenever the whole suite ran under load.
+    await vi.waitFor(() => expect(component.text()).toContain('Bob'))
     // The default role is sent with its settled value (#24).
     expect(posted).toEqual({ name: 'Bob', pubkey: 'npub2', role: 'signer' })
   })
