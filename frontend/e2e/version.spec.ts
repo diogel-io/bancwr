@@ -3,11 +3,12 @@ import { test, expect } from './fixtures'
 // compose.e2e.yaml gives both containers this BANCWR_VERSION (#35).
 const VERSION = '0.0.0-e2e'
 
-test('the bunker and the frontend report the version they are running', async ({ request }) => {
-  const status = await (await request.get('/api/bunker/status')).json()
+test('the bunker and the frontend report the version they are running', async ({ page }) => {
+  // page.request carries the signed-in session; /api/bunker/* needs one (#11).
+  const status = await (await page.request.get('/api/bunker/status')).json()
   expect(status.version).toBe(VERSION)
 
-  const frontend = await (await request.get('/api/version')).json()
+  const frontend = await (await page.request.get('/api/version')).json()
   expect(frontend.version).toBe(VERSION)
 })
 

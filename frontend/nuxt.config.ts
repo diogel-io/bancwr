@@ -9,7 +9,12 @@ export default defineNuxtConfig({
         apiBase: process.env.NUXT_API_BASE || 'http://localhost:3000',
         // NUXT_PROXY_SECRET: shared with the bunker (BANCWR_PROXY_SECRET) to sign who is calling
         // (#25). Private, like apiBase. Sign-in (#11) makes it required.
-        proxySecret: ''
+        proxySecret: '',
+        // NUXT_SESSION_PASSWORD: seals the session cookie, 32+ characters (#11).
+        sessionPassword: '',
+        // NUXT_SITE_ORIGIN: the https origin users reach Bancwr on, which sign-in events must name.
+        // Never taken from the request's Host header (#11).
+        siteOrigin: ''
     },
     modules: [
         '@nuxt/eslint',

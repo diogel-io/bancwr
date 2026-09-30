@@ -13,6 +13,8 @@ pub enum ConfigError {
     InvalidNsec(String),
     #[error("BANCWR_PROXY_SECRET must be at least 32 characters; generate one with `openssl rand -hex 32`")]
     ProxySecretTooShort,
+    #[error("BANCWR_PROXY_SECRET must be set, to the same value as the frontend's NUXT_PROXY_SECRET; generate one with `openssl rand -hex 32`")]
+    MissingProxySecret,
     #[error("BANCWR_ADMIN_PUBKEY is not a valid npub or hex public key")]
     InvalidAdminPubkey,
     #[error("BANCWR_ADMIN_PUBKEY is the bunker's own public key, which can never be registered; set it to the first administrator's key")]
@@ -45,7 +47,8 @@ pub struct Config {
     /// (#24). Never the bunker's own key.
     pub admin_pubkey: Option<String>,
     /// BANCWR_PROXY_SECRET: shared with the frontend (NUXT_PROXY_SECRET) to sign the caller's
-    /// identity on /api/bunker/* (#25). Unset, the API is unauthenticated until #11 requires it.
+    /// identity on /api/bunker/* (#25). Required to start (#11, `require_proxy_secret`); optional
+    /// here only so tests can build the router without it.
     pub proxy_secret: Option<String>,
 }
 
@@ -120,5 +123,16 @@ impl Config {
             admin_pubkey,
             proxy_secret,
         })
+    }
+}
+
+impl Config {
+    /// The bunker does not start without BANCWR_PROXY_SECRET (#11): without it, /api/bunker/* would
+    /// have no authentication at all.
+    pub fn require_proxy_secret(&self) -> Result<(), ConfigError> {
+        match self.proxy_secret {
+            Some(_) => Ok(()),
+            None => Err(ConfigError::MissingProxySecret),
+        }
     }
 }

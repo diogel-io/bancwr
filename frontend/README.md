@@ -43,6 +43,19 @@ pnpm dev
 Then open <http://localhost:3001>. The dev server port is set by `devServer.port` in
 `nuxt.config.ts`.
 
+Sign-in (#11) needs three settings, or the server refuses to start. For local development, put
+them in `frontend/.env` (ignored by git), and give the backend the same `BANCWR_PROXY_SECRET` and
+your npub as `BANCWR_ADMIN_PUBKEY`:
+
+```bash
+NUXT_SESSION_PASSWORD=<openssl rand -hex 32>
+NUXT_PROXY_SECRET=<openssl rand -hex 32, the backend's BANCWR_PROXY_SECRET>
+NUXT_SITE_ORIGIN=http://localhost:3001
+```
+
+Plain `http://` is accepted only for localhost; anywhere else Bancwr must be served over HTTPS (see
+the root README). Sign in with a NIP-07 extension or a NIP-46 `bunker://` string.
+
 To point the frontend at a backend somewhere other than `localhost:3000`:
 
 ```bash
@@ -61,21 +74,27 @@ pnpm test        # Vitest
 
 `pnpm test:e2e` runs the Playwright suite in `e2e/` against the real stack: the backend and
 frontend images, started from `e2e/compose.e2e.yaml`, with the browser going through the frontend
-proxy to the bunker. Vitest's `tests/` covers components in isolation; this covers the pages,
-navigation, adding and removing team members, and the Config page staying read-only and never
-showing a key.
+proxy to the bunker. Vitest's `tests/` covers components in isolation; this covers sign-in
+(NIP-07 and NIP-46), the pages, navigation, adding and removing team members, and the Config page
+staying read-only and never showing a key.
 
 Run these commands from this `frontend/` directory, or from the repository root with
 `pnpm -C frontend`, for example `pnpm -C frontend test:e2e`: the root has no `package.json`.
 
 Each run:
 
-1. generates a throwaway bunker key, held only in the environment;
+1. generates throwaway keys and secrets, held only in the environment: the bunker's key, a seeded
+   administrator's key, the proxy secret and the session password;
 2. builds and starts the stack on <http://localhost:3100>, with the database on a tmpfs, so every
    run starts empty and leaves nothing on disk. The bunker is not published on any host port;
-3. waits until `GET /api/bunker/status` answers `healthy` through the proxy;
-4. runs the specs in Chromium, one at a time;
-5. saves the container logs to `test-results/compose.log` and removes the stack.
+3. waits until the administrator can sign in and see the bunker `healthy` through the proxy, which
+   proves sign-in, the session, the signed proxy and the bunker's guard;
+4. starts a minimal relay (`e2e/relay.ts`, on `127.0.0.1:7777`) and a NIP-46 test signer
+   (`e2e/remote-signer.ts`) inside the Playwright process, and registers that signer's key as a
+   `user`;
+5. runs the specs in Chromium, one at a time. `test` from `e2e/fixtures.ts` starts each one signed
+   in as the administrator; `anonymousTest` does not;
+6. saves the container logs to `test-results/compose.log` and removes the stack.
 
 Prerequisites: Docker Compose or Podman Compose, and Chromium for Playwright, installed once:
 
@@ -88,8 +107,9 @@ pnpm exec playwright install chromium
 | `E2E_COMPOSE` | the first of `docker compose`, `podman compose`, `docker-compose` that works | Compose command |
 | `E2E_PORT` | `3100` | Host port for the frontend |
 | `E2E_BUILD` | build | `0` reuses images already tagged `bancwr-backend:e2e` and `bancwr-frontend:e2e`, as CI does |
-| `E2E_BASE_URL` | unset | Test a stack that is already running instead of starting one. Pass its `BUNKER_NSEC` too, or the public-key check is skipped |
-| `E2E_READY_TIMEOUT` | `120000` | Milliseconds to wait for the bunker |
+| `E2E_BASE_URL` | unset | Test a stack that is already running instead of starting one. Pass `E2E_ADMIN_NSEC` (an administrator of that stack), and its `BUNKER_NSEC` too, or the public-key check is skipped |
+| `E2E_READY_TIMEOUT` | `120000` | Milliseconds to wait for the stack |
+| `E2E_RELAY_PORT` | `7777` | Port for the in-process relay the NIP-46 spec uses |
 
 A failed test keeps its trace. Open the HTML report with `pnpm exec playwright show-report`, or
 a single trace with `pnpm exec playwright show-trace test-results/<test>/trace.zip`.
@@ -112,9 +132,13 @@ npx @playwright/mcp@0.0.83 install-browser chromium
 Start the stack on its own, and point the agent at <http://localhost:3100>:
 
 ```bash
-pnpm test:e2e:stack        # start, with a fresh key and empty database; prints the bunker npub
+pnpm test:e2e:stack        # start, with fresh keys and an empty database
 pnpm test:e2e:stack:down   # stop and remove it
 ```
+
+Sign-in is required. The stack seeds a throwaway administrator and prints its nsec, for test use
+only. To sign in with your own extension instead, pass your npub, and it is registered as an
+administrator too: `E2E_ADMIN_PUBKEY=npub1… pnpm test:e2e:stack`.
 
 Keep the version in that command in step with `.mcp.json`.
 

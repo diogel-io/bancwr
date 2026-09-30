@@ -32,6 +32,7 @@ const open = ref(false)
 
       <template #footer="{ collapsed }">
         <div class="flex flex-col gap-3 w-full">
+          <SignedInUser :collapsed="collapsed" />
           <AppVersion :collapsed="collapsed" />
           <div
             class="flex items-center gap-2 w-full"

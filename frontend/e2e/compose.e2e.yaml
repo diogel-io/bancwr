@@ -17,6 +17,10 @@ services:
       # Set at runtime rather than as a build arg, so version.spec.ts checks what the running
       # container reports without depending on a rebuild (#35).
       - BANCWR_VERSION=0.0.0-e2e
+      # Sign-in (#11): the proxy secret both services share, and the first administrator, a
+      # throwaway key global-setup.ts generates.
+      - BANCWR_PROXY_SECRET=${E2E_PROXY_SECRET:?global-setup.ts generates E2E_PROXY_SECRET}
+      - BANCWR_ADMIN_PUBKEY=${E2E_ADMIN_NPUB:?global-setup.ts generates E2E_ADMIN_NPUB}
     # Every run starts with an empty database and leaves nothing on disk. NIP46_ENABLED is left
     # unset, so the bunker makes no relay connections.
     tmpfs:
@@ -30,6 +34,10 @@ services:
     environment:
       - NUXT_API_BASE=http://bunker:3000
       - BANCWR_VERSION=0.0.0-e2e
+      - NUXT_PROXY_SECRET=${E2E_PROXY_SECRET:?global-setup.ts generates E2E_PROXY_SECRET}
+      - NUXT_SESSION_PASSWORD=${E2E_SESSION_PASSWORD:?global-setup.ts generates E2E_SESSION_PASSWORD}
+      # The origin the browser uses. http is allowed here only because it is localhost.
+      - NUXT_SITE_ORIGIN=http://localhost:${E2E_PORT:-3100}
     ports:
       # 3100, not 3000 or 3001, so the suite can run beside `pnpm dev` and the quickstart compose.
       - "${E2E_PORT:-3100}:3000"

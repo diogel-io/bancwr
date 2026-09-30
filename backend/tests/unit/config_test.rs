@@ -180,3 +180,23 @@ fn test_admin_pubkey_must_be_a_key_and_not_the_bunkers() {
     env::remove_var("BANCWR_ADMIN_PUBKEY");
     env::remove_var("BUNKER_NSEC");
 }
+
+#[test]
+fn test_proxy_secret_is_required_to_start() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    env::set_var("BUNKER_NSEC", Keys::generate().secret_key().to_bech32().unwrap());
+    env::remove_var("BUNKER_NSEC_FILE");
+
+    env::remove_var("BANCWR_PROXY_SECRET");
+    let config = Config::load().expect("loads without it");
+    assert!(matches!(config.require_proxy_secret(), Err(bunker::config::ConfigError::MissingProxySecret)));
+
+    env::set_var("BANCWR_PROXY_SECRET", "short");
+    assert!(matches!(Config::load(), Err(bunker::config::ConfigError::ProxySecretTooShort)));
+
+    env::set_var("BANCWR_PROXY_SECRET", "s".repeat(32));
+    assert!(Config::load().unwrap().require_proxy_secret().is_ok());
+
+    env::remove_var("BANCWR_PROXY_SECRET");
+    env::remove_var("BUNKER_NSEC");
+}

@@ -48,8 +48,13 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:sha-1dbcab3
    ```bash
    cp .env.example .env
    ```
-2. Edit `.env` and set your `BUNKER_NSEC`, and `BANCWR_ADMIN_PUBKEY` to your own npub (see
-   [The first administrator](#the-first-administrator)).
+2. Edit `.env` and set:
+   - `BUNKER_NSEC`, the bunker's key;
+   - `BANCWR_ADMIN_PUBKEY`, your own npub (see [The first administrator](#the-first-administrator));
+   - `BANCWR_PROXY_SECRET` and `NUXT_SESSION_PASSWORD`, each from `openssl rand -hex 32`;
+   - `NUXT_SITE_ORIGIN`, the `https://` address you will open Bancwr on (see [HTTPS](#https)).
+
+   `podman compose` refuses to start without them.
 3. (Optional) Ensure the Podman socket is running (required for `podman compose`):
    ```bash
    systemctl --user enable --now podman.socket
@@ -73,10 +78,42 @@ network. To check its health from the host:
 podman exec bancwr-bunker curl -fs localhost:3000/health
 ```
 
-The API behind it is protected by `BANCWR_PROXY_SECRET`, which the frontend also holds, to sign who
-is calling. Until sign-in (#11) ships, leave it empty: the frontend cannot sign requests yet, so
-setting it locks the dashboard out. Unset, the API is unauthenticated and the bunker logs a warning
-at every start. There is no `POST /sign`: it signed any event for anyone who could reach the port.
+The API behind it only answers requests the frontend has signed with `BANCWR_PROXY_SECRET`, naming
+the signed-in key, and checks that key's role in the vault each time. The bunker does not start
+without the secret. There is no `POST /sign`: it signed any event for anyone who could reach the
+port.
+
+### Signing in
+
+Open Bancwr at `NUXT_SITE_ORIGIN` and sign in with a key registered in the vault, through either:
+
+- a Nostr browser extension (NIP-07), or
+- a remote signer (NIP-46), by pasting its `bunker://` connection string.
+
+There is no field for an nsec: Bancwr never asks for a private key. A key that signs in but is not
+registered sees a page with its npub, to send to an administrator. Signing out ends the session
+everywhere it was copied, and restarting the frontend signs everyone out.
+
+### HTTPS
+
+Sign-in needs HTTPS. The session cookie is `Secure`, so browsers only send it over HTTPS, or to
+`http://localhost`. The frontend refuses to start if `NUXT_SITE_ORIGIN` is plain `http://` anywhere
+else, and `compose.yaml` publishes it on `127.0.0.1:3001` only.
+
+Put a TLS reverse proxy in front. With [Caddy](https://caddyserver.com/), which obtains and renews
+certificates itself:
+
+```caddy
+bancwr.example {
+    reverse_proxy 127.0.0.1:3001
+}
+```
+
+On a LAN without a public name, `tls internal` in that block makes Caddy use its own certificate
+authority, which each browser then has to trust. Set `NUXT_SITE_ORIGIN` to exactly the address in
+the browser's address bar, such as `https://bancwr.example`: sign-in events name it, and a mismatch
+is refused. For development on one machine, `NUXT_SITE_ORIGIN=http://localhost:3001` works without
+TLS.
 
 ### The first administrator
 
