@@ -2,12 +2,34 @@
 // backend/src/server.rs is the source of truth: these mirror its Serialize structs field for
 // field, in snake_case as they arrive on the wire. Change both together.
 
+/** Red, yellow or green (#27): any failing check is `unhealthy`, otherwise any warning is `degraded`. */
+export type HealthState = 'healthy' | 'degraded' | 'unhealthy'
+
+/** `disabled` is turned off by configuration (NIP-46 off) and does not count. */
+export type CheckStatus = 'pass' | 'warn' | 'fail' | 'disabled'
+
+export interface RelayHealth {
+  url: string
+  connected: boolean
+}
+
+/** One of the bunker's health checks: `signer`, `database` or `relays`. */
+export interface HealthCheck {
+  name: string
+  status: CheckStatus
+  /** Fixed wording plus relay URLs; never raw errors. */
+  detail: string
+  /** The relay check only. */
+  relays?: RelayHealth[]
+}
+
 /** GET /api/bunker/status */
 export interface BunkerStatus {
-  status: string
+  status: HealthState
   pubkey: string
   /** The bunker's release version, from its BANCWR_VERSION; `0.0.0` when unversioned. */
   version: string
+  checks: HealthCheck[]
 }
 
 /** GET /api/version — served by the frontend itself, not proxied to the bunker. */

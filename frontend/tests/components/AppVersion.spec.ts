@@ -6,7 +6,7 @@ import { UApp } from '#components'
 import type { BunkerStatus } from '#shared/types/bunker'
 import AppVersion from '~/components/AppVersion.vue'
 
-const status = (version: string): BunkerStatus => ({ status: 'healthy', pubkey: 'npub1test', version })
+const status = (version: string): BunkerStatus => ({ status: 'healthy', pubkey: 'npub1test', version, checks: [] })
 
 // Collapsed, it renders a tooltip, which needs the provider UApp installs in app.vue.
 const Collapsed = defineComponent({

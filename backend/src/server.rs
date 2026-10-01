@@ -1,3 +1,4 @@
+use crate::health::{Check, Overall};
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
 use crate::db::RemoveOutcome;
@@ -26,11 +27,14 @@ pub struct HealthResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct BunkerStatus {
-    pub status: String,
+    /// Healthy, degraded or unhealthy, from the checks (#27).
+    pub status: Overall,
     pub pubkey: String,
     /// The running Bancwr version, from BANCWR_VERSION (#35). Deliberately not on /health, which
     /// stays cheap and dependency-free for container probes.
     pub version: String,
+    /// Each check's result, naming what needs attention (#27).
+    pub checks: Vec<Check>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -107,10 +111,13 @@ pub async fn get_status(
     State(state): State<AppState>,
 ) -> Json<BunkerStatus> {
     state.increment_http_request_count();
+    // A report, not a probe: 200 in every state. Probes use /health.
+    let (status, checks) = crate::health::report(&state).await;
     Json(BunkerStatus {
-        status: "healthy".to_string(),
+        status,
         pubkey: state.signer.read().await.public_key_bech32(),
         version: state.config.read().await.version.clone(),
+        checks,
     })
 }
 

@@ -251,6 +251,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "nostr",
+ "nostr-relay-builder",
  "nostr-relay-pool",
  "nostr-sdk",
  "reqwest",
@@ -1187,6 +1188,22 @@ checksum = "ce07b47c77b8e5a856727885fe0ae47b9aa53d8d853a2190dd479b5a0d6e4f52"
 dependencies = [
  "nostr",
  "tokio",
+]
+
+[[package]]
+name = "nostr-relay-builder"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad96846942b152771afc9d87f702ea21fae455f540a16d0a1cbeaa71ed242a85"
+dependencies = [
+ "async-utility",
+ "async-wsocket",
+ "atomic-destructor",
+ "negentropy 0.5.0",
+ "nostr",
+ "nostr-database",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

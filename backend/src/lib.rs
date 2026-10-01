@@ -12,3 +12,4 @@ pub mod registry;
 pub mod migrations;
 pub mod proxy_auth;
 pub mod healthcheck;
+pub mod health;

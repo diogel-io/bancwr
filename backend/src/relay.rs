@@ -22,7 +22,10 @@ impl RelayClient {
             info!("Connecting to relay: {}", url);
             pool.add_relay(url, RelayOptions::default()).await?;
         }
-        
+
+        // So /api/bunker/status can report which relays are connected (#27).
+        state.set_relay_pool(pool.clone()).await;
+
         Ok(Self { pool, state })
     }
     

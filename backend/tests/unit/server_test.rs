@@ -1,4 +1,5 @@
 use bunker::db::Database;
+use bunker::health::{CheckStatus, Overall};
 use bunker::server::{create_router, BunkerStatus, HealthResponse};
 use bunker::state::AppState;
 use bunker::config::Config;
@@ -85,7 +86,11 @@ async fn test_status_handler() {
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let status: BunkerStatus = from_slice(&body).unwrap();
-    assert_eq!(status.status, "healthy");
+    // NIP-46 is off here, so the relay check is disabled and the signer and database decide (#27).
+    assert_eq!(status.status, Overall::Healthy);
+    let names: Vec<&str> = status.checks.iter().map(|check| check.name.as_str()).collect();
+    assert_eq!(names, ["signer", "database", "relays"]);
+    assert_eq!(status.checks[2].status, CheckStatus::Disabled);
     assert_eq!(status.pubkey, expected_pubkey);
     // From the config, which Config::load fills from BANCWR_VERSION (#35).
     assert_eq!(status.version, "1.2.3-test");
