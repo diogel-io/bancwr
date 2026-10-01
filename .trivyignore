@@ -1,0 +1,8 @@
+# Accepted Trivy findings (#16). The CI and release gates fail on any critical or high finding with
+# a fix in a shipped image, except the IDs listed here.
+#
+# Each entry needs a comment above it: why it is accepted, and when to look again. For example:
+#   # libfoo in the distroless base; fixed upstream, not yet in Debian. Review 2026-11-01.
+#   CVE-2026-00000
+#
+# Empty: nothing is accepted.

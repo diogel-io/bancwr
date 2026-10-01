@@ -11,3 +11,4 @@ pub mod state;
 pub mod registry;
 pub mod migrations;
 pub mod proxy_auth;
+pub mod healthcheck;

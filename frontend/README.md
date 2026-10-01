@@ -142,6 +142,14 @@ administrator too: `E2E_ADMIN_PUBKEY=npub1… pnpm test:e2e:stack`.
 
 Keep the version in that command in step with `.mcp.json`.
 
+## Pinned dependencies
+
+`package.json` cannot hold comments, so pins and their reasons are listed here.
+
+| Package | Pinned to | Why | Unpin when |
+|---------|-----------|-----|------------|
+| `vue` (dependency and `pnpm.overrides`) | `3.5.38` | From 3.5.39 to at least 3.5.43, a page rendered on the server and hydrated in the browser keeps its `UFormField` labels pointing at the server's `useId()` values while the inputs are re-rendered with new ones, so `<label for>` no longer matches any `id`. Labels stop naming their fields for screen readers, and `getByLabel` finds nothing. Found by `e2e/team.spec.ts`, bisected in #16. (3.5.36 cannot be installed at all: it was published with `workspace:*` dependencies.) The override keeps Nuxt from installing a second, newer Vue. | A newer Vue passes `pnpm test:e2e` |
+
 ## Nostr (`nostr-tools`)
 
 [`nostr-tools`](https://github.com/nbd-wtf/nostr-tools) is the frontend's Nostr library, for
@@ -157,14 +165,12 @@ that runs the same checks in the Nuxt environment and in plain Node.
 | Relay I/O: `nostr-tools/pool` (`SimplePool`), `nostr-tools/relay` | **no** | yes |
 | NIP-07 signing (`window.nostr`) | no | yes |
 
-**Relay I/O is client-only.** The production image runs Node 20 (`node:20-slim` in the
-`Dockerfile`), which has no global `WebSocket`, so `SimplePool` on the server fails with
-`ReferenceError: WebSocket is not defined`. Local development runs a newer Node that has one, so
-the same code works under `pnpm dev` and breaks only once deployed. Open relays from `onMounted`, a
-`.client` plugin, inside `<ClientOnly>`, or behind `import.meta.client`, and never from a
-server-side `useAsyncData` or a route in `server/`. If the image moves to Node 22 or later (#16),
-this stops being a hard failure, but relays still belong in the browser: the server would otherwise
-hold relay connections on behalf of every visitor.
+**Relay I/O is client-only.** Open relays from `onMounted`, a `.client` plugin, inside
+`<ClientOnly>`, or behind `import.meta.client`, and never from a server-side `useAsyncData` or a
+route in `server/`: the server would otherwise hold relay connections on behalf of every visitor,
+and could be made to connect wherever a request pointed it. The image now runs Node 24 (#16), which
+has a global `WebSocket`, so a server-side `SimplePool` would no longer fail outright as it did on
+Node 20; the rule stands for those reasons, not for a missing API.
 
 ### Rules
 

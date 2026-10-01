@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner (Backend)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}
           format: 'sarif'
@@ -34,7 +34,8 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-backend-results.sarif'
-          category: trivy-backend
+          # What users pull. Separate from ci.yml's categories, so neither replaces the other (#16).
+          category: trivy-published-backend
 
   scan-frontend:
     runs-on: ubuntu-latest
@@ -43,7 +44,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner (Frontend)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}
           format: 'sarif'
@@ -54,4 +55,5 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-frontend-results.sarif'
-          category: trivy-frontend
+          # What users pull. Separate from ci.yml's categories, so neither replaces the other (#16).
+          category: trivy-published-frontend

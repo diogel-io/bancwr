@@ -1,0 +1,17 @@
+# Kept out of the image build context (#16). The build installs its own dependencies from the
+# lockfile; the host's node_modules, build output and local files must not leak in.
+node_modules
+.nuxt
+.output
+.data
+.cache
+dist
+test-results
+playwright-report
+blob-report
+.playwright-mcp
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

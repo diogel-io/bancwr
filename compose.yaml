@@ -3,8 +3,15 @@ services:
       image: ghcr.io/diogel-io/bancwr-diogel-backend:latest
       container_name: bancwr-bunker
       restart: unless-stopped
-      # No published port: only the frontend reaches the bunker, over the compose network. Check
-      # health from inside: podman exec bancwr-bunker curl -fs localhost:3000/health
+      # No published port: only the frontend reaches the bunker, over the compose network.
+      # The image has no shell or curl (#16); it checks itself. Podman ignores an image's own
+      # HEALTHCHECK, so it is repeated here. By hand: podman exec bancwr-bunker bunker healthcheck
+      healthcheck:
+        test: ["CMD", "bunker", "healthcheck"]
+        interval: 30s
+        timeout: 5s
+        start_period: 5s
+        retries: 3
       environment:
         - BUNKER_NSEC=${BUNKER_NSEC}
         # The first administrator's npub, registered at startup while no administrator exists.
@@ -14,6 +21,9 @@ services:
         - BUNKER_PORT=3000
         - RUST_LOG=info
         - DATABASE_PATH=/data/bancwr.db
+      # The bunker runs as UID 65532 (#16), so ./data must be writable by it. Once, before the first
+      # start: podman unshare chown -R 65532:65532 ./data   (rootless Podman)
+      #        sudo chown -R 65532:65532 ./data             (Docker)
       volumes:
         - ./data:/data:Z
 

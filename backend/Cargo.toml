@@ -89,3 +89,7 @@ path = "tests/integration/auth_test.rs"
 [[test]]
 name = "proxy_auth_test"
 path = "tests/unit/proxy_auth_test.rs"
+
+[[test]]
+name = "healthcheck_test"
+path = "tests/unit/healthcheck_test.rs"

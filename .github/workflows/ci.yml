@@ -65,7 +65,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push (dry-run)
+      - name: Build (not pushed)
         id: build-and-push
         uses: docker/build-push-action@v5
         with:
@@ -75,27 +75,68 @@ jobs:
           # 98 min backend build (#39); build arm64 on a native runner if it is ever published.
           platforms: linux/amd64
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
+          # Loaded into the runner's Docker, so the image that would ship can be scanned (#16).
+          load: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            bancwr-${{ matrix.component }}:ci
           labels: ${{ steps.meta.outputs.labels }}
           # One scope per component: unscoped, the two matrix jobs overwrote each other's cache.
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      # What ships (#16): every critical and high in the image, fixed or not, to code scanning.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: bancwr-${{ matrix.component }}:ci
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          severity: 'CRITICAL,HIGH'
+          trivyignores: '.trivyignore'
+
+      - name: Upload the image scan
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        with:
+          sarif_file: 'trivy-image.sarif'
+          # Its own category: sharing one with the filesystem scan below made each upload replace
+          # the other's results, which is how the base-image findings disappeared from view (#16).
+          category: trivy-image-${{ matrix.component }}
+
+      # The gate: a critical or high that has a fix, in what ships, fails the build. Findings with
+      # no fix yet are reported above but cannot be acted on, so they do not block. Accepted
+      # exceptions go in .trivyignore, each with a reason and a review date. See docs/releasing.md.
+      - name: Gate on fixable critical and high findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: bancwr-${{ matrix.component }}:ci
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+          # The SARIF scan above already fetched the vulnerability database.
+          skip-setup-trivy: true
+
+      # The lockfiles, including build-time dependencies that never ship: report-only.
+      - name: Scan the dependencies
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        if: always()
         with:
           scan-type: 'fs'
           scan-ref: '${{ matrix.context }}'
           format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL'
+          output: 'trivy-fs.sarif'
+          severity: 'CRITICAL,HIGH'
+          trivyignores: '.trivyignore'
 
-      - name: Upload Trivy scan results to GitHub Security tab
+      - name: Upload the dependency scan
         uses: github/codeql-action/upload-sarif@v3
-        if: always() && hashFiles('trivy-results.sarif') != ''
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
-          sarif_file: 'trivy-results.sarif'
-          category: trivy-${{ matrix.component }}
+          sarif_file: 'trivy-fs.sarif'
+          category: trivy-fs-${{ matrix.component }}
 
   # End-to-end tests against the real stack: both images, the frontend proxy and the bunker (#46).
   # Report-only: it is not a required check, so a failure shows on the PR without blocking it.
