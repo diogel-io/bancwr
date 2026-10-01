@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { createError } from 'h3'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import type { LogEntry } from '#shared/types/bunker'
 import Logs from '../../app/pages/logs.vue'
@@ -36,5 +37,15 @@ describe('Logs page', () => {
     const component = await mountSuspended(Logs)
     // It should render ActivityLog which shows "No data"
     expect(component.text()).toContain('No data')
+  })
+
+  it('explains a bunker 403 rather than breaking (#26)', async () => {
+    registerEndpoint('/api/bunker/logs', () => {
+      throw createError({ status: 403, data: { error: 'forbidden' } })
+    })
+
+    const component = await mountSuspended(Logs)
+
+    expect(component.find('[data-testid="forbidden-notice"]').text()).toContain('Your role no longer allows this page')
   })
 })

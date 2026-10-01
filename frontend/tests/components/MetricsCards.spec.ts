@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { createError } from 'h3'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { clearNuxtData } from '#imports'
 import MetricsCards from '~/components/MetricsCards.vue'
@@ -48,5 +49,15 @@ describe('MetricsCards', () => {
 
     expect(component.text()).toContain('Total Signatures')
     expect(component.text()).toContain('0')
+  })
+
+  it('explains a bunker 403 rather than breaking (#26)', async () => {
+    registerEndpoint('/api/bunker/metrics', () => {
+      throw createError({ status: 403, data: { error: 'forbidden' } })
+    })
+
+    const component = await mountSuspended(MetricsCards)
+
+    expect(component.find('[data-testid="forbidden-notice"]').text()).toContain('Your role no longer allows this page')
   })
 })

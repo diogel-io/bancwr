@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { useFetch } from '#imports'
 import type { LogEntry } from '#shared/types/bunker'
+import { isForbidden } from '~/utils/access'
 
-const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs', { key: 'logs-full' })
+const { data: logs, error } = await useFetch<LogEntry[]>('/api/bunker/logs', { key: 'logs-full' })
 </script>
 
 <template>
@@ -16,7 +17,8 @@ const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs', { key: 'lo
     </template>
 
     <template #body>
-      <UCard>
+      <ForbiddenNotice v-if="isForbidden(error)" />
+      <UCard v-else>
         <ActivityLog :rows="logs ?? []" />
       </UCard>
     </template>
