@@ -36,12 +36,14 @@
     "@nuxt/test-utils": "^3.23.0",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.0.0",
+    "@types/ws": "^8.18.1",
     "@vue/test-utils": "^2.4.6",
     "concurrently": "^9.1.2",
     "eslint": "^9.39.4",
     "happy-dom": "^20.10.6",
     "vitest": "^3.2.0",
-    "vue-tsc": "^3.2.1"
+    "vue-tsc": "^3.2.1",
+    "ws": "^8.21.0"
   },
   "packageManager": "pnpm@10.29.3+sha512.498e1fb4cca5aa06c1dcf2611e6fafc50972ffe7189998c409e90de74566444298ffe43e6cd2acdc775ba1aa7cc5e092a8b7054c811ba8c5770f84693d33d2dc"
 }

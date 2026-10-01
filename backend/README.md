@@ -64,12 +64,11 @@ Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signa
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
 for a role the route does not allow.
 
-**Until the frontend's sign-in (#11) lands, `BANCWR_PROXY_SECRET` is optional.** Unset, the API is
-unauthenticated, as before, and the bunker logs a warning at every start; the frontend cannot sign
-requests yet, so setting it now locks the dashboard out. The bunker has no CORS headers: browsers
-never call it directly.
+`BANCWR_PROXY_SECRET` is required: the bunker does not start without it (#11). The bunker has no
+CORS headers: browsers never call it directly.
 
-The examples below show the routes without the headers, as they behave with the secret unset.
+The examples below leave the three headers out for brevity; every `/api/bunker/*` request needs
+them.
 
 ### Health Check
 `GET /health`

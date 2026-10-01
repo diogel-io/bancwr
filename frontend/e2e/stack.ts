@@ -5,6 +5,8 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// With the extension: stack-cli.ts runs this file directly under Node.
+import { cookieJarPost, signInAs } from './sign-in.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -69,25 +71,27 @@ export function down(): void {
 }
 
 /**
- * Polls GET /api/bunker/status through the frontend until the bunker reports healthy. A 200 here
- * proves the browser-facing path end to end: the Nuxt server, its proxy, and the bunker.
+ * Waits until an administrator can sign in and see the bunker healthy. That proves the whole path:
+ * the Nuxt server, sign-in (which reaches the bunker as the service identity for its pubkey and the
+ * vault lookup), the session, the signing proxy, and the bunker's guard.
  */
-export async function waitForBunker(timeoutMs = Number(process.env.E2E_READY_TIMEOUT || 120_000)) {
-  const url = `${baseUrl()}/api/bunker/status`
+export async function waitForStack(adminNsec: string, timeoutMs = Number(process.env.E2E_READY_TIMEOUT || 120_000)) {
   const deadline = Date.now() + timeoutMs
   let last = 'no response'
 
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url)
-      if (response.ok) {
+      const jar = cookieJarPost()
+      const login = await signInAs(adminNsec, baseUrl(), jar.post)
+      if (login.status === 200) {
+        const response = await fetch(`${baseUrl()}/api/bunker/status`, { headers: { cookie: jar.cookie() } })
         const body = (await response.json()) as { status?: string }
-        if (body.status === 'healthy') {
+        if (response.ok && body.status === 'healthy') {
           return
         }
-        last = `status ${JSON.stringify(body.status)}`
+        last = `status HTTP ${response.status} ${JSON.stringify(body.status)}`
       } else {
-        last = `HTTP ${response.status}`
+        last = `sign-in HTTP ${login.status} ${JSON.stringify(login.body)}`
       }
     } catch (error) {
       last = error instanceof Error ? error.message : String(error)
@@ -95,5 +99,5 @@ export async function waitForBunker(timeoutMs = Number(process.env.E2E_READY_TIM
     await new Promise(resolve => setTimeout(resolve, 1000))
   }
 
-  throw new Error(`The bunker was not healthy at ${url} after ${timeoutMs} ms (last: ${last}).`)
+  throw new Error(`The stack was not ready at ${baseUrl()} after ${timeoutMs} ms (last: ${last}).`)
 }

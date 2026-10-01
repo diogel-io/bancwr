@@ -13,6 +13,9 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let config = Config::load()?;
+    // Before touching the database: sign-in (#11) signs every proxied request, so the API is never
+    // left unauthenticated.
+    config.require_proxy_secret()?;
     info!("Bancwr Diogel {} starting...", config.version);
     let db = Database::new(&config.db_path)?;
 
@@ -39,14 +42,6 @@ async fn main() -> anyhow::Result<()> {
              BANCWR_ADMIN_PUBKEY to the first administrator's npub and restart."
         ),
         None => {}
-    }
-
-    if config.proxy_secret.is_none() {
-        warn!(
-            "BANCWR_PROXY_SECRET is not set, so /api/bunker/* is unauthenticated: anyone who can \
-             reach this port can read and change the team. Set it (and NUXT_PROXY_SECRET on the \
-             frontend) to the same value; sign-in (#11) will require it."
-        );
     }
 
     let signer = Signer::new(config.secret_key.clone());

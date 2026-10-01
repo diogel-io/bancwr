@@ -2,6 +2,8 @@
 // Imported rather than left to Nitro's auto-import: nothing in this file's type context
 // resolves auto-imports, so an explicit path keeps our own symbols checkable.
 import { resolveBackendUrl, BackendTargetError } from '../../utils/backend'
+import { proxyHeaders } from '../../utils/auth/proxy-signature'
+import { sessionPubkey } from '../../utils/auth/session'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -24,23 +26,31 @@ export default defineEventHandler(async (event) => {
     throw error
   }
 
-  // Get the path after /api/bunker/
-  const path = event.context.params?._ || ''
-  const url = `${backendUrl}/api/bunker/${path}`
+  // Only a signed-in session is proxied (#11). The bunker checks the role itself (#25), so a
+  // signed-in user without the role for a route gets the bunker's 403, forwarded below.
+  const pubkey = await sessionPubkey(event)
+  if (!pubkey) {
+    throw createError({ statusCode: 401, statusMessage: 'Not signed in', data: { error: 'not_authenticated' } })
+  }
+
+  // The request's own path and query, forwarded as they arrived: the signature covers this exact
+  // string, and the bunker checks it against what it receives.
+  const { pathname, search } = getRequestURL(event)
+  const target = `${pathname}${search}`
+  const url = `${backendUrl}${target}`
 
   // Forward the request
   const method = getMethod(event)
   const body = method !== 'GET' ? await readBody(event) : undefined
-  const query = getQuery(event)
 
   try {
     return await $fetch(url, {
       method,
       body,
-      query,
       headers: {
-        // Forward relevant headers
         'Content-Type': 'application/json',
+        // Built here from the session, never copied from the browser's request.
+        ...proxyHeaders(config.proxySecret, pubkey, method, target),
       },
     })
   } catch (error: any) {

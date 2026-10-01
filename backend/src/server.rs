@@ -282,8 +282,8 @@ pub async fn remove_team_member(
 
 /// Creates the Axum router with all routes
 pub fn create_router(state: AppState) -> Router {
-    // Enforcement is on when BANCWR_PROXY_SECRET is set, and off (as before #25) when it is not,
-    // until the frontend's sign-in (#11) can sign every request; #11 makes the secret required.
+    // Enforcement is on when BANCWR_PROXY_SECRET is set. main.rs refuses to start without it (#11),
+    // so it is always on in a running bunker; tests can still build the router without it.
     // Nothing else holds the config lock while the router is built.
     let secret = state
         .config
