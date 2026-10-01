@@ -17,11 +17,7 @@ const keySource = computed(() =>
 <template>
   <UDashboardPanel id="config">
     <template #header>
-      <UDashboardNavbar title="Bunker Configuration">
-        <template #leading>
-          <UDashboardSidebarCollapse />
-        </template>
-      </UDashboardNavbar>
+      <AppNavbar title="Bunker Configuration" />
     </template>
 
     <template #body>

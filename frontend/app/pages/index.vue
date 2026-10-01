@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
 import { ROLE_LABELS } from '#shared/types/bunker'
-import type { BunkerStatus, LogEntry } from '#shared/types/bunker'
+import type { LogEntry } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
 
 // Role-aware (#26): administrators get metrics, status and recent activity; users and signers the
@@ -11,15 +11,16 @@ const auth = useAuth()
 const role = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.role : undefined)
 const isAdministrator = computed(() => role.value === 'administrator')
 
-const { data: status } = await useFetch<BunkerStatus>('/api/bunker/status')
+// The same polled state as the navbar indicator (#28), so the two never disagree.
+const { health, ensure } = useBunkerHealth()
+await ensure()
 const { data: logs, error: logsError } = await useFetch<LogEntry[]>('/api/bunker/logs', {
   immediate: isAdministrator.value
 })
 
-// Yellow for degraded (#27); anything else that is not healthy, including no answer, is red.
-// The navbar indicator and the per-check detail are #28's.
-const DOT: Record<string, string> = { healthy: 'bg-success', degraded: 'bg-warning' }
-const dotClass = computed(() => DOT[status.value?.status ?? ''] ?? 'bg-error')
+// Yellow for degraded (#27), red for unhealthy or no answer, grey until the first answer.
+const DOT: Record<string, string> = { healthy: 'bg-success', degraded: 'bg-warning', unhealthy: 'bg-error' }
+const dotClass = computed(() => DOT[health.value.state] ?? 'bg-neutral-400')
 
 const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(0, 5) : []))
 </script>
@@ -27,11 +28,7 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
 <template>
   <UDashboardPanel id="dashboard">
     <template #header>
-      <UDashboardNavbar title="Dashboard">
-        <template #leading>
-          <UDashboardSidebarCollapse />
-        </template>
-      </UDashboardNavbar>
+      <AppNavbar title="Dashboard" />
     </template>
 
     <template #body>
@@ -53,14 +50,20 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
           </template>
           <div class="flex items-center gap-2">
             <div
+              data-testid="status-dot"
               :class="dotClass"
               class="w-3 h-3 rounded-full animate-pulse"
             />
-            <span class="capitalize">{{ status?.status || 'Unknown' }}</span>
+            <span class="capitalize">{{ health.state }}</span>
           </div>
           <p class="text-sm text-muted mt-2 truncate">
-            {{ status?.pubkey ?? '' }}
+            {{ health.pubkey ?? '' }}
           </p>
+          <HealthChecks
+            v-if="health.checks.length"
+            :checks="health.checks"
+            class="mt-4"
+          />
         </UCard>
 
         <UCard v-if="isAdministrator">

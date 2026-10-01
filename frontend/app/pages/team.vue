@@ -42,11 +42,7 @@ const addMember = async () => {
 <template>
   <UDashboardPanel id="team">
     <template #header>
-      <UDashboardNavbar title="Team Management">
-        <template #leading>
-          <UDashboardSidebarCollapse />
-        </template>
-      </UDashboardNavbar>
+      <AppNavbar title="Team Management" />
     </template>
 
     <template #body>

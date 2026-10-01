@@ -21,6 +21,12 @@ those pages, and the route middleware refuses the rest with a permission-denied 
 signers see the dashboard's bunker health only. A new page adds its route there. This is for
 usability: the bunker enforces the same matrix itself (see [`../backend`](../backend/README.md)).
 
+Every page's header is `AppNavbar`, which carries the bunker's health top left (`BunkerHealth`):
+green, yellow or red with a text label, and each check's detail on click. It polls
+`/api/bunker/status` every 30 seconds while the tab is visible, through one shared state
+(`useBunkerHealth`); no answer counts as red. The checks themselves are the bunker's (see
+[`../backend`](../backend/README.md#bunker-status)).
+
 ## Setup
 
 ```bash

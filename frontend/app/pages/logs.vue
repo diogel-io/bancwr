@@ -9,11 +9,7 @@ const { data: logs, error } = await useFetch<LogEntry[]>('/api/bunker/logs', { k
 <template>
   <UDashboardPanel id="logs">
     <template #header>
-      <UDashboardNavbar title="Signing Activity Log">
-        <template #leading>
-          <UDashboardSidebarCollapse />
-        </template>
-      </UDashboardNavbar>
+      <AppNavbar title="Signing Activity Log" />
     </template>
 
     <template #body>

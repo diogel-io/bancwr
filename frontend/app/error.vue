@@ -40,11 +40,7 @@ function toDashboard() {
     <NuxtLayout>
       <UDashboardPanel id="error">
         <template #header>
-          <UDashboardNavbar :title="forbidden ? 'No access' : `Error ${status}`">
-            <template #leading>
-              <UDashboardSidebarCollapse />
-            </template>
-          </UDashboardNavbar>
+          <AppNavbar :title="forbidden ? 'No access' : `Error ${status}`" />
         </template>
 
         <template #body>
