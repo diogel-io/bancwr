@@ -6,7 +6,7 @@ import { signInAs } from '../helpers/session'
 import Index from '../../app/pages/index.vue'
 import { clearNuxtData } from '#imports'
 
-const mockStatus: BunkerStatus = { status: 'healthy', pubkey: 'npub1test', version: '0.1.0' }
+const mockStatus: BunkerStatus = { status: 'healthy', pubkey: 'npub1test', version: '0.1.0', checks: [] }
 // The real LogEntry shape from backend/src/server.rs.
 const mockLogs: LogEntry[] = [
   { id: '1', event_id: 'e1', pubkey: 'npub1alice', event_kind: 1, timestamp: '2025-01-01T10:00:00Z' }
@@ -16,11 +16,11 @@ const mockMetrics = { http_requests: 42, nip46_connections: 3, total_signatures:
 // What each endpoint was asked for, so a role's view can be shown not to request the rest.
 let requested: string[] = []
 
-function serve(admin: { logs?: () => unknown } = {}) {
+function serve(admin: { logs?: () => unknown } = {}, status: BunkerStatus = mockStatus) {
   requested = []
   registerEndpoint('/api/bunker/status', () => {
     requested.push('status')
-    return mockStatus
+    return status
   })
   registerEndpoint('/api/bunker/logs', () => {
     requested.push('logs')
@@ -94,4 +94,19 @@ describe('Index page', () => {
       })
     })
   }
+
+  // Yellow is reachable now that the bunker reports degraded (#27).
+  describe('status dot', () => {
+    beforeEach(() => signInAs('signer'))
+
+    for (const [state, colour] of [['healthy', 'bg-success'], ['degraded', 'bg-warning'], ['unhealthy', 'bg-error']] as const) {
+      it(`is ${colour} when the bunker is ${state}`, async () => {
+        serve({}, { ...mockStatus, status: state })
+        const component = await mountSuspended(Index)
+
+        expect(component.find('.rounded-full').classes()).toContain(colour)
+        expect(component.text()).toContain(state)
+      })
+    }
+  })
 })

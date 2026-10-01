@@ -4,6 +4,7 @@ use crate::signer::Signer;
 use crate::db::Database;
 use crate::nip46::Nip46Handler;
 use crate::config::Config;
+use nostr_relay_pool::RelayPool;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,6 +16,8 @@ pub struct AppState {
     pub nip46_handler: Arc<Nip46Handler>,
     pub config: Arc<RwLock<Config>>,
     http_request_count: Arc<AtomicU64>,
+    /// The NIP-46 relay pool, once the relay client has started, for the health check (#27).
+    relay_pool: Arc<RwLock<Option<RelayPool>>>,
 }
 
 impl AppState {
@@ -30,6 +33,7 @@ impl AppState {
             nip46_handler,
             config,
             http_request_count: Arc::new(AtomicU64::new(0)),
+            relay_pool: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -39,5 +43,14 @@ impl AppState {
 
     pub fn http_request_count(&self) -> u64 {
         self.http_request_count.load(Ordering::SeqCst)
+    }
+
+    /// Makes the relay pool visible to the health check. A cheap clone: it shares the pool.
+    pub async fn set_relay_pool(&self, pool: RelayPool) {
+        *self.relay_pool.write().await = Some(pool);
+    }
+
+    pub async fn relay_pool(&self) -> Option<RelayPool> {
+        self.relay_pool.read().await.clone()
     }
 }

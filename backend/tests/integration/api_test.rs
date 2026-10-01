@@ -31,6 +31,15 @@ async fn test_api_status() {
     assert_eq!(body["status"], "healthy");
     assert_eq!(body["pubkey"], app.bunker.public_key().to_bech32().unwrap());
     assert_eq!(body["version"], "0.0.0");
+    // Each check by name, as the frontend reads them (#27). NIP-46 is off in the test app.
+    assert_eq!(
+        body["checks"],
+        serde_json::json!([
+            { "name": "signer", "status": "pass", "detail": "The signing key signs and verifies." },
+            { "name": "database", "status": "pass", "detail": "The database answers." },
+            { "name": "relays", "status": "disabled", "detail": "NIP-46 is turned off (NIP46_ENABLED), so no relays are used." }
+        ])
+    );
 }
 
 #[tokio::test]

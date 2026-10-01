@@ -209,6 +209,13 @@ impl Database {
         Ok(had_nsec)
     }
 
+    /// Reads the audit log's table, for the health check (#27). Cheap: at most one row.
+    pub fn ping(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.query_row("SELECT count(*) FROM (SELECT 1 FROM signing_logs LIMIT 1)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     /// Get total number of signatures
     pub fn signature_count(&self) -> anyhow::Result<u64> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;

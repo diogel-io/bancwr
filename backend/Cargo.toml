@@ -29,6 +29,8 @@ nostr-relay-pool = "0.39"
 tempfile = "3"
 reqwest = { version = "0.12", features = ["json"] }
 tower = { version = "0.4", features = ["util"] }
+# An in-process relay, so the health tests can connect NIP-46 to something real (#27).
+nostr-relay-builder = "0.39"
 
 [profile.release]
 opt-level = 3
@@ -93,3 +95,7 @@ path = "tests/unit/proxy_auth_test.rs"
 [[test]]
 name = "healthcheck_test"
 path = "tests/unit/healthcheck_test.rs"
+
+[[test]]
+name = "health_test"
+path = "tests/unit/health_test.rs"

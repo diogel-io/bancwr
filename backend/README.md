@@ -76,7 +76,25 @@ Returns `{"status": "ok"}` when the server is running. Used for health checks. N
 
 ### Bunker Status
 `GET /api/bunker/status`
-Returns the status and public key of the bunker.
+Returns the bunker's health, public key and version. It answers 200 whatever the health: it is a
+report, not a probe. Container probes use `/health`, which touches nothing, so a flapping relay
+never restarts the container.
+
+`status` is `healthy`, `degraded` or `unhealthy`, from three checks in `checks`:
+
+| Check | `pass` | `warn` | `fail` |
+|-------|--------|--------|--------|
+| `signer` | signs and verifies a throwaway event, never published | | it cannot |
+| `database` | the audit log's table answers | | it does not |
+| `relays` | every NIP-46 relay is connected | some are, not all | none is, or NIP-46 is on with no relays |
+
+Any `fail` makes the bunker `unhealthy`; otherwise any `warn` makes it `degraded`. No relay
+connected is a failure because NIP-46 is the bunker's only signing path. With NIP-46 off, the
+relay check is `disabled` and does not count. A relay still connecting counts as not connected, so
+for the first seconds after a start the relay check reads red.
+
+Every role can read status, so `detail` is fixed wording plus relay URLs: never raw errors, paths
+or keys. The raw error is in the bunker log.
 
 ### Get Config
 `GET /api/bunker/config`
@@ -113,8 +131,22 @@ curl http://localhost:3000/api/bunker/status
 Response:
 ```json
 {
-  "status": "healthy",
-  "pubkey": "npub1..."
+  "status": "degraded",
+  "pubkey": "npub1...",
+  "version": "0.1.0",
+  "checks": [
+    { "name": "signer", "status": "pass", "detail": "The signing key signs and verifies." },
+    { "name": "database", "status": "pass", "detail": "The database answers." },
+    {
+      "name": "relays",
+      "status": "warn",
+      "detail": "1 of 2 relays connected. Not connected: wss://relay.damus.io",
+      "relays": [
+        { "url": "wss://relay.nsecbunker.com", "connected": true },
+        { "url": "wss://relay.damus.io", "connected": false }
+      ]
+    }
+  ]
 }
 ```
 

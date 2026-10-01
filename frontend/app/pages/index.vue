@@ -16,6 +16,11 @@ const { data: logs, error: logsError } = await useFetch<LogEntry[]>('/api/bunker
   immediate: isAdministrator.value
 })
 
+// Yellow for degraded (#27); anything else that is not healthy, including no answer, is red.
+// The navbar indicator and the per-check detail are #28's.
+const DOT: Record<string, string> = { healthy: 'bg-success', degraded: 'bg-warning' }
+const dotClass = computed(() => DOT[status.value?.status ?? ''] ?? 'bg-error')
+
 const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(0, 5) : []))
 </script>
 
@@ -48,7 +53,7 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
           </template>
           <div class="flex items-center gap-2">
             <div
-              :class="status?.status === 'healthy' ? 'bg-success' : 'bg-error'"
+              :class="dotClass"
               class="w-3 h-3 rounded-full animate-pulse"
             />
             <span class="capitalize">{{ status?.status || 'Unknown' }}</span>
