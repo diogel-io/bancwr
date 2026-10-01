@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
 import type { ConfigResponse } from '#shared/types/bunker'
+import { isForbidden } from '~/utils/access'
 
 // Read-only (#42). The signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC when the bunker
 // starts; the API does not accept a key, and never returns one.
-const { data: config } = await useFetch<ConfigResponse>('/api/bunker/config')
+const { data: config, error } = await useFetch<ConfigResponse>('/api/bunker/config')
 
 const keySource = computed(() =>
   config.value?.nsec_file
@@ -24,7 +25,11 @@ const keySource = computed(() =>
     </template>
 
     <template #body>
-      <UCard class="max-w-2xl">
+      <ForbiddenNotice v-if="isForbidden(error)" />
+      <UCard
+        v-else
+        class="max-w-2xl"
+      >
         <dl class="space-y-6">
           <div>
             <dt class="text-sm font-medium">

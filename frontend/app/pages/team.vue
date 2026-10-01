@@ -2,8 +2,9 @@
 import { useFetch, ref, reactive, useToast } from '#imports'
 import { ROLE_LABELS } from '#shared/types/bunker'
 import type { AddTeamMemberRequest, Role, TeamMember } from '#shared/types/bunker'
+import { isForbidden } from '~/utils/access'
 
-const { data: team, refresh } = await useFetch<TeamMember[]>('/api/bunker/team', { key: 'team-list' })
+const { data: team, error, refresh } = await useFetch<TeamMember[]>('/api/bunker/team', { key: 'team-list' })
 
 const state = reactive<AddTeamMemberRequest>({
   name: '',
@@ -49,7 +50,11 @@ const addMember = async () => {
     </template>
 
     <template #body>
-      <div class="space-y-6">
+      <ForbiddenNotice v-if="isForbidden(error)" />
+      <div
+        v-else
+        class="space-y-6"
+      >
         <TeamMemberList
           :data="team || []"
           @refresh="refresh"

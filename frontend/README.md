@@ -16,6 +16,11 @@ Requests to `/api/bunker/*` are proxied to the backend by `server/api/bunker/[..
 target comes from `NUXT_API_BASE` and defaults to `http://localhost:3000`. Nothing else is
 proxied. The proxy refuses a target that resolves to this server, rather than looping.
 
+Which role may open which page is set in one place, `app/utils/access.ts`: the sidebar offers only
+those pages, and the route middleware refuses the rest with a permission-denied page. Users and
+signers see the dashboard's bunker health only. A new page adds its route there. This is for
+usability: the bunker enforces the same matrix itself (see [`../backend`](../backend/README.md)).
+
 ## Setup
 
 ```bash
@@ -91,9 +96,10 @@ Each run:
    proves sign-in, the session, the signed proxy and the bunker's guard;
 4. starts a minimal relay (`e2e/relay.ts`, on `127.0.0.1:7777`) and a NIP-46 test signer
    (`e2e/remote-signer.ts`) inside the Playwright process, and registers that signer's key as a
-   `user`;
+   `user`, then registers one more key as a `user` and one as a `signer`, for the role specs;
 5. runs the specs in Chromium, one at a time. `test` from `e2e/fixtures.ts` starts each one signed
-   in as the administrator; `anonymousTest` does not;
+   in as the administrator, or as another role with `test.use({ role: 'signer' })`;
+   `anonymousTest` does not sign in;
 6. saves the container logs to `test-results/compose.log` and removes the stack.
 
 Prerequisites: Docker Compose or Podman Compose, and Chromium for Playwright, installed once:

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
 import type { Metrics } from '#shared/types/bunker'
+import { isForbidden } from '~/utils/access'
 
-const { data: metrics } = await useFetch<Metrics>('/api/bunker/metrics', { key: 'bunker-metrics' })
+// Administrators only: the dashboard renders this for them alone (#26).
+const { data: metrics, error } = await useFetch<Metrics>('/api/bunker/metrics', { key: 'bunker-metrics' })
 
 const cards = computed(() => [
   {
@@ -26,7 +28,11 @@ const cards = computed(() => [
 </script>
 
 <template>
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+  <ForbiddenNotice v-if="isForbidden(error)" />
+  <div
+    v-else
+    class="grid grid-cols-1 sm:grid-cols-3 gap-4"
+  >
     <UCard
       v-for="card in cards"
       :key="card.label"

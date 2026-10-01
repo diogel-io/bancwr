@@ -39,14 +39,28 @@ export function contextPost(request: APIRequestContext): PostLike {
   }
 }
 
+export type Role = 'administrator' | 'user' | 'signer'
+
+// The keys global-setup.ts registered for each role.
+const NSEC_VARIABLES: Record<Role, string> = {
+  administrator: 'E2E_ADMIN_NSEC',
+  user: 'E2E_USER_NSEC',
+  signer: 'E2E_SIGNER_NSEC'
+}
+
 /**
- * `test`: every page starts signed in as the seeded administrator (#11), through the page's own
- * request context, so the browser holds the session cookie.
+ * `test`: every page starts signed in (#11), through the page's own request context, so the
+ * browser holds the session cookie. As the seeded administrator unless a spec says
+ * `test.use({ role: 'user' })` or `'signer'` (#26).
  */
-export const test = anonymousTest.extend<{ signedIn: undefined }>({
-  signedIn: [async ({ page }, use) => {
-    const login = await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), contextPost(page.request))
-    expect(login.status, `administrator sign-in: ${JSON.stringify(login.body)}`).toBe(200)
+export const test = anonymousTest.extend<{ role: Role, signedIn: undefined }>({
+  role: ['administrator', { option: true }],
+
+  signedIn: [async ({ page, role }, use) => {
+    const nsec = process.env[NSEC_VARIABLES[role]]
+    expect(nsec, `${NSEC_VARIABLES[role]} is set by global setup`).toBeTruthy()
+    const login = await signInAs(nsec!, baseUrl(), contextPost(page.request))
+    expect(login.status, `${role} sign-in: ${JSON.stringify(login.body)}`).toBe(200)
     await use(undefined)
   }, { auto: true }]
 })

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import Team from '../../app/pages/team.vue'
 import { clearNuxtData } from '#imports'
-import { readBody } from 'h3'
+import { createError, readBody } from 'h3'
 
 describe('Team page', () => {
   beforeEach(async () => {
@@ -75,5 +75,15 @@ describe('Team page', () => {
     await vi.waitFor(() => expect(component.text()).toContain('Bob'))
     // The default role is sent with its settled value (#24).
     expect(posted).toEqual({ name: 'Bob', pubkey: 'npub2', role: 'signer' })
+  })
+
+  it('explains a bunker 403 rather than breaking (#26)', async () => {
+    registerEndpoint('/api/bunker/team', () => {
+      throw createError({ status: 403, data: { error: 'forbidden' } })
+    })
+
+    const component = await mountSuspended(Team)
+
+    expect(component.find('[data-testid="forbidden-notice"]').text()).toContain('Your role no longer allows this page')
   })
 })

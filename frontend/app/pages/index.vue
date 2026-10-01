@@ -1,9 +1,20 @@
 <script setup lang="ts">
 import { useFetch, computed } from '#imports'
+import { ROLE_LABELS } from '#shared/types/bunker'
 import type { BunkerStatus, LogEntry } from '#shared/types/bunker'
+import { isForbidden } from '~/utils/access'
+
+// Role-aware (#26): administrators get metrics, status and recent activity; users and signers the
+// bunker's health only. Their view never requests the administrator-only data, which the bunker
+// would refuse anyway (#25).
+const auth = useAuth()
+const role = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.role : undefined)
+const isAdministrator = computed(() => role.value === 'administrator')
 
 const { data: status } = await useFetch<BunkerStatus>('/api/bunker/status')
-const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs')
+const { data: logs, error: logsError } = await useFetch<LogEntry[]>('/api/bunker/logs', {
+  immediate: isAdministrator.value
+})
 
 const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(0, 5) : []))
 </script>
@@ -20,7 +31,14 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
 
     <template #body>
       <div class="space-y-6">
-        <MetricsCards />
+        <MetricsCards v-if="isAdministrator" />
+        <p
+          v-else-if="role"
+          data-testid="role-summary"
+          class="text-sm text-muted"
+        >
+          Signed in as {{ ROLE_LABELS[role] }}. You can see the bunker's health here.
+        </p>
 
         <UCard>
           <template #header>
@@ -40,7 +58,7 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
           </p>
         </UCard>
 
-        <UCard>
+        <UCard v-if="isAdministrator">
           <template #header>
             <div class="flex items-center justify-between">
               <h3 class="font-bold">
@@ -56,7 +74,11 @@ const recentLogs = computed(() => (Array.isArray(logs.value) ? logs.value.slice(
               </UButton>
             </div>
           </template>
-          <ActivityLog :rows="recentLogs" />
+          <ForbiddenNotice v-if="isForbidden(logsError)" />
+          <ActivityLog
+            v-else
+            :rows="recentLogs"
+          />
         </UCard>
       </div>
     </template>

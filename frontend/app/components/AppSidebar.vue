@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
+import { canOpen } from '~/utils/access'
 
 defineProps<{ collapsed?: boolean }>()
 
 // Flat, because Bancwr has four screens. The template this is modelled on nests a Settings
 // section, but it has sixteen.
-const links: NavigationMenuItem[] = [
+const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', to: '/' },
   { label: 'Config', icon: 'i-lucide-settings', to: '/config' },
   { label: 'Team', icon: 'i-lucide-users', to: '/team' },
   { label: 'Logs', icon: 'i-lucide-scroll-text', to: '/logs' }
 ]
+
+// Only what the signed-in role may open (#26): the middleware refuses the rest anyway, so offering
+// it would only lead to a permission-denied page.
+const auth = useAuth()
+const links = computed<NavigationMenuItem[]>(() => {
+  const state = auth.state.value
+  return state.status === 'signed-in' ? allLinks.filter(link => canOpen(state.role, link.to)) : []
+})
 </script>
 
 <template>
