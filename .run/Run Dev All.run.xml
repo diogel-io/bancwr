@@ -5,7 +5,7 @@
     <scripts>
       <script value="dev:all" />
     </scripts>
-    <node-interpreter value="$USER_HOME$/.nvm/versions/node/v26.2.0/bin/node" />
+    <node-interpreter value="project" />
     <package-manager value="$PROJECT_DIR$/../../../../../../linuxbrew/.linuxbrew/bin/pnpm" />
     <envs />
     <method v="2" />

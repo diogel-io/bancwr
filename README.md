@@ -75,8 +75,12 @@ compose, set `NUXT_API_BASE` to the bunker's address yourself; it defaults to
 network. To check its health from the host:
 
 ```bash
-podman exec bancwr-bunker curl -fs localhost:3000/health
+podman exec bancwr-bunker bunker healthcheck
 ```
+
+The images are distroless (#16): no shell, package manager, curl or npm, so `podman exec … sh` does
+not work. To debug, run the matching `:debug-nonroot` base for a busybox shell, or temporarily
+change the `FROM` line in the Dockerfile to it.
 
 The API behind it only answers requests the frontend has signed with `BANCWR_PROXY_SECRET`, naming
 the signed-in key, and checks that key's role in the vault each time. The bunker does not start
@@ -114,6 +118,24 @@ authority, which each browser then has to trust. Set `NUXT_SITE_ORIGIN` to exact
 the browser's address bar, such as `https://bancwr.example`: sign-in events name it, and a mismatch
 is refused. For development on one machine, `NUXT_SITE_ORIGIN=http://localhost:3001` works without
 TLS.
+
+### Upgrading: the data directory
+
+Both containers run as UID 65532, not root (#16). If you ran the bunker before this change, its
+`./data` directory belongs to root inside the container, and the bunker can no longer write its
+database. Hand it over once, before starting the new image:
+
+```bash
+podman unshare chown -R 65532:65532 ./data
+```
+
+With Docker instead of rootless Podman:
+
+```bash
+sudo chown -R 65532:65532 ./data
+```
+
+A new installation needs the same step before the first start.
 
 ### The first administrator
 

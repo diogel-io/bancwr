@@ -7,8 +7,23 @@ use bunker::signer::Signer;
 use std::net::SocketAddr;
 use tracing::{error, info, warn};
 
+fn main() -> anyhow::Result<()> {
+    // `bunker healthcheck`: the container's probe (#16). Handled before anything else, so it needs
+    // neither the signing key nor a runtime.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        match bunker::healthcheck::check(bunker::healthcheck::port_from_env()) {
+            Ok(()) => std::process::exit(0),
+            Err(reason) => {
+                eprintln!("{}", reason);
+                std::process::exit(1);
+            }
+        }
+    }
+    serve()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn serve() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt::init();
 

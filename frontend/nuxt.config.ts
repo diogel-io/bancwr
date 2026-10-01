@@ -18,9 +18,7 @@ export default defineNuxtConfig({
     },
     modules: [
         '@nuxt/eslint',
-        '@nuxt/ui',
-        '@nuxt/image',
-        '@nuxtjs/mdc'
+        '@nuxt/ui'
     ],
     devtools: {enabled: true},
     app: {

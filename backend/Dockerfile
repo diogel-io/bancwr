@@ -42,10 +42,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Stage 3: Builder - compiles dependencies and the app
 FROM chef AS builder
 
-# Install build dependencies
+# Build dependencies. No OpenSSL: the release binary links only libc, libm and libgcc (#16);
+# OpenSSL enters only through reqwest, a dev-dependency the release build does not compile.
 RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
@@ -58,14 +57,11 @@ COPY . .
 RUN cargo build --release
 
 # Stage 4: Runtime
-FROM debian:bookworm-slim
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libssl3 \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Distroless (#16): glibc and libgcc, which is all the binary links, and nothing else: no shell,
+# apt, perl, curl, zlib or gnutls, which carried every critical finding in the old image. The
+# :nonroot tag runs as UID 65532; the data volume must be writable by it (see the README).
+# The tag floats on purpose: the weekly rebuild picks up its fixes.
+FROM gcr.io/distroless/cc-debian13:nonroot
 
 WORKDIR /app
 
@@ -82,8 +78,8 @@ ENV BUNKER_PORT=${DEFAULT_PORT}
 
 EXPOSE ${DEFAULT_PORT}
 
-# Healthcheck
+# There is no curl: the binary probes itself (`bunker healthcheck`, GET /health on BUNKER_PORT).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:${BUNKER_PORT}/health || exit 1
+  CMD ["bunker", "healthcheck"]
 
-CMD ["bunker"]
+ENTRYPOINT ["bunker"]

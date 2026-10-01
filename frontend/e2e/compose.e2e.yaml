@@ -24,7 +24,9 @@ services:
     # Every run starts with an empty database and leaves nothing on disk. NIP46_ENABLED is left
     # unset, so the bunker makes no relay connections.
     tmpfs:
-      - /data
+      # The bunker runs as UID 65532 (#16). mode=1777 lets it write here under both Docker and
+      # Podman (Podman rejects uid=).
+      - /data:mode=1777
     # No published port: the browser reaches the bunker only through the frontend proxy, which is
     # the path under test.
 

@@ -58,12 +58,13 @@ podman run --rm -v "$PWD:/repo:Z" docker.io/gittools/gitversion:6.8.2 /repo /sho
 
 ## Image tags
 
-Every push to `master` and every `v*` tag publishes both images to GHCR:
+Every push to `master` and every `v*` tag publishes both images to GHCR, and so does the weekly
+rebuild of `master` (see [Weekly rebuild](#weekly-rebuild)):
 
 | Tag | Written on | Points at |
 | --- | --- | --- |
-| `latest` | push to `master` | The current `master` commit. Trunk, not a reviewed release. |
-| `master` | push to `master` | The same image as `latest`. |
+| `latest` | push to `master`, weekly rebuild | The current `master` commit. Trunk, not a reviewed release. |
+| `master` | push to `master`, weekly rebuild | The same image as `latest`. |
 | `sha-<short>` | every run | One specific commit. |
 | `<semVer>` | every run | The GitVersion version: `0.1.0-49` from `master`, `0.1.0` from `v0.1.0`. |
 | `<version>` | `v*` tag | The released version without the `v` prefix, so `v0.1.0` publishes `0.1.0`. |
@@ -101,6 +102,49 @@ Making `latest` release-only and adding an `edge` tag for trunk is tracked in
    ```
 
 6. Close the milestone.
+
+### The vulnerability gate
+
+Both images are distroless (#16): the bunker on `gcr.io/distroless/cc-debian13:nonroot`, the
+frontend on `gcr.io/distroless/nodejs24-debian13:nonroot`. Neither has a shell, a package manager,
+perl, curl or npm, and both run as UID 65532.
+
+Trivy scans the image itself, not only the source, before anything is published:
+
+| Where | Scans | Code-scanning category | Blocks? |
+| --- | --- | --- | --- |
+| CI `build`, every pull request and push | The image that would ship | `trivy-image-backend`, `trivy-image-frontend` | Yes, on a fixable critical or high |
+| CI `build` | The lockfiles, build-time dependencies included | `trivy-fs-backend`, `trivy-fs-frontend` | No, report only |
+| Release workflows, before pushing | The image about to be published | (table in the job log) | Yes, on a fixable critical or high |
+| `trivy-security.yml`, Mondays 06:00 UTC | The published `:latest`, as users pull it | `trivy-published-backend`, `trivy-published-frontend` | No, report only |
+
+Each scan has its own category. They used to share `trivy-backend` and `trivy-frontend`, so every
+CI run replaced the published-image results and the base-image findings vanished from view.
+
+The gate fails on a critical or high finding **that has a fix**. A finding with no fix yet is
+reported but does not block, because nothing can be done about it until one exists. To accept a
+fixable finding instead, add its ID to `.trivyignore` with a comment giving the reason and a review
+date, in a pull request of its own.
+
+### Weekly rebuild
+
+Both release workflows also run every Monday at 05:00 UTC, and by hand from the Actions tab
+(`workflow_dispatch`). They rebuild the default branch with fresh base images (`pull: true`), run the
+tests and the vulnerability gate, and republish `latest`, `master`, `sha-<short>` and the current
+`<semVer>`. The version does not change, only the digest: a base-image fix reaches `latest` within a
+week without anyone merging anything. If the gate fails, nothing is published and the run is red.
+A scheduled or manual run only ever publishes the default branch.
+
+**GitHub disables scheduled workflows after 60 days without repository activity** (it happened to
+the Trivy scan before #8). A quiet period therefore silently stops both the rebuild and the scan.
+Check now and then:
+
+```bash
+gh workflow list --all -R diogel-io/bancwr
+```
+
+A workflow shown as `disabled_inactivity` is re-enabled with
+`gh workflow enable "Release Backend" -R diogel-io/bancwr`, and likewise for the others.
 
 ### The test gate
 
