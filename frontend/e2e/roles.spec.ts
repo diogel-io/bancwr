@@ -40,7 +40,7 @@ for (const role of ['user', 'signer'] as Role[]) {
       const response = await page.goto('/')
       expect(response?.status()).toBe(200)
       await expect(page.getByText('Bunker Status')).toBeVisible()
-      await expect(page.getByText('healthy')).toBeVisible()
+      await expect(page.getByText('healthy', { exact: true })).toBeVisible()
       await expect(page.getByTestId('role-summary')).toContainText(role === 'user' ? 'User' : 'Signer')
       await expect(page.getByText('Total Signatures')).toHaveCount(0)
       await expect(page.getByText('Recent Activity')).toHaveCount(0)

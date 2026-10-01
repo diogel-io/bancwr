@@ -4,7 +4,7 @@ import { createError } from 'h3'
 import type { BunkerStatus, LogEntry, Role } from '#shared/types/bunker'
 import { signInAs } from '../helpers/session'
 import Index from '../../app/pages/index.vue'
-import { clearNuxtData } from '#imports'
+import { clearNuxtData, useState } from '#imports'
 
 const mockStatus: BunkerStatus = { status: 'healthy', pubkey: 'npub1test', version: '0.1.0', checks: [] }
 // The real LogEntry shape from backend/src/server.rs.
@@ -36,6 +36,8 @@ function serve(admin: { logs?: () => unknown } = {}, status: BunkerStatus = mock
 describe('Index page', () => {
   beforeEach(async () => {
     await clearNuxtData()
+    // The health state is shared with the navbar indicator (#28), and outlives a mount.
+    useState('bunker-health').value = { state: 'unknown', checks: [] }
   })
 
   describe('for an administrator', () => {
@@ -104,7 +106,7 @@ describe('Index page', () => {
         serve({}, { ...mockStatus, status: state })
         const component = await mountSuspended(Index)
 
-        expect(component.find('.rounded-full').classes()).toContain(colour)
+        expect(component.find('[data-testid="status-dot"]').classes()).toContain(colour)
         expect(component.text()).toContain(state)
       })
     }
