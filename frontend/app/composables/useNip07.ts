@@ -24,6 +24,11 @@ export function useNip07() {
   return { available, signer: (): Nip07Extension | undefined => extension() }
 }
 
+/** The extension, if one is present now. */
+export function nip07Extension(): Nip07Extension | undefined {
+  return extension()
+}
+
 function extension(): Nip07Extension | undefined {
   return (window as unknown as { nostr?: Nip07Extension }).nostr
 }

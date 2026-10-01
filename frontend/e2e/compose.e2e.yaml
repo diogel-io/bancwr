@@ -40,6 +40,10 @@ services:
       - NUXT_SESSION_PASSWORD=${E2E_SESSION_PASSWORD:?global-setup.ts generates E2E_SESSION_PASSWORD}
       # The origin the browser uses. http is allowed here only because it is localhost.
       - NUXT_SITE_ORIGIN=http://localhost:${E2E_PORT:-3100}
+      # The profile page (#30) reads and publishes through the in-process relay, which the browser
+      # reaches on the host, and uploads to a Blossom host the specs answer with page.route.
+      - NUXT_PUBLIC_PROFILE_RELAYS=ws://127.0.0.1:${E2E_RELAY_PORT:-7777}
+      - NUXT_PUBLIC_BLOSSOM_SERVER=https://blossom.e2e.test
     ports:
       # 3100, not 3000 or 3001, so the suite can run beside `pnpm dev` and the quickstart compose.
       - "${E2E_PORT:-3100}:3000"

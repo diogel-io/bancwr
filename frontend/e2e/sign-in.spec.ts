@@ -1,23 +1,8 @@
 // Sign-in (#11), through the real stack: every acceptance criterion of diogel-io/bancwr#11.
 import type { Page } from '@playwright/test'
-import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
-import { decode } from 'nostr-tools/nip19'
+import { installExtension } from './extension'
 import { anonymousTest as test, expect } from './fixtures'
 import { generateNsec, npubFromNsec } from './keys'
-
-/** A NIP-07 extension whose key lives in the test process, as a real extension's would. */
-async function installExtension(page: Page, nsec: string) {
-  const key = decode(nsec).data as Uint8Array
-  await page.exposeFunction('__extensionSign', (template: Parameters<typeof finalizeEvent>[0]) => finalizeEvent(template, key))
-  await page.exposeFunction('__extensionPubkey', () => getPublicKey(key))
-  await page.addInitScript(() => {
-    const bridge = window as unknown as { __extensionSign: (t: unknown) => unknown, __extensionPubkey: () => Promise<string> }
-    ;(window as unknown as { nostr: unknown }).nostr = {
-      getPublicKey: () => bridge.__extensionPubkey(),
-      signEvent: (template: unknown) => bridge.__extensionSign(template)
-    }
-  })
-}
 
 const signInWithExtension = (page: Page) => page.getByRole('button', { name: 'Sign in with extension' }).click()
 

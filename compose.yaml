@@ -42,5 +42,8 @@ services:
         - NUXT_SESSION_PASSWORD=${NUXT_SESSION_PASSWORD:?Set NUXT_SESSION_PASSWORD in .env (openssl rand -hex 32)}
         # The https origin people open Bancwr on. Required.
         - NUXT_SITE_ORIGIN=${NUXT_SITE_ORIGIN:?Set NUXT_SITE_ORIGIN in .env, such as https://bancwr.example}
+        # Optional: the profile page's relays and image server (#30). Empty uses the defaults.
+        - NUXT_PUBLIC_PROFILE_RELAYS=${NUXT_PUBLIC_PROFILE_RELAYS:-}
+        - NUXT_PUBLIC_BLOSSOM_SERVER=${NUXT_PUBLIC_BLOSSOM_SERVER:-}
       depends_on:
         - bunker

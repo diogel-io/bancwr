@@ -14,7 +14,16 @@ export default defineNuxtConfig({
         sessionPassword: '',
         // NUXT_SITE_ORIGIN: the https origin users reach Bancwr on, which sign-in events must name.
         // Never taken from the request's Host header (#11).
-        siteOrigin: ''
+        siteOrigin: '',
+        public: {
+            // NUXT_PUBLIC_PROFILE_RELAYS: comma-separated relays the profile page reads and publishes
+            // through, besides the member's own NIP-65 write relays (#30). Empty means the defaults
+            // in app/utils/profile-relays.ts, so compose can pass it through unset.
+            profileRelays: '',
+            // NUXT_PUBLIC_BLOSSOM_SERVER: where profile images are uploaded when the member has no
+            // Blossom server list of their own (#30). Empty means the default, likewise.
+            blossomServer: ''
+        }
     },
     modules: [
         '@nuxt/eslint',

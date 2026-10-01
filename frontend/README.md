@@ -193,8 +193,31 @@ Node 20; the rule stands for those reasons, not for a missing API.
   `true` on the event object under a symbol, and object spread copies it: `{ ...event, content }`
   still passes `verifyEvent` after its content changes. Verify events as they arrive (parsed from
   JSON), and sign a new event with `finalizeEvent` rather than editing a signed one.
+  `finalizeEvent` also flags **the template it is given**, so never reuse a template after signing
+  it. A signer's answer is checked as plain JSON for the same reason (`checkedSigner`).
 - The bunker's own key never reaches the frontend. A signed-in user's events are signed through
-  NIP-07 or NIP-46 with their key; see #30.
+  NIP-07 or NIP-46 with their key: `useUserSigner()` (below).
+
+### Profile
+
+`/profile` (#30) edits the signed-in member's own kind 0 profile, for every role. Everything runs in
+the browser; the bunker is not involved.
+
+- **Signing.** Sign-in records, for the tab, whether the member used NIP-07 or NIP-46.
+  `useUserSigner().signer()` returns their extension, if it holds the signed-in key, or resumes the
+  tab's NIP-46 connection. Without one (a new tab after a NIP-46 sign-in, or an extension on another
+  key) the page asks them to reconnect with `SignerConnect`, which refuses any other key. Every
+  signed event is checked to be from the signed-in key before it is published.
+- **Relays.** The member's NIP-65 write relays (kind 10002) plus `NUXT_PUBLIC_PROFILE_RELAYS`
+  (comma-separated; empty means damus, nos.lol and primal), read and published to alike.
+- **Saving never drops fields.** Save reads the newest kind 0 again, changes only the form's
+  fields, and keeps every other key as it was. If no relay answers that read, it refuses.
+- **Images** upload to the member's Blossom server (kind 10063), or `NUXT_PUBLIC_BLOSSOM_SERVER`
+  (empty means blossom.primal.net), authorised by a kind 24242 event their signer signs. Stills are
+  re-encoded as WebP, which drops camera and location metadata; GIFs are sent as they are.
+  Uploading fills the field; nothing is published until Save.
+- **NIP-05** is verified only when the member asks, from the browser, and a result for a value they
+  have since changed is dropped.
 
 ### Differences from Porwr
 

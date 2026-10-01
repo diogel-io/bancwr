@@ -1,0 +1,259 @@
+<script setup lang="ts">
+// The signed-in member's own Nostr profile (#30), for every role (#26). Read from and published to
+// their relays, signed by their own signer; the bunker is not involved.
+import { npubEncode } from 'nostr-tools/nip19'
+import { ProfileError } from '~/composables/useProfile'
+import { checkedSigner, rememberSignerMethod, SignerMismatch, type SignerMethod } from '~/composables/useUserSigner'
+import { BlossomError, uploadToBlossom } from '~/utils/blossom'
+import { ImageError, prepareImage, type ImageKind } from '~/utils/image'
+import { validateForm } from '~/utils/profile'
+import type { NostrSigner } from '~/utils/nostr-sign-in'
+import type { PublishResult } from '~/utils/relay-io'
+
+const profile = useProfile()
+const { state, form, dirty, exists, pubkey, blossomServer } = profile
+const userSigner = useUserSigner()
+const nip46 = useNip46()
+
+const npub = computed(() => pubkey.value ? npubEncode(pubkey.value) : '')
+const errors = computed(() => validateForm(form.value))
+const valid = computed(() => Object.keys(errors.value).length === 0)
+
+const saving = ref(false)
+const saveError = ref<string>()
+const published = ref<PublishResult>()
+
+onMounted(() => profile.load())
+
+/** The member closed the reconnect dialog without connecting. */
+class SignerCancelled extends Error {}
+
+/**
+ * Runs `work` with the member's signer. Without one (another tab after a NIP-46 sign-in, or an
+ * extension now on another key), asks them to reconnect it first; closing that dialog cancels.
+ */
+const reconnecting = ref(false)
+let pending: { work: (signer: NostrSigner) => Promise<void>, resolve: () => void, reject: (error: Error) => void } | undefined
+
+async function withSigner(work: (signer: NostrSigner) => Promise<void>): Promise<void> {
+  const signer = await userSigner.signer()
+  if (signer) return work(signer)
+  pending?.reject(new SignerCancelled())
+  return new Promise((resolve, reject) => {
+    pending = { work, resolve, reject }
+    reconnecting.value = true
+  })
+}
+
+async function reconnected(signer: NostrSigner, method: SignerMethod): Promise<string | undefined> {
+  rememberSignerMethod(method)
+  const waiting = pending
+  pending = undefined
+  reconnecting.value = false
+  if (!waiting) return undefined
+  try {
+    await waiting.work(checkedSigner(signer, pubkey.value))
+    waiting.resolve()
+  } catch (failure) {
+    waiting.reject(failure instanceof Error ? failure : new Error(String(failure)))
+  }
+  return undefined
+}
+
+watch(reconnecting, (open) => {
+  if (open || !pending) return
+  const waiting = pending
+  pending = undefined
+  waiting.reject(new SignerCancelled())
+})
+
+function message(failure: unknown, fallback: string): string {
+  if (failure instanceof ProfileError || failure instanceof SignerMismatch || failure instanceof BlossomError || failure instanceof ImageError) {
+    return failure.message
+  }
+  return fallback
+}
+
+async function save() {
+  if (!valid.value || saving.value) return
+  saveError.value = undefined
+  published.value = undefined
+  await withSigner(async (signer) => {
+    saving.value = true
+    try {
+      published.value = await profile.save(signer)
+    } catch (failure) {
+      saveError.value = message(failure, 'Your signer did not sign the update, so nothing was saved. Try again, and approve it.')
+    } finally {
+      saving.value = false
+    }
+  }).catch((failure) => {
+    if (failure instanceof SignerCancelled) saveError.value = 'Not saved: no signer was connected.'
+  })
+}
+
+/** Image upload: prepared here, signed by the member's signer, sent to their Blossom server. */
+function upload(file: File, kind: ImageKind): Promise<string> {
+  return new Promise((resolve, reject) => {
+    withSigner(async (signer) => {
+      try {
+        const blob = await prepareImage(file, kind)
+        resolve(await uploadToBlossom(blossomServer.value, blob, signer))
+      } catch (failure) {
+        reject(new Error(message(failure, 'The upload failed.')))
+      }
+    }).catch(failure => reject(new Error(failure instanceof SignerCancelled
+      ? 'Not uploaded: no signer was connected.'
+      : message(failure, 'The upload failed.'))))
+  })
+}
+
+// Unsaved changes are not lost silently.
+onBeforeRouteLeave(() => {
+  if (dirty.value && !saving.value && !window.confirm('Leave without saving your profile changes?')) return false
+})
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (dirty.value) event.preventDefault()
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+</script>
+
+<template>
+  <UDashboardPanel id="profile">
+    <template #header>
+      <AppNavbar title="Profile" />
+    </template>
+
+    <template #body>
+      <div
+        v-if="state === 'idle' || state === 'loading'"
+        class="flex items-center gap-2 text-sm text-muted"
+        role="status"
+      >
+        <UIcon
+          name="i-lucide-loader-circle"
+          class="size-4 animate-spin"
+          aria-hidden="true"
+        />
+        Reading your profile from your relays…
+      </div>
+
+      <UAlert
+        v-else-if="state === 'failed'"
+        color="error"
+        variant="subtle"
+        title="Couldn't reach any of your relays"
+        description="Your profile could not be read, so it can't be edited safely right now."
+        :actions="[{ label: 'Try again', color: 'neutral', variant: 'outline', onClick: () => profile.load() }]"
+        data-testid="profile-load-failed"
+      />
+
+      <div
+        v-else
+        class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]"
+        data-testid="profile-layout"
+      >
+        <UCard>
+          <template #header>
+            <h2 class="font-semibold">
+              Profile Details
+            </h2>
+            <p
+              v-if="!exists"
+              class="text-sm text-muted"
+              data-testid="profile-new"
+            >
+              No profile yet: fill it in and save to create one.
+            </p>
+          </template>
+
+          <ProfileForm
+            v-model="form"
+            :pubkey="pubkey"
+            :errors="errors"
+            :upload="upload"
+          />
+
+          <template #footer>
+            <div class="space-y-3">
+              <UAlert
+                v-if="saveError"
+                color="error"
+                variant="subtle"
+                :title="saveError"
+                data-testid="profile-save-error"
+              />
+              <UAlert
+                v-if="published"
+                color="success"
+                variant="subtle"
+                title="Profile saved"
+                data-testid="profile-saved"
+              >
+                <template #description>
+                  <p>Accepted by {{ published.accepted.join(', ') }}.</p>
+                  <p v-if="published.failed.length">
+                    Not saved on {{ published.failed.map(f => f.url).join(', ') }}.
+                  </p>
+                </template>
+              </UAlert>
+              <div
+                v-if="saving && nip46.phase.value !== 'idle'"
+                role="status"
+                class="text-sm"
+              >
+                Waiting for your signer to sign…
+                <UButton
+                  v-if="nip46.approvalUrl.value"
+                  :to="nip46.approvalUrl.value"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="link"
+                >
+                  Approve in your signer
+                </UButton>
+              </div>
+              <div class="flex items-center justify-end gap-3">
+                <span
+                  v-if="dirty"
+                  class="text-xs text-muted"
+                >Unsaved changes</span>
+                <UButton
+                  :loading="saving"
+                  :disabled="!valid || !dirty"
+                  data-testid="profile-save"
+                  @click="save"
+                >
+                  Save profile
+                </UButton>
+              </div>
+            </div>
+          </template>
+        </UCard>
+
+        <div class="lg:sticky lg:top-4 self-start">
+          <ProfilePreview
+            :form="form"
+            :npub="npub"
+          />
+        </div>
+      </div>
+
+      <UModal
+        v-model:open="reconnecting"
+        title="Connect your signer"
+        :description="`Signing needs the key you signed in with (${npub}). Connect the signer that holds it.`"
+      >
+        <template #body>
+          <SignerConnect
+            :use="reconnected"
+            :expected-pubkey="pubkey"
+            extension-label="Use extension"
+            bunker-label="Connect"
+          />
+        </template>
+      </UModal>
+    </template>
+  </UDashboardPanel>
+</template>

@@ -27,6 +27,7 @@ export function useAuth() {
   async function signOut() {
     await $fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
     await useNip46().forget()
+    forgetSignerMethod()
     state.value = { status: 'signed-out' }
     await navigateTo('/sign-in')
   }
