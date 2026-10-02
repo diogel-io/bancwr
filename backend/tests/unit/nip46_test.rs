@@ -247,3 +247,31 @@ async fn a_client_that_connects_again_replaces_its_connection() {
     let all = s.db.list_nip46_connections(None).unwrap();
     assert_eq!(all.iter().filter(|c| c.revoked_reason.as_deref() == Some("replaced")).count(), 1);
 }
+
+#[tokio::test]
+async fn signs_a_template_without_a_pubkey_as_nip46_defines_it() {
+    // nostr-tools' BunkerSigner sends {kind, content, tags, created_at} only (#31).
+    let s = setup();
+    let secret = issue(&s, &[1], 24);
+    let client = Keys::generate();
+    connect(&s, &client, connect_params(&s, &secret)).await;
+
+    let template = r#"{"kind":1,"content":"hello","tags":[["t","nostr"]],"created_at":1700000000}"#;
+    let signed = s.handler.handle_request(request("sign_event", vec![template.to_string()]), client.public_key()).await;
+    let event: Event = serde_json::from_str(signed.result.as_deref().expect("signed")).unwrap();
+    assert_eq!(event.pubkey, s.bunker.public_key());
+    assert_eq!(event.content, "hello");
+    assert_eq!(event.created_at.as_u64(), 1_700_000_000);
+    assert!(event.verify().is_ok());
+
+    // A pubkey or id the client supplies does not change who signs.
+    let other = Keys::generate().public_key().to_hex();
+    let template = format!(r#"{{"kind":1,"content":"x","tags":[],"created_at":1700000000,"pubkey":"{}","id":"{}"}}"#, other, "0".repeat(64));
+    let signed = s.handler.handle_request(request("sign_event", vec![template]), client.public_key()).await;
+    let event: Event = serde_json::from_str(signed.result.as_deref().expect("signed")).unwrap();
+    assert_eq!(event.pubkey, s.bunker.public_key());
+    assert!(event.verify().is_ok());
+
+    let refused = s.handler.handle_request(request("sign_event", vec!["[1]".to_string()]), client.public_key()).await;
+    assert!(refused.error.unwrap().starts_with("Invalid event JSON"));
+}

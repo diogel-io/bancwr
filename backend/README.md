@@ -61,7 +61,7 @@ the vault on every request:
 | `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | | yes |
 | `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
 | `GET /api/bunker/connections` | all | own | own | |
-| `DELETE /api/bunker/connections/:id` | yes | | | |
+| `DELETE /api/bunker/connections/:id` | any | own | own | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -212,7 +212,9 @@ Connections are stored, so they survive a restart. `GET /api/bunker/connections`
 administrator sees all; anyone else only those for their key), with the app's self-reported name,
 URL and image marked unverified (`metadata_verified: false`): NIP-46 lets an app name itself, and
 that is never used to decide anything. A connection ends when the app sends `logout`, an
-administrator revokes it (`DELETE /api/bunker/connections/:id`), or its member is removed.
+administrator (any) or the member it was made for (their own) revokes it
+(`DELETE /api/bunker/connections/:id`; another member's is a 404, and `revoked_by` records who),
+or its member is removed.
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`. The NIP-04 and NIP-44 encryption methods are not supported.

@@ -1,10 +1,10 @@
 import type { Page, TestInfo } from '@playwright/test'
 import { test, expect, type Role } from './fixtures'
 
-// The health indicator in every page's header (#28), on the real stack. NIP-46 is off there, so
-// the bunker is healthy with its relay check disabled (#27). Red and yellow are served to the
-// browser with page.route, then fetched with "Check now", since a real bunker cannot be made
-// degraded on demand here.
+// The health indicator in every page's header (#28), on the real stack. NIP-46 is on there (#31),
+// with the in-process relay, so the bunker is healthy with its relay check passing (#27). Red and
+// yellow are served to the browser with page.route, then fetched with "Check now", since a real
+// bunker cannot be made degraded on demand here.
 
 const indicator = (page: Page) => page.getByTestId('bunker-health')
 const detail = (page: Page) => page.getByTestId('bunker-health-detail')
@@ -31,15 +31,15 @@ for (const role of ['administrator', 'user', 'signer'] as Role[]) {
   })
 }
 
-test('the detail lists each check, with the relays turned off', async ({ page }) => {
+test('the detail lists each check, with the bunker\'s NIP-46 relay connected (#31)', async ({ page }) => {
   await page.goto('/team')
   await indicator(page).click()
 
   await expect(detail(page)).toContainText('Bunker health: Healthy')
-  for (const [check, state] of [['signer', 'OK'], ['database', 'OK'], ['relays', 'Off']] as const) {
+  for (const [check, state] of [['signer', 'OK'], ['database', 'OK'], ['relays', 'OK']] as const) {
     await expect(detail(page).locator(`[data-check="${check}"]`)).toContainText(state)
   }
-  await expect(detail(page)).toContainText('NIP-46 is turned off')
+  await expect(detail(page)).toContainText('All 1 relays connected.')
   await expect(detail(page)).toContainText(/Last checked \d+ s ago/)
 })
 

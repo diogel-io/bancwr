@@ -21,8 +21,13 @@ services:
       # throwaway key global-setup.ts generates.
       - BANCWR_PROXY_SECRET=${E2E_PROXY_SECRET:?global-setup.ts generates E2E_PROXY_SECRET}
       - BANCWR_ADMIN_PUBKEY=${E2E_ADMIN_NPUB:?global-setup.ts generates E2E_ADMIN_NPUB}
-    # Every run starts with an empty database and leaves nothing on disk. NIP46_ENABLED is left
-    # unset, so the bunker makes no relay connections.
+      # NIP-46 on (#31), through the in-process relay global-setup.ts starts on the host, which
+      # e2e-host names from inside the container.
+      - NIP46_ENABLED=true
+      - NIP46_RELAYS=ws://e2e-host:${E2E_RELAY_PORT:-7777}
+    extra_hosts:
+      - "e2e-host:host-gateway"
+    # Every run starts with an empty database and leaves nothing on disk.
     tmpfs:
       # The bunker runs as UID 65532 (#16). mode=1777 lets it write here under both Docker and
       # Podman (Podman rejects uid=).

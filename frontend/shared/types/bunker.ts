@@ -93,3 +93,57 @@ export interface TeamOperationResponse {
   success: boolean
   message: string
 }
+
+/** A NIP-46 connection (#53), from GET /api/bunker/connections. The app signs as the bunker's key. */
+export interface Nip46Connection {
+  id: string
+  /** The app's NIP-46 key (hex). */
+  client_pubkey: string
+  /** The member it was authorised for (hex). */
+  for_pubkey: string
+  /** What the app says about itself: never verified. */
+  client_name: string | null
+  client_url: string | null
+  client_image: string | null
+  /** Always false: NIP-46 lets an app name itself. */
+  metadata_verified: boolean
+  /** Event kinds it may sign. */
+  kinds: number[]
+  connected_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+  /** `logout`, `revoked`, `replaced` or `member_removed`. */
+  revoked_reason: string | null
+  /** Who revoked it (hex), when someone did (#31). */
+  revoked_by: string | null
+}
+
+/** A connection token (#53), from GET /api/bunker/connections/tokens: never the secret. */
+export interface Nip46Token {
+  id: string
+  for_pubkey: string
+  issued_by: string
+  label: string
+  kinds: number[]
+  created_at: string
+  expires_at: string
+  used_at: string | null
+  revoked_at: string | null
+}
+
+/** POST /api/bunker/connections/tokens */
+export interface IssueTokenRequest {
+  for_pubkey?: string
+  label: string
+  kinds: number[]
+  expires_in_hours?: number
+}
+
+/** The token just issued: `uri` carries its secret and is shown once. */
+export interface IssueTokenResponse {
+  id: string
+  uri: string
+  for_pubkey: string
+  kinds: number[]
+  expires_at: string
+}

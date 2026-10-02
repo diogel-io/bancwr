@@ -324,9 +324,11 @@ pub fn create_router(state: AppState) -> Router {
     // member, scoped to the caller.
     let connections_admin = Router::new()
         .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
-        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
+        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token));
+    // Every member: the list, and revoking, both scoped to the caller (#31).
+    let connections_member = Router::new()
+        .route("/api/bunker/connections", get(crate::connections_api::list_connections))
         .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection));
-    let connections_member = Router::new().route("/api/bunker/connections", get(crate::connections_api::list_connections));
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no

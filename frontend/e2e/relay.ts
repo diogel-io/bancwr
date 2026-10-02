@@ -15,10 +15,14 @@ function matches(event: Event, filter: Filter): boolean {
   return true
 }
 
-export function startRelay(port: number): Promise<() => Promise<void>> {
+/**
+ * `host` is 127.0.0.1 unless the bunker container must reach it (#31: its NIP-46 relay), which
+ * needs every interface: from inside the container the host is reached at its network address.
+ */
+export function startRelay(port: number, host = '127.0.0.1'): Promise<() => Promise<void>> {
   const events: Event[] = []
   const subscriptions = new Map<WebSocket, Map<string, Filter[]>>()
-  const server = new WebSocketServer({ port, host: '127.0.0.1' })
+  const server = new WebSocketServer({ port, host })
 
   server.on('connection', (socket) => {
     subscriptions.set(socket, new Map())

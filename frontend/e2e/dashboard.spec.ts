@@ -18,9 +18,11 @@ test('shows the metrics from the live bunker', async ({ page }) => {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
 
-  // No signing happens in this suite, so these stay at zero.
-  await expect(metric(page, 'Total Signatures')).toHaveText('0')
-  await expect(metric(page, 'NIP-46 Connections')).toHaveText('0')
+  // As the bunker reports them. Other specs now connect apps and sign (#31), so these are not
+  // zero; they do not change while this test runs.
+  const metrics = await (await page.request.get('/api/bunker/metrics')).json() as { total_signatures: number, nip46_connections: number }
+  await expect(metric(page, 'Total Signatures')).toHaveText(String(metrics.total_signatures))
+  await expect(metric(page, 'NIP-46 Connections')).toHaveText(String(metrics.nip46_connections))
 
   // The bunker counts status requests, and global setup made several before this page loaded, so
   // a non-zero count shows the numbers came from the running bunker, not from the defaults.
@@ -28,10 +30,14 @@ test('shows the metrics from the live bunker', async ({ page }) => {
   expect(requests).toBeGreaterThan(0)
 })
 
-test('shows no recent activity on a new bunker', async ({ page }) => {
+test('shows the bunker\'s recent activity', async ({ page }) => {
+  // Connected apps sign during the suite (#31), so whether there is any depends on what ran first.
+  const logs = await (await page.request.get('/api/bunker/logs')).json() as { event_id: string }[]
   const activity = card(page, 'Recent Activity')
   await expect(activity.getByRole('table')).toBeVisible()
-  await expect(activity.getByText('No data')).toBeVisible()
+  if (logs.length === 0) await expect(activity.getByText('No data')).toBeVisible()
+  // Body rows only: the table's header has more than one row.
+  else await expect(activity.locator('tbody tr')).toHaveCount(Math.min(logs.length, 5))
 })
 
 /** The UCard whose header holds this heading. */

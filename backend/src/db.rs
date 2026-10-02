@@ -399,6 +399,8 @@ pub struct Nip46Connection {
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub revoked_reason: Option<String>,
+    /// The key that revoked it (#31), when someone did; empty for logout, replaced, member removed.
+    pub revoked_by: Option<String>,
 }
 
 /// Unverified client metadata from `connect` (NIP-46 "Client metadata").
@@ -452,7 +454,7 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
 }
 
 const TOKEN_COLUMNS: &str = "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at";
-const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by";
 
 fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
     Ok(Nip46Token {
@@ -482,6 +484,7 @@ fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection>
         last_used_at: parse_optional_time(row.get(9)?)?,
         revoked_at: parse_optional_time(row.get(10)?)?,
         revoked_reason: row.get(11)?,
+        revoked_by: row.get(12)?,
     })
 }
 
@@ -600,9 +603,10 @@ impl Database {
             last_used_at: None,
             revoked_at: None,
             revoked_reason: None,
+            revoked_by: None,
         };
         tx.execute(
-            &format!("INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL)", CONNECTION_COLUMNS),
+            &format!("INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL)", CONNECTION_COLUMNS),
             params![
                 connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
                 connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339()
@@ -638,10 +642,18 @@ impl Database {
 
     /// Revokes an active connection. False when there is no such active connection.
     pub fn revoke_nip46_connection(&self, id: &str, reason: &str, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        self.revoke_nip46_connection_as(id, reason, None, None, now)
+    }
+
+    /// Revokes an active connection on someone's behalf (#31): `revoked_by` is recorded, and with
+    /// `only_for` set, only a connection made for that key is touched. False when there is no such
+    /// active connection, so a caller cannot tell another member's connection from none.
+    pub fn revoke_nip46_connection_as(&self, id: &str, reason: &str, revoked_by: Option<&str>, only_for: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let changed = conn.execute(
-            "UPDATE nip46_connections SET revoked_at = ?3, revoked_reason = ?2 WHERE id = ?1 AND revoked_at IS NULL",
-            params![id, reason, now.to_rfc3339()],
+            "UPDATE nip46_connections SET revoked_at = ?3, revoked_reason = ?2, revoked_by = ?4
+             WHERE id = ?1 AND revoked_at IS NULL AND (?5 IS NULL OR for_pubkey = ?5)",
+            params![id, reason, now.to_rfc3339(), revoked_by, only_for],
         )?;
         Ok(changed > 0)
     }
