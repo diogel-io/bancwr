@@ -6,7 +6,7 @@ use crate::proxy_auth::{Access, Guard};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get},
+    routing::{delete, get, post},
     Json, Router,
 };
 use nostr::prelude::*;
@@ -206,8 +206,9 @@ pub async fn add_team_member(
     let pubkey = canonical_pubkey(&request.pubkey)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid pubkey".to_string()))?;
 
-    // Never the bunker's own key: its NIP-46 connect is open (#53), so anyone could obtain its
-    // signature and sign in as it. See the sign-in decision record, rule 10.
+    // Never the bunker's own key: anyone holding a NIP-46 connection can obtain its signature
+    // (since #53, only within their granted kinds), so it must never sign in. See the sign-in
+    // decision record, rule 10.
     if pubkey == state.signer.read().await.public_key_hex() {
         return Err((StatusCode::BAD_REQUEST, "The bunker's own key cannot be registered".to_string()));
     }
@@ -319,6 +320,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/team/:id", delete(remove_team_member));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
     let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
+    // NIP-46 connections (#53): tokens and revocation for administrators; the list for every
+    // member, scoped to the caller.
+    let connections_admin = Router::new()
+        .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
+        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
+        .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection));
+    let connections_member = Router::new().route("/api/bunker/connections", get(crate::connections_api::list_connections));
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no
@@ -328,6 +336,8 @@ pub fn create_router(state: AppState) -> Router {
         .merge(guarded(health, Access::Health))
         .merge(guarded(administration, Access::Administrator))
         .merge(guarded(lookup, Access::AdministratorOrService))
+        .merge(guarded(connections_admin, Access::Administrator))
+        .merge(guarded(connections_member, Access::Member))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

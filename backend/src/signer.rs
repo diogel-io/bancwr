@@ -1,5 +1,5 @@
 use nostr::prelude::*;
-use nostr::nips::nip44;
+use nostr::nips::{nip04, nip44};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -54,12 +54,26 @@ impl Signer {
         nip44::encrypt(sk, public_key, content, nip44::Version::V2).map_err(|e| anyhow::anyhow!("Encryption error: {}", e))
     }
 
+    /// NIP-04, for NIP-46 clients that still encrypt with it (#52): rust-nostr's 0.39 client does.
+    pub fn nip04_decrypt(&self, public_key: &PublicKey, content: &str) -> anyhow::Result<String> {
+        nip04::decrypt(self.keys.secret_key(), public_key, content).map_err(|e| anyhow::anyhow!("Decryption error: {}", e))
+    }
+
+    pub fn nip04_encrypt(&self, public_key: &PublicKey, content: &str) -> anyhow::Result<String> {
+        nip04::encrypt(self.keys.secret_key(), public_key, content).map_err(|e| anyhow::anyhow!("Encryption error: {}", e))
+    }
+
     pub async fn build_event(&self, kind: Kind, content: String, tags: Vec<Tag>) -> anyhow::Result<Event> {
         EventBuilder::new(kind, content)
             .tags(tags)
             .sign(&self.keys)
             .await
             .map_err(|e| anyhow::anyhow!("Event builder error: {}", e))
+    }
+
+    /// The bunker's keys, for the relay client to answer NIP-42 AUTH challenges with (#52).
+    pub(crate) fn keys(&self) -> Keys {
+        self.keys.clone()
     }
 
     pub fn public_key_bech32(&self) -> String {

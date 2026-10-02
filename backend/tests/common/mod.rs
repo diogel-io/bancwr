@@ -25,11 +25,19 @@ pub struct TestApp {
     /// A registered administrator. Enforced requests from `get`/`request` are signed as them.
     pub admin: Keys,
     pub enforced: bool,
+    /// The app's state, for starting the NIP-46 relay client on it (#53).
+    pub state: AppState,
 }
 
 /// Enforced: BANCWR_PROXY_SECRET is set, so /api/bunker/* needs a signed identity.
 /// Open: it is not, which is how the API behaves until sign-in (#11) requires it.
 pub async fn spawn(enforced: bool) -> TestApp {
+    spawn_with(enforced, None).await
+}
+
+/// As `spawn`, with NIP-46 on and these relays when `nip46_relays` is set (#53). The relay client
+/// is not started: tests that need it start `RelayClient` on `app.state`.
+pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> TestApp {
     let bunker = Keys::generate();
     let admin = Keys::generate();
     let db = Database::new(":memory:").expect("in-memory database");
@@ -40,15 +48,15 @@ pub async fn spawn(enforced: bool) -> TestApp {
         secret_key: bunker.secret_key().clone(),
         port: 0,
         db_path: ":memory:".to_string(),
-        relay_urls: vec![],
-        nip46_enabled: false,
+        relay_urls: nip46_relays.clone().unwrap_or_default(),
+        nip46_enabled: nip46_relays.is_some(),
         nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: enforced.then(|| SECRET.to_string()),
     };
     let state = AppState::new(Signer::new(bunker.secret_key().clone()), db.clone(), config);
-    let app = create_router(state);
+    let app = create_router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind a random port");
     let address = format!("http://{}", listener.local_addr().unwrap());
@@ -56,7 +64,7 @@ pub async fn spawn(enforced: bool) -> TestApp {
         axum::serve(listener, app).await.expect("serve");
     });
 
-    TestApp { address, client: reqwest::Client::new(), db, bunker, admin, enforced }
+    TestApp { address, client: reqwest::Client::new(), db, bunker, admin, enforced, state }
 }
 
 impl TestApp {

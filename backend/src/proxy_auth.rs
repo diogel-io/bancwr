@@ -111,12 +111,15 @@ pub enum Access {
     Administrator,
     /// Administrators, and the service identity (the key lookup sign-in needs).
     AdministratorOrService,
+    /// Every registered role, not the service identity: routes that scope what they return to
+    /// the caller (#53's connection list).
+    Member,
 }
 
 impl Access {
     fn allows_role(self, role: Role) -> bool {
         match self {
-            Access::Health => true,
+            Access::Health | Access::Member => true,
             Access::Administrator | Access::AdministratorOrService => role == Role::Administrator,
         }
     }

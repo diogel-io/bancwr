@@ -112,3 +112,21 @@ fn a_new_database_starts_at_the_latest_version() {
     assert_eq!(db.get_team_members().unwrap().len(), 0);
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
 }
+
+#[test]
+fn a_database_from_before_53_gains_the_nip46_tables() {
+    // As master left it before #53: migrated to version 2, without the NIP-46 tables.
+    let file = NamedTempFile::new().unwrap();
+    {
+        let db = Database::new(file.path().to_str().unwrap()).unwrap();
+        drop(db);
+        let conn = Connection::open(file.path()).unwrap();
+        conn.execute_batch("DROP TABLE nip46_connections; DROP TABLE nip46_tokens; PRAGMA user_version = 2;").unwrap();
+    }
+    assert_eq!(user_version(&file), 2);
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert!(db.list_nip46_tokens().unwrap().is_empty());
+    assert!(db.list_nip46_connections(None).unwrap().is_empty());
+}

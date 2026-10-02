@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-nostr = { version = "0.39", features = ["nip44"] }
+nostr = { version = "0.39", features = ["nip04", "nip44"] }
 nostr-sdk = { version = "0.39", features = ["nip44"] }
 anyhow = "1.0"
 thiserror = "2.0"
@@ -31,6 +31,8 @@ reqwest = { version = "0.12", features = ["json"] }
 tower = { version = "0.4", features = ["util"] }
 # An in-process relay, so the health tests can connect NIP-46 to something real (#27).
 nostr-relay-builder = "0.39"
+# A standard NIP-46 client, to prove the bunker interoperates end to end (#52, #53).
+nostr-connect = "0.39"
 
 [profile.release]
 opt-level = 3
@@ -95,6 +97,10 @@ path = "tests/unit/proxy_auth_test.rs"
 [[test]]
 name = "healthcheck_test"
 path = "tests/unit/healthcheck_test.rs"
+
+[[test]]
+name = "nip46_connections_test"
+path = "tests/integration/nip46_connections_test.rs"
 
 [[test]]
 name = "health_test"
