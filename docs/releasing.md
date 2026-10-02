@@ -97,6 +97,10 @@ gh workflow run "Release Backend" -R diogel-io/bancwr -f publish=false
 gh workflow run "Release Backend" -R diogel-io/bancwr -f publish=false -f ref=v0.1.0
 ```
 
+A release's version is its tag. A trunk build's is GitVersion's, which in Actions follows the branch
+the run was started from: started from another branch (`--ref`), a preview of `master` shows that
+branch's label, such as `0.1.0-my-branch.1`. Runs on `master` itself are not affected.
+
 ## Cutting a release
 
 1. Check that every issue in the release's milestone is closed or moved to a later milestone.

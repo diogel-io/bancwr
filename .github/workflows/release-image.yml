@@ -65,11 +65,25 @@ jobs:
           path: release-tools
           sparse-checkout: .github/scripts
 
+      # A release's version is its tag. GitVersion is used for trunk only: in Actions it takes the
+      # branch from GITHUB_REF, not the checkout, so a weekly rebuild of v0.1.0 (run on master)
+      # would otherwise be versioned as master, e.g. 0.1.1-5.
+      - name: Version
+        id: version
+        env:
+          KIND: ${{ inputs.kind }}
+          TAG: ${{ inputs.tag }}
+          SEMVER: ${{ needs.version.outputs.semVer }}
+        run: |
+          if [[ "${KIND}" == release ]]; then version="${TAG#v}"; else version="${SEMVER}"; fi
+          echo "Version: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Tags
         id: tags
         env:
           KIND: ${{ inputs.kind }}
-          SEMVER: ${{ needs.version.outputs.semVer }}
+          SEMVER: ${{ steps.version.outputs.version }}
           TAG: ${{ inputs.tag }}
           LATEST: ${{ inputs.latest }}
           BRANCH: ${{ github.event.repository.default_branch }}
@@ -107,7 +121,7 @@ jobs:
             ${{ steps.tags.outputs.list }}
             ${{ env.LOCAL }}
           build-args: |
-            BANCWR_VERSION=${{ needs.version.outputs.semVer }}
+            BANCWR_VERSION=${{ steps.version.outputs.version }}
           # Shared with ci.yml's build, so a release reuses the layers CI built.
           cache-from: type=gha,scope=${{ inputs.component == 'backend' && 'backend-cargo-chef' || 'frontend' }}
           cache-to: type=gha,scope=${{ inputs.component == 'backend' && 'backend-cargo-chef' || 'frontend' }},mode=max
