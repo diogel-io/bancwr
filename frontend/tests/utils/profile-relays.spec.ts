@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { blossomServerFrom, MAX_OWN_RELAYS, parseRelayList, profileRelays, writeRelays } from '~/utils/profile-relays'
+import { blossomServerFrom, DEFAULT_INDEXER_RELAYS, MAX_OWN_RELAYS, parseRelayList, parseRelayUrl, profileRelays, writeRelays } from '~/utils/profile-relays'
 
 describe('profile relays', () => {
   it('parses the configured list, normalising and dropping what is not a relay', () => {
@@ -25,5 +25,21 @@ describe('profile relays', () => {
   it('takes the first https server of a Blossom list (BUD-03)', () => {
     expect(blossomServerFrom({ tags: [['server', 'http://insecure.example'], ['server', 'https://cdn.example/']] })).toBe('https://cdn.example')
     expect(blossomServerFrom(undefined)).toBeUndefined()
+  })
+
+  it('adds others (indexers, a searched relay) after the defaults, once each (#62)', () => {
+    const list = { tags: [['r', 'wss://mine.example']] }
+    expect(profileRelays(['wss://nos.lol/'], list, ['wss://purplepag.es/', 'wss://mine.example/']))
+      .toEqual(['wss://mine.example/', 'wss://nos.lol/', 'wss://purplepag.es/'])
+  })
+
+  it('has three default indexers, all normalised relay URLs', () => {
+    expect(DEFAULT_INDEXER_RELAYS).toHaveLength(3)
+    expect(parseRelayList(DEFAULT_INDEXER_RELAYS)).toEqual(DEFAULT_INDEXER_RELAYS)
+  })
+
+  it('accepts one relay address and refuses anything else', () => {
+    expect(parseRelayUrl(' wss://Relay.Example.com ')).toBe('wss://relay.example.com/')
+    for (const bad of ['relay.example.com', 'https://relay.example.com', '']) expect(parseRelayUrl(bad), bad).toBeUndefined()
   })
 })

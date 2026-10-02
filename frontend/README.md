@@ -208,10 +208,17 @@ the browser; the bunker is not involved.
   tab's NIP-46 connection. Without one (a new tab after a NIP-46 sign-in, or an extension on another
   key) the page asks them to reconnect with `SignerConnect`, which refuses any other key. Every
   signed event is checked to be from the signed-in key before it is published.
-- **Relays.** The member's NIP-65 write relays (kind 10002) plus `NUXT_PUBLIC_PROFILE_RELAYS`
-  (comma-separated; empty means damus, nos.lol and primal), read and published to alike.
+- **Relays.** The member's NIP-65 write relays (kind 10002), plus `NUXT_PUBLIC_PROFILE_RELAYS`
+  (comma-separated; empty means damus, nos.lol and primal), plus indexer relays,
+  `NUXT_PUBLIC_INDEXER_RELAYS` (empty means purplepag.es, profiles.nostr1.com and relay.nos.social),
+  read and published to alike. The member's relay list is looked up on the defaults and the
+  indexers: indexers collect profiles and relay lists from across the network, so a member whose
+  list and profile are on none of the other relays is still found (#62).
 - **Saving never drops fields.** Save reads the newest kind 0 again, changes only the form's
   fields, and keeps every other key as it was. If no relay answers that read, it refuses.
+- **No profile found** is not taken as "no profile" (#62). The page lists the relays it searched,
+  offers to search another for this visit, and creates a profile only once the member confirms
+  they have none elsewhere: a new profile would replace one held on a relay not searched.
 - **Images** upload to the member's Blossom server (kind 10063), or `NUXT_PUBLIC_BLOSSOM_SERVER`
   (empty means blossom.primal.net), authorised by a kind 24242 event their signer signs. Stills are
   re-encoded as WebP, which drops camera and location metadata; GIFs are sent as they are.

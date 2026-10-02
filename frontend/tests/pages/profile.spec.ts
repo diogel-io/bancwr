@@ -6,9 +6,12 @@ import { UApp } from '#components'
 import { FakeRelays, profileEvent } from '../helpers/relays'
 import { signInAs } from '../helpers/session'
 import Profile from '~/pages/profile.vue'
+import { DEFAULT_INDEXER_RELAYS, DEFAULT_PROFILE_RELAYS } from '~/utils/profile-relays'
 import type { EventTemplate, NostrSigner, SignedEvent } from '~/utils/nostr-sign-in'
 
 const me = 'a'.repeat(64)
+/** Every relay the page asks by default: the profile relays and the indexers (#62). */
+const EVERY_RELAY = [...DEFAULT_PROFILE_RELAYS, ...DEFAULT_INDEXER_RELAYS]
 const { holder } = vi.hoisted(() => ({
   holder: { io: undefined as unknown, signer: undefined as unknown }
 }))
@@ -82,13 +85,51 @@ describe('Profile page', () => {
     expect(component.find('[data-testid="profile-saved"]').exists()).toBe(true)
   })
 
-  it('offers to create a profile when the key has none', async () => {
+  it('lists the relays searched when the key has no profile, and creates one only once confirmed (#62)', async () => {
     const component = await mount()
-    expect(component.find('[data-testid="profile-new"]').exists()).toBe(true)
+    expect(component.find('[data-testid="profile-not-found"]').exists()).toBe(true)
+    const listed = component.find('[data-testid="searched-relays"]').text()
+    for (const url of EVERY_RELAY) expect(listed).toContain(url.replace('wss://', '').replace(/\/$/, ''))
+
+    await field(component, 'Name').setValue('alice')
+    const button = component.find('[data-testid="profile-save"]')
+    expect(button.text()).toBe('Create profile')
+    expect(button.attributes('disabled')).toBeDefined()
+
+    await component.find('[role="checkbox"]').trigger('click')
+    expect(button.attributes('disabled')).toBeUndefined()
+    await save(component)
+    await flushPromises()
+    expect(JSON.parse(relays.published[0]!.content)).toEqual({ name: 'alice' })
+  })
+
+  it('finds a profile on a relay the member names, and saves it there too (#62)', async () => {
+    relays.events.push(profileEvent(me, { name: 'elsewhere', other: 1 }, 100))
+    // Held only by a relay no list names.
+    relays.only = { 'wss://relay.elsewhere.example/': relays.events.map(e => e.id) }
+    const component = await mount()
+    expect(component.find('[data-testid="profile-not-found"]').exists()).toBe(true)
+
+    await field(component, 'Search another relay').setValue('relay.elsewhere.example')
+    await component.find('[data-testid="profile-not-found"] form').trigger('submit')
+    await flushPromises()
+    expect(component.text()).toContain('Enter a relay address starting with wss://')
+
+    await field(component, 'Search another relay').setValue('wss://relay.elsewhere.example')
+    await component.find('[data-testid="profile-not-found"] form').trigger('submit')
+    await flushPromises()
+    expect(component.find('[data-testid="profile-not-found"]').exists()).toBe(false)
+    expect((field(component, 'Name').element as HTMLInputElement).value).toBe('elsewhere')
+
+    await field(component, 'Name').setValue('found')
+    await save(component)
+    await flushPromises()
+    expect(JSON.parse(relays.published[0]!.content)).toEqual({ name: 'found', other: 1 })
+    expect(relays.publishedTo[0]).toContain('wss://relay.elsewhere.example/')
   })
 
   it('will not edit when no relay can be read', async () => {
-    relays.down = new Set(['wss://relay.damus.io/', 'wss://nos.lol/', 'wss://relay.primal.net/'])
+    relays.down = new Set(EVERY_RELAY)
     const component = await mount()
     expect(component.find('[data-testid="profile-load-failed"]').exists()).toBe(true)
     expect(component.find('[data-testid="profile-save"]').exists()).toBe(false)
@@ -98,7 +139,7 @@ describe('Profile page', () => {
     relays.events.push(profileEvent(me, { name: 'alice', other: 1 }, 100))
     const component = await mount()
     await field(component, 'Name').setValue('changed')
-    relays.down = new Set(['wss://relay.damus.io/', 'wss://nos.lol/', 'wss://relay.primal.net/'])
+    relays.down = new Set(EVERY_RELAY)
     await save(component)
     await flushPromises()
     expect(component.find('[data-testid="profile-save-error"]').text()).toContain('could lose fields set in other apps')
@@ -114,8 +155,9 @@ describe('Profile page', () => {
 
   it('asks the member to connect their signer when it is not available', async () => {
     holder.signer = undefined
+    relays.events.push(profileEvent(me, { name: 'alice' }, 100))
     const component = await mount()
-    await field(component, 'Name').setValue('alice')
+    await field(component, 'Name').setValue('alice2')
     await save(component)
     await flushPromises()
     expect(document.body.textContent).toContain('Connect your signer')

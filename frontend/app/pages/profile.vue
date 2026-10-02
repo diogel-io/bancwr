@@ -11,13 +11,21 @@ import type { NostrSigner } from '~/utils/nostr-sign-in'
 import type { PublishResult } from '~/utils/relay-io'
 
 const profile = useProfile()
-const { state, form, dirty, exists, pubkey, blossomServer } = profile
+const { state, form, dirty, exists, pubkey, blossomServer, searched } = profile
 const userSigner = useUserSigner()
 const nip46 = useNip46()
 
 const npub = computed(() => pubkey.value ? npubEncode(pubkey.value) : '')
 const errors = computed(() => validateForm(form.value))
 const valid = computed(() => Object.keys(errors.value).length === 0)
+
+/**
+ * Creating a profile when none was found needs the member to say so (#62): their profile may be on
+ * a relay not searched, and a new one would replace it everywhere.
+ */
+const confirmNew = ref(false)
+watch(exists, () => (confirmNew.value = false))
+const canSave = computed(() => valid.value && dirty.value && (exists.value || confirmNew.value))
 
 const saving = ref(false)
 const saveError = ref<string>()
@@ -75,7 +83,7 @@ function message(failure: unknown, fallback: string): string {
 }
 
 async function save() {
-  if (!valid.value || saving.value) return
+  if (!canSave.value || saving.value) return
   saveError.value = undefined
   published.value = undefined
   await withSigner(async (signer) => {
@@ -159,14 +167,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
             <h2 class="font-semibold">
               Profile Details
             </h2>
-            <p
-              v-if="!exists"
-              class="text-sm text-muted"
-              data-testid="profile-new"
-            >
-              No profile yet: fill it in and save to create one.
-            </p>
           </template>
+
+          <ProfileNotFound
+            v-if="!exists"
+            class="mb-6"
+            :searched="searched"
+            :search="profile.searchRelay"
+          />
 
           <ProfileForm
             v-model="form"
@@ -214,6 +222,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
                   Approve in your signer
                 </UButton>
               </div>
+              <UCheckbox
+                v-if="!exists"
+                v-model="confirmNew"
+                label="I have no profile on another relay: create a new one."
+                data-testid="profile-confirm-new"
+              />
               <div class="flex items-center justify-end gap-3">
                 <span
                   v-if="dirty"
@@ -221,11 +235,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
                 >Unsaved changes</span>
                 <UButton
                   :loading="saving"
-                  :disabled="!valid || !dirty"
+                  :disabled="!canSave"
                   data-testid="profile-save"
                   @click="save"
                 >
-                  Save profile
+                  {{ exists ? 'Save profile' : 'Create profile' }}
                 </UButton>
               </div>
             </div>

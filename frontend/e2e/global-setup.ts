@@ -54,15 +54,17 @@ export default async function globalSetup() {
 }
 
 /** The relay and remote signer, held here for global-teardown.ts, which runs in this process. */
-const handles = globalThis as { e2eNip46?: { stopRelay: () => Promise<void>, stopSigner: () => void } }
+const handles = globalThis as { e2eNip46?: { stopRelay: () => Promise<void>, stopIndexer: () => Promise<void>, stopSigner: () => void } }
 
 async function startNip46() {
   const port = Number(process.env.E2E_RELAY_PORT || 7777)
   const relay = `ws://127.0.0.1:${port}`
   const stopRelay = await startRelay(port)
+  // A second relay standing in for the indexer relays the profile page also asks (#62).
+  const stopIndexer = await startRelay(Number(process.env.E2E_INDEXER_PORT || 7778))
   const signerNsec = generateNsec()
   const signer = startRemoteSigner(signerNsec, relay)
-  handles.e2eNip46 = { stopRelay, stopSigner: signer.stop }
+  handles.e2eNip46 = { stopRelay, stopIndexer, stopSigner: signer.stop }
 
   // Register the signer's key as a user, signed in as the administrator.
   const jar = cookieJarPost()
@@ -94,5 +96,6 @@ async function registerRoleKeys() {
 export async function stopNip46() {
   handles.e2eNip46?.stopSigner()
   await handles.e2eNip46?.stopRelay()
+  await handles.e2eNip46?.stopIndexer()
   handles.e2eNip46 = undefined
 }

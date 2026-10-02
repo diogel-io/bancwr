@@ -43,6 +43,8 @@ services:
       # The profile page (#30) reads and publishes through the in-process relay, which the browser
       # reaches on the host, and uploads to a Blossom host the specs answer with page.route.
       - NUXT_PUBLIC_PROFILE_RELAYS=ws://127.0.0.1:${E2E_RELAY_PORT:-7777}
+      # A second in-process relay as the indexer (#62).
+      - NUXT_PUBLIC_INDEXER_RELAYS=ws://127.0.0.1:${E2E_INDEXER_PORT:-7778}
       - NUXT_PUBLIC_BLOSSOM_SERVER=https://blossom.e2e.test
     ports:
       # 3100, not 3000 or 3001, so the suite can run beside `pnpm dev` and the quickstart compose.
