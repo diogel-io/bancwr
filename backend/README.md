@@ -59,6 +59,9 @@ the vault on every request:
 | `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | | |
 | `GET`, `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
 | `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | | yes |
+| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
+| `GET /api/bunker/connections` | all | own | own | |
+| `DELETE /api/bunker/connections/:id` | yes | | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -173,7 +176,10 @@ Response:
 ```
 
 ## NIP-46 Remote Signing
-The bunker supports the NIP-46 remote signing protocol. When enabled, it connects to the specified Nostr relays and listens for signing requests.
+The bunker supports the NIP-46 remote signing protocol (read at nips commit `0046368a`). When
+enabled, it connects to the specified Nostr relays and answers requests addressed to its key, as
+kind 24133 events encrypted with NIP-44 (or NIP-04, which older clients still send; each is
+answered in the scheme it used). It answers relays' NIP-42 AUTH challenges with its key.
 
 ### Configuration
 Enable NIP-46 and specify relays in your `.env` file or environment variables:
@@ -182,6 +188,34 @@ Enable NIP-46 and specify relays in your `.env` file or environment variables:
 NIP46_ENABLED=true
 NIP46_RELAYS=wss://relay.nsecbunker.com,wss://relay.damus.io
 ```
+
+### Connecting an app (#53)
+Turning NIP-46 on connects nothing by itself: an app connects only with a **connection token** an
+administrator issues.
+
+```bash
+POST /api/bunker/connections/tokens
+{ "for_pubkey": "npub1…", "label": "Damus on my phone", "kinds": [1, 7], "expires_in_hours": 24 }
+```
+
+- `for_pubkey` is the vault member the connection is attributed to (the administrator when
+  omitted). It must be a member; removing the member later ends their tokens and connections.
+- `kinds` are the event kinds the app may sign. Nothing else is ever signed: there is no
+  "everything" grant. If the app asks for permissions in `connect`, it gets those of them the
+  token allows, and is refused if that leaves nothing.
+- The token is valid for 1 hour to 7 days (24 hours by default), and **for one connection only**.
+- The response's `uri` is the `bunker://` string to give the app. It carries the token's secret,
+  which is shown this once: the bunker stores only its SHA-256 hash.
+
+Every app signs as **the bunker's key**: "for a member" is attribution, not a separate key.
+Connections are stored, so they survive a restart. `GET /api/bunker/connections` lists them (an
+administrator sees all; anyone else only those for their key), with the app's self-reported name,
+URL and image marked unverified (`metadata_verified: false`): NIP-46 lets an app name itself, and
+that is never used to decide anything. A connection ends when the app sends `logout`, an
+administrator revokes it (`DELETE /api/bunker/connections/:id`), or its member is removed.
+
+Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
+change), `logout`. The NIP-04 and NIP-44 encryption methods are not supported.
 
 ## Podman
 

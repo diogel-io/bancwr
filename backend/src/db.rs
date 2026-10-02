@@ -313,8 +313,12 @@ impl Database {
     /// nobody able to administer the bunker (#25). One statement, so the check cannot race.
     pub fn remove_team_member(&self, id: Uuid) -> anyhow::Result<RemoveOutcome> {
         let id_str = id.to_string();
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let removed = conn.execute(
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let pubkey: Option<String> = tx
+            .query_row("SELECT pubkey FROM team_members WHERE id = ?1", params![id_str], |row| row.get(0))
+            .optional()?;
+        let removed = tx.execute(
             "DELETE FROM team_members WHERE id = ?1 AND NOT (
                 role = 'administrator'
                 AND (SELECT count(*) FROM team_members WHERE role = 'administrator') = 1
@@ -322,8 +326,23 @@ impl Database {
             params![id_str],
         )?;
         if removed > 0 {
+            // Their NIP-46 tokens and connections end with them (#53), in the same transaction.
+            if let Some(pubkey) = pubkey {
+                let now = Utc::now().to_rfc3339();
+                tx.execute(
+                    "UPDATE nip46_tokens SET revoked_at = ?2 WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL",
+                    params![pubkey, now],
+                )?;
+                tx.execute(
+                    "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'member_removed'
+                     WHERE for_pubkey = ?1 AND revoked_at IS NULL",
+                    params![pubkey, now],
+                )?;
+            }
+            tx.commit()?;
             return Ok(RemoveOutcome::Removed);
         }
+        drop(tx);
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM team_members WHERE id = ?1)",
             params![id_str],
@@ -342,4 +361,311 @@ fn team_member_from_row(
         .map_err(|e| anyhow::anyhow!("Malformed timestamp in team_members.created_at '{}': {}", created_at_str, e))?
         .with_timezone(&Utc);
     Ok(TeamMember { id, name, pubkey, role, created_at })
+}
+
+// NIP-46 connection tokens and connections (#53). See migrations.rs, migration 3.
+
+/// A connection token as stored: never the secret, only its hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nip46Token {
+    pub id: String,
+    /// The vault member the connection will be attributed to (hex).
+    pub for_pubkey: String,
+    /// The administrator who issued it (hex; empty only from an unauthenticated test router).
+    pub issued_by: String,
+    pub label: String,
+    /// What a connection made with it may do, e.g. `sign_event:1,sign_event:7`.
+    pub perms: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nip46Connection {
+    pub id: String,
+    /// The client's NIP-46 key (hex), which signs its requests.
+    pub client_pubkey: String,
+    pub token_id: String,
+    pub for_pubkey: String,
+    /// What it was granted: the token's perms intersected with what it asked for.
+    pub perms: Vec<String>,
+    /// NIP-46 client metadata: self-reported, unverified, for display only.
+    pub client_name: Option<String>,
+    pub client_url: Option<String>,
+    pub client_image: Option<String>,
+    pub connected_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_reason: Option<String>,
+}
+
+/// Unverified client metadata from `connect` (NIP-46 "Client metadata").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientMetadata {
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub image: Option<String>,
+}
+
+/// Why `redeem_nip46_token` refused a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedeemRefusal {
+    UnknownSecret,
+    Used,
+    Revoked,
+    Expired,
+    /// The member the token was issued for is no longer in the vault.
+    MemberRemoved,
+    /// The client asked only for permissions the token does not allow.
+    NothingGrantable,
+}
+
+/// The permissions granted: the token's, or those of them the client asked for. A request that
+/// names none (or is empty) gets all of the token's. Only permissions the token holds are ever
+/// granted.
+pub fn grant(token_perms: &[String], requested: Option<&str>) -> Vec<String> {
+    let requested: Vec<&str> = requested.unwrap_or("").split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+    if requested.is_empty() {
+        return token_perms.to_vec();
+    }
+    token_perms.iter().filter(|p| requested.contains(&p.as_str())).cloned().collect()
+}
+
+fn join_perms(perms: &[String]) -> String {
+    perms.join(",")
+}
+
+fn split_perms(perms: &str) -> Vec<String> {
+    perms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect()
+}
+
+fn parse_time(value: &str) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|t| t.with_timezone(&Utc))
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+}
+
+fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    value.as_deref().map(parse_time).transpose()
+}
+
+const TOKEN_COLUMNS: &str = "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason";
+
+fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
+    Ok(Nip46Token {
+        id: row.get(0)?,
+        for_pubkey: row.get(1)?,
+        issued_by: row.get(2)?,
+        label: row.get(3)?,
+        perms: split_perms(&row.get::<_, String>(4)?),
+        created_at: parse_time(&row.get::<_, String>(5)?)?,
+        expires_at: parse_time(&row.get::<_, String>(6)?)?,
+        used_at: parse_optional_time(row.get(7)?)?,
+        revoked_at: parse_optional_time(row.get(8)?)?,
+    })
+}
+
+fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection> {
+    Ok(Nip46Connection {
+        id: row.get(0)?,
+        client_pubkey: row.get(1)?,
+        token_id: row.get(2)?,
+        for_pubkey: row.get(3)?,
+        perms: split_perms(&row.get::<_, String>(4)?),
+        client_name: row.get(5)?,
+        client_url: row.get(6)?,
+        client_image: row.get(7)?,
+        connected_at: parse_time(&row.get::<_, String>(8)?)?,
+        last_used_at: parse_optional_time(row.get(9)?)?,
+        revoked_at: parse_optional_time(row.get(10)?)?,
+        revoked_reason: row.get(11)?,
+    })
+}
+
+impl Database {
+    /// Stores a new token. `secret_hash` is the hex SHA-256 of the secret; the secret itself is
+    /// handed to the administrator once and never stored.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_nip46_token(
+        &self,
+        secret_hash: &str,
+        for_pubkey: &str,
+        issued_by: &str,
+        label: &str,
+        perms: &[String],
+        now: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<Nip46Token> {
+        let token = Nip46Token {
+            id: Uuid::new_v4().to_string(),
+            for_pubkey: for_pubkey.to_string(),
+            issued_by: issued_by.to_string(),
+            label: label.to_string(),
+            perms: perms.to_vec(),
+            created_at: now,
+            expires_at,
+            used_at: None,
+            revoked_at: None,
+        };
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.execute(
+            "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339()],
+        )?;
+        Ok(token)
+    }
+
+    /// Every token, newest first. Never the secrets.
+    pub fn list_nip46_tokens(&self) -> anyhow::Result<Vec<Nip46Token>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare(&format!("SELECT {} FROM nip46_tokens ORDER BY created_at DESC", TOKEN_COLUMNS))?;
+        let tokens = stmt.query_map([], token_from_row)?.collect::<Result<_, _>>()?;
+        Ok(tokens)
+    }
+
+    /// Revokes an unused, unrevoked token. False when there is no such token.
+    pub fn revoke_nip46_token(&self, id: &str, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let changed = conn.execute(
+            "UPDATE nip46_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL AND used_at IS NULL",
+            params![id, now.to_rfc3339()],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Connects `client_pubkey` with the token whose secret hashes to `secret_hash`, in one
+    /// transaction: the token is checked (unused, unrevoked, unexpired, its member still in the
+    /// vault), marked used, any earlier active connection of the client is replaced, and the new
+    /// connection is stored with the granted permissions.
+    pub fn redeem_nip46_token(
+        &self,
+        secret_hash: &str,
+        client_pubkey: &str,
+        requested_perms: Option<&str>,
+        metadata: &ClientMetadata,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Result<Nip46Connection, RedeemRefusal>> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let token = tx
+            .query_row(
+                &format!("SELECT {} FROM nip46_tokens WHERE secret_hash = ?1", TOKEN_COLUMNS),
+                params![secret_hash],
+                token_from_row,
+            )
+            .optional()?;
+        let Some(token) = token else { return Ok(Err(RedeemRefusal::UnknownSecret)) };
+        if token.revoked_at.is_some() {
+            return Ok(Err(RedeemRefusal::Revoked));
+        }
+        if token.used_at.is_some() {
+            return Ok(Err(RedeemRefusal::Used));
+        }
+        if token.expires_at <= now {
+            return Ok(Err(RedeemRefusal::Expired));
+        }
+        let member: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1)",
+            params![token.for_pubkey],
+            |row| row.get(0),
+        )?;
+        if !member {
+            return Ok(Err(RedeemRefusal::MemberRemoved));
+        }
+        let perms = grant(&token.perms, requested_perms);
+        if perms.is_empty() {
+            return Ok(Err(RedeemRefusal::NothingGrantable));
+        }
+
+        tx.execute("UPDATE nip46_tokens SET used_at = ?2 WHERE id = ?1", params![token.id, now.to_rfc3339()])?;
+        tx.execute(
+            "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'replaced'
+             WHERE client_pubkey = ?1 AND revoked_at IS NULL",
+            params![client_pubkey, now.to_rfc3339()],
+        )?;
+        let connection = Nip46Connection {
+            id: Uuid::new_v4().to_string(),
+            client_pubkey: client_pubkey.to_string(),
+            token_id: token.id.clone(),
+            for_pubkey: token.for_pubkey.clone(),
+            perms,
+            client_name: metadata.name.clone(),
+            client_url: metadata.url.clone(),
+            client_image: metadata.image.clone(),
+            connected_at: now,
+            last_used_at: None,
+            revoked_at: None,
+            revoked_reason: None,
+        };
+        tx.execute(
+            &format!("INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL)", CONNECTION_COLUMNS),
+            params![
+                connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
+                connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Ok(connection))
+    }
+
+    /// The client's active connection, only while its member is still in the vault.
+    pub fn active_nip46_connection(&self, client_pubkey: &str) -> anyhow::Result<Option<Nip46Connection>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let connection = conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM nip46_connections c
+                     WHERE c.client_pubkey = ?1 AND c.revoked_at IS NULL
+                       AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey)",
+                    CONNECTION_COLUMNS.split(", ").map(|c| format!("c.{}", c)).collect::<Vec<_>>().join(", ")
+                ),
+                params![client_pubkey],
+                connection_from_row,
+            )
+            .optional()?;
+        Ok(connection)
+    }
+
+    pub fn touch_nip46_connection(&self, id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.execute("UPDATE nip46_connections SET last_used_at = ?2 WHERE id = ?1", params![id, now.to_rfc3339()])?;
+        Ok(())
+    }
+
+    /// Revokes an active connection. False when there is no such active connection.
+    pub fn revoke_nip46_connection(&self, id: &str, reason: &str, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let changed = conn.execute(
+            "UPDATE nip46_connections SET revoked_at = ?3, revoked_reason = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, reason, now.to_rfc3339()],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Every connection, newest first, or only those for `for_pubkey`.
+    pub fn list_nip46_connections(&self, for_pubkey: Option<&str>) -> anyhow::Result<Vec<Nip46Connection>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM nip46_connections WHERE ?1 IS NULL OR for_pubkey = ?1 ORDER BY connected_at DESC",
+            CONNECTION_COLUMNS
+        ))?;
+        let rows = stmt.query_map(params![for_pubkey], connection_from_row)?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Active connections whose member is still in the vault.
+    pub fn active_nip46_connection_count(&self) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM nip46_connections c WHERE c.revoked_at IS NULL
+               AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
 }

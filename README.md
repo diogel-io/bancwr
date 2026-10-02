@@ -98,6 +98,14 @@ There is no field for an nsec: Bancwr never asks for a private key. A key that s
 registered sees a page with its npub, to send to an administrator. Signing out ends the session
 everywhere it was copied, and restarting the frontend signs everyone out.
 
+### Connecting apps (NIP-46)
+
+With `NIP46_ENABLED=true`, Nostr apps can use the bunker as a remote signer. None can until an
+administrator issues it a single-use connection token naming the member it is for and the event
+kinds it may sign; every app signs as the bunker's key, never as the member's. Connections are kept
+across restarts and can be revoked. See "Connecting an app" in
+[`backend/README.md`](backend/README.md#connecting-an-app-53).
+
 ### HTTPS
 
 Sign-in needs HTTPS. The session cookie is `Secure`, so browsers only send it over HTTPS, or to

@@ -18,6 +18,7 @@ type Migration = fn(&Transaction) -> anyhow::Result<()>;
 const MIGRATIONS: &[(&str, Migration)] = &[
     ("rename roles to administrator, user and signer", rename_roles),
     ("store pubkeys as lowercase hex", canonicalise_pubkeys),
+    ("persist NIP-46 connection tokens and connections", nip46_connections),
 ];
 
 /// The version a fully migrated database is at.
@@ -97,5 +98,46 @@ fn canonicalise_pubkeys(tx: &Transaction) -> anyhow::Result<()> {
     for (id, hex) in updates {
         tx.execute("UPDATE team_members SET pubkey = ?1 WHERE id = ?2", params![hex, id])?;
     }
+    Ok(())
+}
+
+/// 3. NIP-46 connection tokens and connections (#53): a client connects only with a single-use
+///    token an administrator issued for a vault member, and the connection is kept (it used to
+///    live in memory) and attributed to that member. Secrets are stored as SHA-256 hashes.
+fn nip46_connections(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE nip46_tokens (
+            id TEXT PRIMARY KEY,
+            secret_hash TEXT NOT NULL UNIQUE,
+            for_pubkey TEXT NOT NULL,
+            issued_by TEXT NOT NULL,
+            label TEXT NOT NULL,
+            perms TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            revoked_at TEXT
+        );
+        CREATE INDEX idx_nip46_tokens_for ON nip46_tokens(for_pubkey);
+
+        CREATE TABLE nip46_connections (
+            id TEXT PRIMARY KEY,
+            client_pubkey TEXT NOT NULL,
+            token_id TEXT NOT NULL REFERENCES nip46_tokens(id),
+            for_pubkey TEXT NOT NULL,
+            perms TEXT NOT NULL,
+            client_name TEXT,
+            client_url TEXT,
+            client_image TEXT,
+            connected_at TEXT NOT NULL,
+            last_used_at TEXT,
+            revoked_at TEXT,
+            revoked_reason TEXT
+        );
+        CREATE INDEX idx_nip46_connections_for ON nip46_connections(for_pubkey);
+        -- One active connection per client key.
+        CREATE UNIQUE INDEX idx_nip46_connections_active_client
+            ON nip46_connections(client_pubkey) WHERE revoked_at IS NULL;",
+    )?;
     Ok(())
 }
