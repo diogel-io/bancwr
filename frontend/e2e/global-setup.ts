@@ -23,6 +23,7 @@ export default async function globalSetup() {
   if (process.env.E2E_BASE_URL) {
     // An external stack: its administrator key must be passed in.
     if (!process.env.E2E_ADMIN_NSEC) throw new Error('With E2E_BASE_URL, set E2E_ADMIN_NSEC to an administrator of that stack.')
+    await startRelays()
     await waitForStack(process.env.E2E_ADMIN_NSEC)
     process.env.E2E_BUNKER_NPUB ??= process.env.BUNKER_NSEC ? npubFromNsec(process.env.BUNKER_NSEC) : ''
     await startNip46()
@@ -38,6 +39,9 @@ export default async function globalSetup() {
   process.env.E2E_SESSION_PASSWORD = randomBytes(32).toString('hex')
   process.env.E2E_STACK_STARTED = '1'
 
+  // Before the stack: the bunker's NIP-46 relay is this one (#31), and the bunker reports healthy
+  // only once it is connected, which waitForStack waits for.
+  await startRelays()
   up()
   try {
     await waitForStack(process.env.E2E_ADMIN_NSEC)
@@ -54,17 +58,23 @@ export default async function globalSetup() {
 }
 
 /** The relay and remote signer, held here for global-teardown.ts, which runs in this process. */
-const handles = globalThis as { e2eNip46?: { stopRelay: () => Promise<void>, stopIndexer: () => Promise<void>, stopSigner: () => void } }
+const handles = globalThis as { e2eRelays?: { stopRelay: () => Promise<void>, stopIndexer: () => Promise<void> }, e2eNip46?: { stopSigner: () => void } }
+
+/**
+ * The in-process relays: the profile relay, which is also the bunker's NIP-46 relay (#31) and so
+ * listens on every interface for the bunker container to reach, and the indexer (#62).
+ */
+async function startRelays() {
+  const stopRelay = await startRelay(Number(process.env.E2E_RELAY_PORT || 7777), '0.0.0.0')
+  const stopIndexer = await startRelay(Number(process.env.E2E_INDEXER_PORT || 7778))
+  handles.e2eRelays = { stopRelay, stopIndexer }
+}
 
 async function startNip46() {
-  const port = Number(process.env.E2E_RELAY_PORT || 7777)
-  const relay = `ws://127.0.0.1:${port}`
-  const stopRelay = await startRelay(port)
-  // A second relay standing in for the indexer relays the profile page also asks (#62).
-  const stopIndexer = await startRelay(Number(process.env.E2E_INDEXER_PORT || 7778))
+  const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
   const signerNsec = generateNsec()
   const signer = startRemoteSigner(signerNsec, relay)
-  handles.e2eNip46 = { stopRelay, stopIndexer, stopSigner: signer.stop }
+  handles.e2eNip46 = { stopSigner: signer.stop }
 
   // Register the signer's key as a user, signed in as the administrator.
   const jar = cookieJarPost()
@@ -95,7 +105,8 @@ async function registerRoleKeys() {
 
 export async function stopNip46() {
   handles.e2eNip46?.stopSigner()
-  await handles.e2eNip46?.stopRelay()
-  await handles.e2eNip46?.stopIndexer()
+  await handles.e2eRelays?.stopRelay()
+  await handles.e2eRelays?.stopIndexer()
   handles.e2eNip46 = undefined
+  handles.e2eRelays = undefined
 }

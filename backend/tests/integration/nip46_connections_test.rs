@@ -108,7 +108,8 @@ async fn only_administrators_issue_list_tokens_and_revoke() {
     for who in [&user, &signer] {
         assert_eq!(issue(&app, who, json!({ "label": "x", "kinds": [1] })).await.status(), StatusCode::FORBIDDEN);
         assert_eq!(app.signed(Method::GET, "/api/bunker/connections/tokens", who).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", who).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        // Revoking is open to every member since #31, scoped to their own: an unknown id is a 404.
+        assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", who).send().await.unwrap().status(), StatusCode::NOT_FOUND);
     }
 
     let issued: IssueTokenResponse = issue(&app, &admin, json!({ "for_pubkey": user, "label": "Laptop", "kinds": [7, 1, 1] })).await.json().await.unwrap();
@@ -232,4 +233,76 @@ async fn a_nip44_client_is_answered_in_nip44_with_kind_24133() {
     assert_eq!(connected["result"], "ack", "{}", connected);
     let key = nip44_request(&client, &keys, bunker, "get_public_key", vec![]).await;
     assert_eq!(key["result"], bunker.to_hex());
+}
+
+/// Connects one client for `member` through the handler; returns the client keys.
+async fn connect_for(app: &common::TestApp, member: &Keys) -> Keys {
+    let admin = app.admin.public_key().to_hex();
+    let issued: IssueTokenResponse = issue(app, &admin, json!({ "for_pubkey": member.public_key().to_hex(), "label": "x", "kinds": [1] })).await.json().await.unwrap();
+    let secret = issued.uri.split("secret=").nth(1).unwrap().to_string();
+    let client = Keys::generate();
+    let response = app
+        .state
+        .nip46_handler
+        .handle_request(
+            bunker::nip46::Nip46Request { id: "c".into(), method: "connect".into(), params: vec![app.bunker.public_key().to_hex(), secret] },
+            client.public_key(),
+        )
+        .await;
+    assert_eq!(response.result.as_deref(), Some("ack"));
+    client
+}
+
+async fn sign_as(app: &common::TestApp, client: &Keys) -> bunker::nip46::Nip46Response {
+    let unsigned = EventBuilder::text_note("x").build(app.bunker.public_key());
+    app.state
+        .nip46_handler
+        .handle_request(
+            bunker::nip46::Nip46Request { id: "s".into(), method: "sign_event".into(), params: vec![serde_json::to_string(&unsigned).unwrap()] },
+            client.public_key(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_member_revokes_their_own_connection_but_not_anyone_elses() {
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let alice = app.register(Role::User);
+    let bob = app.register(Role::User);
+    let alice_client = connect_for(&app, &alice).await;
+    let bob_client = connect_for(&app, &bob).await;
+    let alice_hex = alice.public_key().to_hex();
+
+    let bobs = connections(&app, &bob.public_key().to_hex()).await;
+    // Alice cannot revoke Bob's: a 404, as for an id that does not exist.
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/{}", bobs[0].id), &alice_hex).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(sign_as(&app, &bob_client).await.result.is_some());
+
+    // Alice revokes her own; it records her, and the client can sign no more.
+    let mine = connections(&app, &alice_hex).await;
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/{}", mine[0].id), &alice_hex).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let after = connections(&app, &alice_hex).await;
+    assert_eq!(after[0].revoked_reason.as_deref(), Some("revoked"));
+    assert_eq!(after[0].revoked_by.as_deref(), Some(alice_hex.as_str()));
+    assert_eq!(sign_as(&app, &alice_client).await.error.as_deref(), Some(bunker::nip46::NOT_CONNECTED));
+
+    // An administrator revokes anyone's, and is recorded.
+    let admin = app.admin.public_key().to_hex();
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/{}", bobs[0].id), &admin).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(connections(&app, &admin).await.iter().find(|c| c.id == bobs[0].id).unwrap().revoked_by.as_deref(), Some(admin.as_str()));
+}
+
+#[tokio::test]
+async fn a_signer_may_revoke_connections_made_for_them() {
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let signer = app.register(Role::Signer);
+    connect_for(&app, &signer).await;
+    let hex = signer.public_key().to_hex();
+    let mine = connections(&app, &hex).await;
+    assert_eq!(mine.len(), 1);
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/{}", mine[0].id), &hex).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }

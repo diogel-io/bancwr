@@ -268,6 +268,25 @@ list `/profile` and `/follows` read through, so they use the new list straight a
   context: they are operator settings, and unrelated to the member's list, since the bunker signs
   only as itself.
 
+### Connected apps
+
+`/connections` (#31) lists the apps connected to the bunker over NIP-46 (#53), for administrators
+and users. Every one signs as **the bunker's key**, not the member's: it was authorised by an
+administrator for a member, with a single-use token naming the event kinds it may sign. The page
+says so at the top, always.
+
+- A user sees the apps connected for them; an administrator sees every app and whom it is for.
+- An app's name, URL and picture are what it says about itself, shown with an **Unverified**
+  badge. An app that gave none is shown by its key.
+- Anyone revokes their own apps, and administrators any (confirmed in place). Ended connections
+  are hidden behind "Show ended", with why and by whom.
+- Administrators issue tokens on the page: for which member, a label, what it may sign (presets or
+  kind numbers) and for how long. The `bunker://` string and its QR code (`uqr`) are shown once,
+  and gone after Done: the bunker keeps only a hash of the secret.
+
+The e2e stack runs with NIP-46 on: the bunker's relay is the in-process one, which the container
+reaches as `e2e-host` (`compose.e2e.yaml`), so global setup starts the relays before the stack.
+
 ### Differences from Porwr
 
 Porwr resolves `nostr-tools` 2.23.5; Bancwr pins 2.25.2. Changes between the two that matter when

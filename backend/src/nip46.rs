@@ -152,7 +152,20 @@ impl Nip46Handler {
         let Some(unsigned_event_json) = request.params.first() else {
             return Nip46Response::err(request.id, "Missing event to sign");
         };
-        let unsigned_event: UnsignedEvent = match serde_json::from_str(unsigned_event_json) {
+        // NIP-46 defines the parameter as `{kind, content, tags, created_at}`, with no pubkey, and
+        // nostr-tools sends exactly that; some clients add a pubkey. Either way the event is signed
+        // as the bunker's key, so the bunker's key is what goes in (#31 found the strict parse).
+        let mut template: serde_json::Value = match serde_json::from_str(unsigned_event_json) {
+            Ok(value @ serde_json::Value::Object(_)) => value,
+            Ok(_) => return Nip46Response::err(request.id, "Invalid event JSON: expected an object"),
+            Err(e) => return Nip46Response::err(request.id, format!("Invalid event JSON: {}", e)),
+        };
+        template["pubkey"] = serde_json::Value::String(self.signer.read().await.public_key_hex());
+        if let Some(object) = template.as_object_mut() {
+            // Any id the client computed was for its own idea of the event; it is recomputed.
+            object.remove("id");
+        }
+        let unsigned_event: UnsignedEvent = match serde_json::from_value(template) {
             Ok(ev) => ev,
             Err(e) => return Nip46Response::err(request.id, format!("Invalid event JSON: {}", e)),
         };

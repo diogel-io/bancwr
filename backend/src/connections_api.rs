@@ -6,7 +6,7 @@
 //! | `GET /api/bunker/connections/tokens` | administrator |
 //! | `DELETE /api/bunker/connections/tokens/:id` | administrator |
 //! | `GET /api/bunker/connections` | every role: administrators see all, others their own |
-//! | `DELETE /api/bunker/connections/:id` | administrator |
+//! | `DELETE /api/bunker/connections/:id` | every role: administrators any, others their own (#31) |
 //!
 //! A token's secret is returned once, in the creation response, and only its hash is kept.
 use crate::db::{Nip46Connection, Nip46Token};
@@ -120,6 +120,8 @@ pub struct ConnectionResponse {
     pub last_used_at: Option<String>,
     pub revoked_at: Option<String>,
     pub revoked_reason: Option<String>,
+    /// Who revoked it (hex), when someone did (#31).
+    pub revoked_by: Option<String>,
 }
 
 impl From<Nip46Connection> for ConnectionResponse {
@@ -137,6 +139,7 @@ impl From<Nip46Connection> for ConnectionResponse {
             last_used_at: c.last_used_at.map(|v| v.to_rfc3339()),
             revoked_at: c.revoked_at.map(|v| v.to_rfc3339()),
             revoked_reason: c.revoked_reason,
+            revoked_by: c.revoked_by,
         }
     }
 }
@@ -255,11 +258,19 @@ pub async fn list_connections(
     Ok(Json(connections.into_iter().map(Into::into).collect()))
 }
 
-/// Revoke a connection
+/// Revoke a connection: an administrator any, anyone else only one made for their key (#31).
+/// Someone else's connection is a 404, as an unknown one is, so its existence is not revealed.
 /// DELETE /api/bunker/connections/:id
-pub async fn revoke_connection(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    if state.db.revoke_nip46_connection(&id, "revoked", Utc::now()).map_err(database_error)? {
-        info!("Revoked NIP-46 connection {}", id);
+pub async fn revoke_connection(
+    State(state): State<AppState>,
+    who: Option<Extension<Caller>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (pubkey, administrator) = caller(who);
+    let revoked_by = (!pubkey.is_empty()).then_some(pubkey.as_str());
+    let only_for = if administrator { None } else { Some(pubkey.as_str()) };
+    if state.db.revoke_nip46_connection_as(&id, "revoked", revoked_by, only_for, Utc::now()).map_err(database_error)? {
+        info!("Revoked NIP-46 connection {} (by {})", id, if pubkey.is_empty() { "-" } else { &pubkey });
         Ok(Json(json!({ "success": true })))
     } else {
         Err(api_error(StatusCode::NOT_FOUND, "not_found", "No active connection with that id."))

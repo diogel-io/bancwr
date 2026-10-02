@@ -4,7 +4,7 @@ import { canOpen } from '~/utils/access'
 
 defineProps<{ collapsed?: boolean }>()
 
-// Flat, because Bancwr has seven screens. The template this is modelled on nests a Settings
+// Flat, because Bancwr has eight screens. The template this is modelled on nests a Settings
 // section, but it has sixteen.
 const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', to: '/' },
@@ -16,7 +16,9 @@ const allLinks: (NavigationMenuItem & { to: string })[] = [
   // Administrators' and users' own follow list (#32).
   { label: 'Follows', icon: 'i-lucide-users-round', to: '/follows' },
   // Administrators' and users' own relay list (#33).
-  { label: 'Relays', icon: 'i-lucide-radio-tower', to: '/relays' }
+  { label: 'Relays', icon: 'i-lucide-radio-tower', to: '/relays' },
+  // Apps connected over NIP-46 for the member; all of them for administrators (#31).
+  { label: 'Connections', icon: 'i-lucide-plug', to: '/connections' }
 ]
 
 // Only what the signed-in role may open (#26): the middleware refuses the rest anyway, so offering

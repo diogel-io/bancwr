@@ -19,6 +19,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("rename roles to administrator, user and signer", rename_roles),
     ("store pubkeys as lowercase hex", canonicalise_pubkeys),
     ("persist NIP-46 connection tokens and connections", nip46_connections),
+    ("record who revoked a NIP-46 connection", nip46_revoked_by),
 ];
 
 /// The version a fully migrated database is at.
@@ -139,5 +140,13 @@ fn nip46_connections(tx: &Transaction) -> anyhow::Result<()> {
         CREATE UNIQUE INDEX idx_nip46_connections_active_client
             ON nip46_connections(client_pubkey) WHERE revoked_at IS NULL;",
     )?;
+    Ok(())
+}
+
+/// 4. Who revoked a NIP-46 connection (#31): a member may now revoke connections made for them,
+///    and an administrator any, so the record names the key that did. Empty for a connection that
+///    ended any other way (logout, replaced, member removed).
+fn nip46_revoked_by(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch("ALTER TABLE nip46_connections ADD COLUMN revoked_by TEXT;")?;
     Ok(())
 }

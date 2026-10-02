@@ -12,7 +12,7 @@ test.describe('administrator', () => {
   test('is offered every page, and sees the whole dashboard', async ({ page }) => {
     await page.goto('/')
     const sidebar = page.getByRole('navigation')
-    for (const name of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays']) {
+    for (const name of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections']) {
       await expect(sidebar.getByRole('link', { name, exact: true })).toBeVisible()
     }
     await expect(page.getByText('Total Signatures')).toBeVisible()
@@ -26,7 +26,7 @@ for (const role of ['user', 'signer'] as Role[]) {
 
     test('is offered the dashboard and their own profile, and a user their follows (#32)', async ({ page }) => {
       await page.goto('/')
-      const names = role === 'user' ? ['Dashboard', 'Profile', 'Follows', 'Relays'] : ['Dashboard', 'Profile']
+      const names = role === 'user' ? ['Dashboard', 'Profile', 'Follows', 'Relays', 'Connections'] : ['Dashboard', 'Profile']
       const links = page.getByRole('navigation').getByRole('link')
       await expect(links).toHaveCount(names.length)
       for (const [i, name] of names.entries()) await expect(links.nth(i)).toHaveAccessibleName(name)

@@ -130,3 +130,16 @@ fn a_database_from_before_53_gains_the_nip46_tables() {
     assert!(db.list_nip46_tokens().unwrap().is_empty());
     assert!(db.list_nip46_connections(None).unwrap().is_empty());
 }
+
+#[test]
+fn a_database_from_before_31_gains_revoked_by() {
+    let file = NamedTempFile::new().unwrap();
+    {
+        drop(Database::new(file.path().to_str().unwrap()).unwrap());
+        let conn = Connection::open(file.path()).unwrap();
+        conn.execute_batch("ALTER TABLE nip46_connections DROP COLUMN revoked_by; PRAGMA user_version = 3;").unwrap();
+    }
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert!(db.list_nip46_connections(None).unwrap().is_empty());
+}
