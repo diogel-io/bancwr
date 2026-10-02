@@ -247,6 +247,27 @@ member did not remove can be lost:
 When no list is found anywhere, the page lists the relays searched, offers to search another, and
 starts a new list only once the member confirms they have none elsewhere.
 
+### Relays
+
+`/relays` (#33) edits the signed-in member's own NIP-65 relay list (kind 10002, read at nips commit
+`0046368a`), for administrators and users: their **write** relays, where other apps read their
+posts, and **read** relays, where apps look for mentions of them. No marker means both. It is the
+list `/profile` and `/follows` read through, so they use the new list straight after a save.
+
+- URLs follow Porwr's rules (`app/utils/relay-url.ts`): `ws://` or `wss://`, no fragment, a real
+  hostname, at most 255 characters, host lowercased, a trailing slash on an empty path dropped.
+  `ws://` to anything but this machine is flagged as unencrypted.
+- Saving carries the follow list's guards: re-read, refuse when no relay answers or the re-read is
+  older, apply the staged changes to it, keep every untouched tag and the content, and check the
+  result before signing. A relay with neither Read nor Write is removed.
+- The new list is published to the old list's relays, the new list's, the defaults and the
+  indexers, as NIP-65 asks, so relays dropped from the list do not keep the old one.
+- NIP-65's advice (2 to 4 of each) and a missing write relay are shown, not enforced. With no list,
+  the page says which relays Bancwr uses instead and offers to start from the defaults.
+- The bunker's own NIP-46 relays (`NIP46_RELAYS`, from `/api/bunker/status`) are shown for
+  context: they are operator settings, and unrelated to the member's list, since the bunker signs
+  only as itself.
+
 ### Differences from Porwr
 
 Porwr resolves `nostr-tools` 2.23.5; Bancwr pins 2.25.2. Changes between the two that matter when

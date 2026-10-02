@@ -65,6 +65,17 @@ export function useMemberRelays(deps: { io?: RelayIO } = {}) {
     return relayIO().publish(relays.value, event)
   }
 
+  /** Publishes to `urls` rather than the member's relays: a relay list goes wider (#33). */
+  function publishTo(urls: string[], event: NostrEvent) {
+    return relayIO().publish(urls, event)
+  }
+
+  /** Adopts a relay list just published (#33), so reads and publishes use it from now on. */
+  function setList(event: NostrEvent | undefined) {
+    list = event
+    update()
+  }
+
   /** Adds a relay to search on this visit; returns a message when `url` is not a relay address. */
   function addRelay(url: string): string | undefined {
     const relay = parseRelayUrl(url)
@@ -74,5 +85,5 @@ export function useMemberRelays(deps: { io?: RelayIO } = {}) {
     return undefined
   }
 
-  return { relays, searched, blossomServer, resolve, query, lookup, publish, addRelay }
+  return { relays, searched, blossomServer, defaults, indexers, resolve, query, lookup, publish, publishTo, setList, addRelay }
 }
