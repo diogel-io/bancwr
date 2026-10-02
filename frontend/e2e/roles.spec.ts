@@ -12,7 +12,7 @@ test.describe('administrator', () => {
   test('is offered every page, and sees the whole dashboard', async ({ page }) => {
     await page.goto('/')
     const sidebar = page.getByRole('navigation')
-    for (const name of ['Dashboard', 'Config', 'Team', 'Logs']) {
+    for (const name of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile']) {
       await expect(sidebar.getByRole('link', { name, exact: true })).toBeVisible()
     }
     await expect(page.getByText('Total Signatures')).toBeVisible()
@@ -24,11 +24,12 @@ for (const role of ['user', 'signer'] as Role[]) {
   test.describe(role, () => {
     test.use({ role })
 
-    test('is offered the dashboard only', async ({ page }) => {
+    test('is offered the dashboard and their own profile only', async ({ page }) => {
       await page.goto('/')
       const links = page.getByRole('navigation').getByRole('link')
-      await expect(links).toHaveCount(1)
-      await expect(links.first()).toHaveAccessibleName('Dashboard')
+      await expect(links).toHaveCount(2)
+      await expect(links.nth(0)).toHaveAccessibleName('Dashboard')
+      await expect(links.nth(1)).toHaveAccessibleName('Profile')
     })
 
     test('sees the bunker\'s health only, and the page asks the bunker for nothing it refuses', async ({ page }) => {

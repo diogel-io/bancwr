@@ -16,22 +16,22 @@ const hrefs = (component: { findAll: (selector: 'a') => { attributes: (name: str
   component.findAll('a').map(a => a.attributes('href'))
 
 describe('AppSidebar', () => {
-  it('offers an administrator the four Bancwr destinations, each linked to its route', async () => {
+  it('offers an administrator every Bancwr destination, each linked to its route', async () => {
     signInAs('administrator')
     const component = await mountSuspended(AppSidebar)
 
-    for (const label of ['Dashboard', 'Config', 'Team', 'Logs']) {
+    for (const label of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile']) {
       expect(component.text()).toContain(label)
     }
-    expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs'])
+    expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile'])
   })
 
-  it('offers users and signers the dashboard only (#26)', async () => {
+  it('offers users and signers the dashboard and their own profile only (#26, #30)', async () => {
     for (const role of ['user', 'signer'] as Role[]) {
       signInAs(role)
       const component = await mountSuspended(AppSidebar)
 
-      expect(hrefs(component), role).toEqual(['/'])
+      expect(hrefs(component), role).toEqual(['/', '/profile'])
       expect(component.text(), role).not.toContain('Config')
     }
   })
