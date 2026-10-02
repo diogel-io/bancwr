@@ -37,7 +37,7 @@ pub fn run(conn: &mut Connection) -> anyhow::Result<()> {
 }
 
 /// 1. `admin` becomes `administrator` and `viewer` becomes `user`; `signer` is unchanged. Any
-/// other value is left as it is and logged: it grants no access until an administrator fixes it.
+///    other value is left as it is and logged: it grants no access until an administrator fixes it.
 fn rename_roles(tx: &Transaction) -> anyhow::Result<()> {
     tx.execute("UPDATE team_members SET role = 'administrator' WHERE role = 'admin'", [])?;
     tx.execute("UPDATE team_members SET role = 'user' WHERE role = 'viewer'", [])?;
@@ -54,9 +54,9 @@ fn rename_roles(tx: &Transaction) -> anyhow::Result<()> {
 }
 
 /// 2. Every pubkey becomes lowercase hex. Before #24 anything starting `npub1` was accepted and
-/// stored as given, so the same key could be stored twice under two encodings, which the UNIQUE
-/// constraint could not see. For each key the oldest row is kept and later duplicates are deleted
-/// and logged. A value that is not a valid key is left as it is and logged: it never matches.
+///    stored as given, so the same key could be stored twice under two encodings, which the UNIQUE
+///    constraint could not see. For each key the oldest row is kept and later duplicates are deleted
+///    and logged. A value that is not a valid key is left as it is and logged: it never matches.
 fn canonicalise_pubkeys(tx: &Transaction) -> anyhow::Result<()> {
     struct Row {
         id: String,
