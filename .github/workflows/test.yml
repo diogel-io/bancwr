@@ -5,6 +5,11 @@ name: Test
 # the required status checks on master: "test / backend-test" and "test / frontend-check".
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: The commit to test; the triggering one when empty. A weekly rebuild of a release passes its tag (#15).
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -21,6 +26,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       # Installs and prints the toolchain from backend/rust-toolchain.toml.
       - name: Show Rust toolchain
@@ -43,6 +50,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       # Version from the packageManager field in frontend/package.json.
       - name: Set up pnpm

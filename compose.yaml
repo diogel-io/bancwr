@@ -1,6 +1,7 @@
 services:
     bunker:
-      image: ghcr.io/diogel-io/bancwr-diogel-backend:latest
+      # A released version, bumped on each release (docs/releasing.md). :edge is trunk.
+      image: ghcr.io/diogel-io/bancwr-diogel-backend:0.1.0
       container_name: bancwr-bunker
       restart: unless-stopped
       # No published port: only the frontend reaches the bunker, over the compose network.
@@ -28,7 +29,8 @@ services:
         - ./data:/data:Z
 
     frontend:
-      image: ghcr.io/diogel-io/bancwr-diogel-frontend:latest
+      # The same version as the bunker: they are released together.
+      image: ghcr.io/diogel-io/bancwr-diogel-frontend:0.1.0
       container_name: bancwr-frontend
       restart: unless-stopped
       # Loopback only: sign-in needs HTTPS (http:// works only on localhost), so put a TLS reverse

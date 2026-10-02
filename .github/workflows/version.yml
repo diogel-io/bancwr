@@ -4,6 +4,11 @@ name: Version
 # release workflows to share. See docs/releasing.md.
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: The commit to version; the triggering one when empty. A weekly rebuild of a release passes its tag (#15).
+        type: string
+        default: ''
     outputs:
       majorMinorPatch:
         description: The version core, for example 0.1.0.
@@ -29,6 +34,7 @@ jobs:
       # GitVersion needs the full history and every tag; a depth-1 checkout makes it fail.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - uses: gittools/actions/gitversion/setup@v4.7.0

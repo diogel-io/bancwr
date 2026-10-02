@@ -1,93 +1,51 @@
 name: Release Frontend
 
+# Publishes the frontend image (#15): see release-image.yml for the build, gates and tags, and
+# docs/releasing.md for what each tag means.
+#   push to master        :edge, :master, :sha-…, :<semVer>
+#   push of a v* tag      :<version>, :<major>.<minor>, :sha-…, and :latest if it is the highest
+#   weekly                both: master, and the newest release on fresh base images (#16)
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     tags: ['v*']
-  # Weekly rebuild of the default branch on fresh base images (#16), so base-image fixes reach
-  # :latest without waiting for a merge. Mondays 05:00 UTC, an hour before trivy-security.yml.
-  # GitHub disables schedules after 60 days without repository activity: see docs/releasing.md.
+  # Mondays 05:00 UTC, an hour before trivy-security.yml. GitHub disables schedules after 60 days
+  # without repository activity: see docs/releasing.md.
   schedule:
     - cron: '0 5 * * 1'
   workflow_dispatch:
+    inputs:
+      ref:
+        description: master, or a v* tag to rebuild
+        type: string
+        default: ''
+      publish:
+        description: Push the images. Off to see which tags a run would publish.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  version:
-    uses: ./.github/workflows/version.yml
-
-  # Publish nothing unless the full test suite passes for this commit (#36). CI does not run on
-  # v* tags, so for a release tag this is the only test gate.
-  test:
-    uses: ./.github/workflows/test.yml
+  targets:
+    uses: ./.github/workflows/release-targets.yml
+    with:
+      ref: ${{ inputs.ref }}
 
   release:
-    needs: [version, test]
-    # Pushes publish their own branch or tag; a scheduled or manual rebuild publishes only the
-    # default branch, never whatever branch it was dispatched from.
-    if: github.event_name == 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/bancwr-diogel-frontend
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=sha,format=short
-            # The GitVersion version: 0.1.0-49 on master, 0.1.0 on the v0.1.0 tag.
-            # semVer, not fullSemVer: fullSemVer can carry '+' build metadata, which image tags reject.
-            type=raw,value=${{ needs.version.outputs.semVer }}
-            # :latest tracks the default branch. Both the README quickstart and
-            # trivy-security.yml reference :latest, and neither worked before this,
-            # because metadata-action only adds it for a semver tag and none has been cut.
-            type=raw,value=latest,enable={{is_default_branch}}
-            # A scheduled rebuild is not a push, so `type=ref,event=branch` gives nothing; name it.
-            type=raw,value={{branch}},enable=${{ github.event_name != 'push' && github.ref_type == 'branch' }}
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Built and loaded, not pushed: the image is scanned before anything is published (#16).
-      - name: Build
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          platforms: linux/amd64
-          load: true
-          # Fresh base images every time, so the weekly rebuild actually picks up their fixes.
-          pull: true
-          tags: |
-            ${{ steps.meta.outputs.tags }}
-            bancwr-frontend:release
-          build-args: |
-            BANCWR_VERSION=${{ needs.version.outputs.semVer }}
-          # Shared with ci.yml's build, so a release reuses the layers CI built.
-          cache-from: type=gha,scope=frontend
-          cache-to: type=gha,scope=frontend,mode=max
-          provenance: false
-
-      # The same gate as ci.yml: no fixable critical or high finding is ever published.
-      - name: Gate on fixable critical and high findings
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: bancwr-frontend:release
-          format: 'table'
-          severity: 'CRITICAL,HIGH'
-          ignore-unfixed: true
-          exit-code: '1'
-          trivyignores: '.trivyignore'
-
-      # Exactly the image that was scanned, under every tag metadata-action computed.
-      - name: Publish
-        run: docker push --all-tags ghcr.io/${{ github.repository_owner }}/bancwr-diogel-frontend
+    needs: targets
+    if: needs.targets.outputs.targets != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    uses: ./.github/workflows/release-image.yml
+    with:
+      component: frontend
+      ref: ${{ matrix.target.ref }}
+      kind: ${{ matrix.target.kind }}
+      tag: ${{ matrix.target.tag }}
+      latest: ${{ matrix.target.latest }}
+      publish: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}

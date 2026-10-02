@@ -1,0 +1,144 @@
+name: Release image
+
+# Builds, scans and publishes one image for one target (#15), shared by release-backend.yml and
+# release-frontend.yml so their tags cannot drift apart. Nothing is published unless the tests
+# (#36) and the vulnerability gate (#16) pass for the target's own commit. With publish: false
+# the run stops after printing the tags it would push.
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: backend or frontend.
+        type: string
+        required: true
+      ref:
+        description: The commit to build (a sha, branch or tag ref).
+        type: string
+        required: true
+      kind:
+        description: trunk or release.
+        type: string
+        required: true
+      tag:
+        description: The v* tag, for a release.
+        type: string
+        default: ''
+      latest:
+        description: Whether this release is the highest stable one, and so takes :latest.
+        type: boolean
+        default: false
+      publish:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    uses: ./.github/workflows/version.yml
+    with:
+      ref: ${{ inputs.ref }}
+
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ inputs.ref }}
+
+  release:
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/bancwr-diogel-${{ inputs.component }}
+      LOCAL: bancwr-${{ inputs.component }}:release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # The tag rules from the run's own commit: the target may be older (a release rebuilt
+      # weekly, or master previewed from a branch) and carry other rules, or none.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: .github/scripts
+
+      - name: Tags
+        id: tags
+        env:
+          KIND: ${{ inputs.kind }}
+          SEMVER: ${{ needs.version.outputs.semVer }}
+          TAG: ${{ inputs.tag }}
+          LATEST: ${{ inputs.latest }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          SHA=$(git rev-parse HEAD) bash release-tools/.github/scripts/image-tags.sh > tags.txt
+          echo "Tags for ${IMAGE} at $(git rev-parse --short HEAD):"
+          sed 's/^/  /' tags.txt
+          { echo 'list<<EOF'; cat tags.txt; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+
+      # The release checklist bumps compose.yaml before tagging (docs/releasing.md); a tag whose
+      # compose.yaml names another version is published anyway, with a warning to fix it.
+      - name: Check compose.yaml names this release
+        if: inputs.kind == 'release'
+        env:
+          TAG: ${{ inputs.tag }}
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          version="${TAG#v}"
+          if ! grep -qF "bancwr-diogel-${COMPONENT}:${version}" compose.yaml; then
+            echo "::warning file=compose.yaml::compose.yaml does not pin bancwr-diogel-${COMPONENT}:${version}. Bump it (docs/releasing.md, Cutting a release)."
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built and loaded, not pushed: the image is scanned before anything is published (#16).
+      - name: Build
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ inputs.component }}
+          platforms: linux/amd64
+          load: true
+          # Fresh base images every time, so the weekly rebuild actually picks up their fixes.
+          pull: true
+          tags: |
+            ${{ steps.tags.outputs.list }}
+            ${{ env.LOCAL }}
+          build-args: |
+            BANCWR_VERSION=${{ needs.version.outputs.semVer }}
+          # Shared with ci.yml's build, so a release reuses the layers CI built.
+          cache-from: type=gha,scope=${{ inputs.component == 'backend' && 'backend-cargo-chef' || 'frontend' }}
+          cache-to: type=gha,scope=${{ inputs.component == 'backend' && 'backend-cargo-chef' || 'frontend' }},mode=max
+          provenance: false
+
+      # The same gate as ci.yml: no fixable critical or high finding is ever published.
+      - name: Gate on fixable critical and high findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - uses: docker/login-action@v3
+        if: inputs.publish
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Exactly the image that was scanned, under the tags printed above, and no others.
+      - name: Publish
+        if: inputs.publish
+        run: |
+          while read -r tag; do
+            docker push "${tag}"
+          done < tags.txt
+
+      - name: Not published
+        if: ${{ !inputs.publish }}
+        run: echo "::notice::publish is false, so nothing was pushed. Tags above are what would have been."
