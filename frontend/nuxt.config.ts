@@ -20,6 +20,10 @@ export default defineNuxtConfig({
             // through, besides the member's own NIP-65 write relays (#30). Empty means the defaults
             // in app/utils/profile-relays.ts, so compose can pass it through unset.
             profileRelays: '',
+            // NUXT_PUBLIC_INDEXER_RELAYS: comma-separated indexer relays, which collect profiles and
+            // relay lists from across the network. The profile page looks members up there too, and
+            // publishes there (#62). Empty means the defaults in app/utils/profile-relays.ts.
+            indexerRelays: '',
             // NUXT_PUBLIC_BLOSSOM_SERVER: where profile images are uploaded when the member has no
             // Blossom server list of their own (#30). Empty means the default, likewise.
             blossomServer: ''

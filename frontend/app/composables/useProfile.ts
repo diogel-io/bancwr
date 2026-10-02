@@ -2,7 +2,7 @@
 // update signed by their own signer. Client-only: call load() from onMounted.
 import type { NostrEvent } from 'nostr-tools/pure'
 import { emptyForm, formFromContent, mergeProfile, newestEvent, parseProfileContent, type ProfileForm } from '~/utils/profile'
-import { blossomServerFrom, DEFAULT_BLOSSOM_SERVER, DEFAULT_PROFILE_RELAYS, parseRelayList, profileRelays } from '~/utils/profile-relays'
+import { blossomServerFrom, DEFAULT_BLOSSOM_SERVER, DEFAULT_INDEXER_RELAYS, DEFAULT_PROFILE_RELAYS, parseRelayList, parseRelayUrl, profileRelays } from '~/utils/profile-relays'
 import { createRelayIO, type PublishResult, type RelayIO } from '~/utils/relay-io'
 import type { NostrSigner } from '~/utils/nostr-sign-in'
 
@@ -20,6 +20,10 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
   const config = useRuntimeConfig().public
   const configured = parseRelayList(config.profileRelays as string | string[] | undefined)
   const defaults = configured.length ? configured : DEFAULT_PROFILE_RELAYS
+  const configuredIndexers = parseRelayList(config.indexerRelays as string | string[] | undefined)
+  const indexers = configuredIndexers.length ? configuredIndexers : DEFAULT_INDEXER_RELAYS
+  /** Where the member's relay list and Blossom servers are looked up (#62). */
+  const discovery = [...new Set([...defaults, ...indexers])]
   const defaultBlossom = String(config.blossomServer || DEFAULT_BLOSSOM_SERVER).replace(/\/+$/u, '')
   const auth = useAuth()
   const pubkey = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : '')
@@ -33,22 +37,36 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
   const saved = ref<ProfileForm>(emptyForm())
   /** Whether any relay holds a profile for this key. */
   const exists = ref(false)
-  const relays = ref<string[]>(defaults)
+  const relays = ref<string[]>(discovery)
+  /** Relays the member asked to search on this visit (#62); not stored. */
+  const extra = ref<string[]>([])
+  /** The relays the last profile read asked, by whether they answered. */
+  const searched = ref<{ reached: string[], failed: string[] }>({ reached: [], failed: [] })
+  let list: NostrEvent | undefined
   const blossomServer = ref(defaultBlossom)
   const lastPublish = ref<PublishResult>()
 
   const dirty = computed(() => JSON.stringify(form.value) !== JSON.stringify(saved.value))
 
-  /** The member's relay list (kind 10002) and Blossom servers (kind 10063), from the defaults. */
+  /**
+   * The member's relay list (kind 10002) and Blossom servers (kind 10063), looked up on the
+   * defaults and the indexers: a list held only by an indexer was missed before #62.
+   */
   async function resolveRelays() {
-    const lists = await relayIO().query(defaults, { kinds: [10002, 10063], authors: [pubkey.value] })
-    relays.value = profileRelays(defaults, newestEvent(lists.events.filter(e => e.kind === 10002)))
-    blossomServer.value = blossomServerFrom(newestEvent(lists.events.filter(e => e.kind === 10063))) ?? defaultBlossom
+    const lists = await relayIO().query(discovery, { kinds: [10002, 10063], authors: [pubkey.value] })
+    list = newestEvent(lists.events.filter(e => e.kind === 10002 && e.pubkey === pubkey.value))
+    blossomServer.value = blossomServerFrom(newestEvent(lists.events.filter(e => e.kind === 10063 && e.pubkey === pubkey.value))) ?? defaultBlossom
+    updateRelays()
   }
 
-  /** The newest kind 0 across the profile relays, and how many relays answered. */
+  function updateRelays() {
+    relays.value = profileRelays(defaults, list, [...indexers, ...extra.value])
+  }
+
+  /** The newest kind 0 across the profile relays, and which relays answered. */
   async function latest(): Promise<{ event?: NostrEvent, reached: number }> {
     const result = await relayIO().query(relays.value, { kinds: [0], authors: [pubkey.value] })
+    searched.value = { reached: result.reached, failed: result.failed }
     return { event: newestEvent(result.events.filter(e => e.pubkey === pubkey.value)), reached: result.reached.length }
   }
 
@@ -57,18 +75,40 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
     state.value = 'loading'
     try {
       await resolveRelays()
-      const { event, reached } = await latest()
-      if (reached === 0) {
-        state.value = 'failed'
-        return
-      }
-      exists.value = !!event
-      form.value = formFromContent(event ? parseProfileContent(event.content) : null)
-      saved.value = copy(form.value)
-      state.value = 'loaded'
+      await readProfile()
     } catch {
       state.value = 'failed'
     }
+  }
+
+  async function readProfile() {
+    const { event, reached } = await latest()
+    if (reached === 0) {
+      state.value = 'failed'
+      return
+    }
+    exists.value = !!event
+    form.value = formFromContent(event ? parseProfileContent(event.content) : null)
+    saved.value = copy(form.value)
+    state.value = 'loaded'
+  }
+
+  /**
+   * Adds a relay to search, for this visit, and reads the profile again (#62). Returns a message
+   * when `url` is not a relay address. Unsaved edits are replaced by what is found.
+   */
+  async function searchRelay(url: string): Promise<string | undefined> {
+    const relay = parseRelayUrl(url)
+    if (!relay) return 'Enter a relay address starting with wss://'
+    if (!extra.value.includes(relay)) extra.value = [...extra.value, relay]
+    updateRelays()
+    state.value = 'loading'
+    try {
+      await readProfile()
+    } catch {
+      state.value = 'failed'
+    }
+    return undefined
   }
 
   /**
@@ -100,5 +140,5 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
     return result
   }
 
-  return { state, form, saved, dirty, exists, relays, blossomServer, lastPublish, pubkey, load, save }
+  return { state, form, saved, dirty, exists, relays, searched, blossomServer, lastPublish, pubkey, load, save, searchRelay }
 }

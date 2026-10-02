@@ -11,13 +11,14 @@ import { installExtension } from './extension'
 import { anonymousTest, test, expect, type Role } from './fixtures'
 
 const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
+const indexer = `ws://127.0.0.1:${process.env.E2E_INDEXER_PORT || 7778}`
 const pool = new SimplePool()
 
 const keyOf = (nsec: string) => decode(nsec).data as Uint8Array
 
-async function seedProfile(nsec: string, content: Record<string, unknown>) {
+async function seedProfile(nsec: string, content: Record<string, unknown>, on = relay) {
   const event = finalizeEvent({ kind: 0, created_at: Math.floor(Date.now() / 1000) - 60, tags: [], content: JSON.stringify(content) }, keyOf(nsec))
-  await Promise.any(pool.publish([relay], event))
+  await Promise.any(pool.publish([on], event))
 }
 
 async function newestProfile(pubkey: string): Promise<NostrEvent | undefined> {
@@ -63,6 +64,8 @@ anonymousTest('a member signed in with NIP-46 saves through the same remote sign
   await page.goto('/profile')
   await expect(page.getByRole('heading', { name: 'Profile Details' })).toBeVisible()
   await page.getByLabel('Name', { exact: true }).fill('remote-signed')
+  // This key has no profile anywhere, so creating one is confirmed first (#62).
+  await page.getByRole('checkbox').check()
   await page.getByTestId('profile-save').click()
   await expect(page.getByTestId('profile-saved')).toBeVisible({ timeout: 30_000 })
 
@@ -124,6 +127,34 @@ anonymousTest('a picture is uploaded to Blossom, authorised by the member\'s own
   expect(authorisedBy).toBe(pubkey)
   // Re-encoded, so not the bytes chosen (no metadata carried over).
   expect([...stored.values()][0]!.equals(png)).toBe(false)
+})
+
+anonymousTest('a profile and relay list held only by an indexer are found (#62)', async ({ page }) => {
+  // #62 as reported: the key's NIP-65 list names a relay that is down, and the list and profile are
+  // on none of the default relays, only on an indexer.
+  const nsec = process.env.E2E_SIGNER_NSEC!
+  const key = keyOf(nsec)
+  const list = finalizeEvent({ kind: 10002, created_at: Math.floor(Date.now() / 1000) - 120, tags: [['r', 'ws://127.0.0.1:1']], content: '' }, key)
+  await Promise.any(pool.publish([indexer], list))
+  await seedProfile(nsec, { name: 'indexed', display_name: 'Found on the indexer' }, indexer)
+  expect(await pool.querySync([relay], { kinds: [0, 10002], authors: [getPublicKey(key)] })).toEqual([])
+
+  await signInWithExtension(page, nsec)
+  await page.goto('/profile')
+  await expect(nameField(page)).toHaveValue('Found on the indexer')
+  await expect(page.getByTestId('profile-not-found')).toHaveCount(0)
+})
+
+test('a key with no profile anywhere is told where was searched, and must confirm creating one', async ({ page }) => {
+  await page.goto('/profile')
+  await expect(page.getByTestId('profile-not-found')).toBeVisible()
+  await expect(page.getByTestId('searched-relays')).toContainText('127.0.0.1:7778')
+  await page.getByLabel('Name', { exact: true }).fill('new')
+  const create = page.getByTestId('profile-save')
+  await expect(create).toHaveText('Create profile')
+  await expect(create).toBeDisabled()
+  await page.getByRole('checkbox').check()
+  await expect(create).toBeEnabled()
 })
 
 for (const role of ['administrator', 'user', 'signer'] as Role[]) {

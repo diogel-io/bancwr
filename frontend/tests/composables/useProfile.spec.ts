@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { FakeRelays, profileEvent } from '../helpers/relays'
 import { signInAs } from '../helpers/session'
 import { NO_RELAY_ON_SAVE, useProfile } from '~/composables/useProfile'
+import { DEFAULT_INDEXER_RELAYS, DEFAULT_PROFILE_RELAYS } from '~/utils/profile-relays'
 import type { EventTemplate, NostrSigner, SignedEvent } from '~/utils/nostr-sign-in'
 
 const me = 'a'.repeat(64)
@@ -39,7 +40,7 @@ describe('useProfile', () => {
 
   it('fails to load when no relay answers, rather than showing an empty form', async () => {
     const profile = useProfile({ io: relays })
-    relays.down = new Set(profile.relays.value)
+    relays.down = new Set([...DEFAULT_PROFILE_RELAYS, ...DEFAULT_INDEXER_RELAYS])
     await profile.load()
     expect(profile.state.value).toBe('failed')
   })
@@ -109,5 +110,47 @@ describe('useProfile', () => {
     expect(profile.relays.value[0]).toBe('wss://mine.example/')
     expect(profile.relays.value).not.toContain('wss://read.example/')
     expect(profile.blossomServer.value).toBe('https://cdn.example')
+  })
+
+  it('finds a profile and relay list held only by an indexer, whose own relays are down (#62)', async () => {
+    // The reported case: the key's NIP-65 list names a relay that is down, and neither the list
+    // nor the profile is on the default relays, only on an indexer.
+    const indexer = DEFAULT_INDEXER_RELAYS[0]!
+    const list = { ...profileEvent(me, {}, 50), kind: 10002, content: '', tags: [['r', 'wss://dead.example/'], ['r', DEFAULT_PROFILE_RELAYS[0]!]] }
+    const kind0 = profileEvent(me, { name: 'gary_woodfine', display_name: 'Gary Woodfine', extra: 'kept' }, 100)
+    relays.events.push(list, kind0)
+    relays.only = { [indexer]: [list.id, kind0.id] }
+    relays.down = new Set(['wss://dead.example/'])
+
+    const profile = useProfile({ io: relays })
+    await profile.load()
+
+    expect(profile.state.value).toBe('loaded')
+    expect(profile.exists.value).toBe(true)
+    expect(profile.form.value.display_name).toBe('Gary Woodfine')
+    expect(profile.relays.value).toContain('wss://dead.example/')
+    expect(profile.searched.value.failed).toEqual(['wss://dead.example/'])
+
+    profile.form.value.about = 'Hello'
+    await profile.save(signer())
+    expect(JSON.parse(relays.published[0]!.content)).toEqual({ name: 'gary_woodfine', display_name: 'Gary Woodfine', extra: 'kept', about: 'Hello' })
+    // Published to the indexers as well, which also repairs the default relays.
+    expect(relays.publishedTo[0]).toEqual(expect.arrayContaining([...DEFAULT_PROFILE_RELAYS, ...DEFAULT_INDEXER_RELAYS]))
+  })
+
+  it('reports every relay it asked when no profile is found, and can search one more', async () => {
+    const elsewhere = profileEvent(me, { name: 'elsewhere' }, 100)
+    relays.events.push(elsewhere)
+    relays.only = { 'wss://relay.elsewhere.example/': [elsewhere.id] }
+    const profile = useProfile({ io: relays })
+    await profile.load()
+
+    expect(profile.exists.value).toBe(false)
+    expect(profile.searched.value.reached).toEqual([...DEFAULT_PROFILE_RELAYS, ...DEFAULT_INDEXER_RELAYS])
+
+    expect(await profile.searchRelay('https://relay.elsewhere.example')).toContain('wss://')
+    expect(await profile.searchRelay('wss://relay.elsewhere.example')).toBeUndefined()
+    expect(profile.exists.value).toBe(true)
+    expect(profile.form.value.name).toBe('elsewhere')
   })
 })
