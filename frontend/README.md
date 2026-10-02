@@ -226,6 +226,27 @@ the browser; the bunker is not involved.
 - **NIP-05** is verified only when the member asks, from the browser, and a result for a value they
   have since changed is dropped.
 
+### Follows
+
+`/follows` (#32) edits the signed-in member's own follow list (NIP-02 kind 3, read at nips commit
+`0046368a`), for administrators and users. It uses the same relays and signer as the profile page
+(`useMemberRelays`, `useSignerPrompt`). Adds (by npub, hex or NIP-05) and removes are staged and
+published together with **Save changes**.
+
+Kind 3 is replaceable, so a publish replaces the whole list. Save is guarded so that nothing the
+member did not remove can be lost:
+
+1. It reads the newest list again, and refuses if no relay answers, or if what it gets is older
+   than the list it loaded (a relay that held the newer list did not answer: an incomplete read).
+2. It applies the staged changes to that list, so a follow made in another app since loading is
+   kept.
+3. It keeps every other tag (`t`, `a`, anything), each `p` tag's relay hint and petname, and the
+   content (some clients keep a relay map there), and checks that the result differs by exactly
+   the staged changes before anything is signed.
+
+When no list is found anywhere, the page lists the relays searched, offers to search another, and
+starts a new list only once the member confirms they have none elsewhere.
+
 ### Differences from Porwr
 
 Porwr resolves `nostr-tools` 2.23.5; Bancwr pins 2.25.2. Changes between the two that matter when

@@ -1,12 +1,14 @@
 <script setup lang="ts">
-// When no profile was found for the member's key (#62): which relays were asked, a way to search
-// one more, and why creating a profile here needs care. A profile held only on relays not listed
-// would be replaced by a new one in every app.
-const props = defineProps<{
+// When none of the member's relays held the event a page edits (#62: a profile; #32: a follow
+// list): which relays were asked, a way to search one more, and why creating one here needs care.
+// A replaceable event held only on relays not listed would be replaced by a new one in every app.
+const props = withDefaults(defineProps<{
+  /** What was not found: "profile" or "follow list". */
+  noun?: string
   searched: { reached: string[], failed: string[] }
   /** Adds a relay to search; returns a message when the address is not a relay. */
   search: (url: string) => Promise<string | undefined>
-}>()
+}>(), { noun: 'profile' })
 
 const relay = ref('')
 const searching = ref(false)
@@ -25,14 +27,14 @@ const host = (url: string) => url.replace(/^wss?:\/\//u, '').replace(/\/$/u, '')
 <template>
   <div
     class="space-y-3"
-    data-testid="profile-not-found"
+    data-testid="not-found-on-relays"
   >
     <UAlert
       color="warning"
       variant="subtle"
       icon="i-lucide-search-x"
-      :title="`No profile found on these ${searched.reached.length + searched.failed.length} relays`"
-      description="If you already have a profile, it is on a relay not listed here. Search that relay before creating a new one: a new profile replaces the old one in every app."
+      :title="`No ${noun} found on these ${searched.reached.length + searched.failed.length} relays`"
+      :description="`If you already have a ${noun}, it is on a relay not listed here. Search that relay before creating a new one: a new ${noun} replaces the old one in every app.`"
     />
     <ul
       class="flex flex-wrap gap-1.5"

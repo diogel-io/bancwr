@@ -37,12 +37,12 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return typeof value === 'object' && value !== null && Object.values(value).every(entry => typeof entry === 'string')
 }
 
-/** Asks the identifier's domain which key it maps the name to, and compares it with `pubkey` (hex). */
-export async function verifyNip05(identifier: string, pubkey: string, fetcher: typeof fetch = fetch): Promise<Nip05Result> {
-  const trimmed = identifier.trim()
-  const parsed = parseNip05Identifier(trimmed)
-  if (!parsed) return { status: 'malformed', identifier: trimmed }
-  const result = (status: Nip05Status): Nip05Result => ({ status, identifier: trimmed, domain: parsed.domain })
+export type Nip05Lookup = { pubkey: string } | { status: Exclude<Nip05Status, 'verified' | 'pubkey-mismatch'> }
+
+/** Asks the identifier's domain which key it maps the name to (hex), or why it could not be told. */
+export async function resolveNip05(identifier: string, fetcher: typeof fetch = fetch): Promise<Nip05Lookup> {
+  const parsed = parseNip05Identifier(identifier)
+  if (!parsed) return { status: 'malformed' }
 
   const url = new URL(`https://${parsed.domain}/.well-known/nostr.json`)
   url.searchParams.set('name', parsed.name)
@@ -51,19 +51,30 @@ export async function verifyNip05(identifier: string, pubkey: string, fetcher: t
   try {
     const response = await fetcher(url.toString(), {
       headers: { Accept: 'application/json' },
-      // No redirects: NIP-05 forbids them, and following one would verify against another domain.
+      // No redirects: NIP-05 forbids them, and following one would ask another domain.
       redirect: 'error',
       signal: AbortSignal.timeout(NIP05_TIMEOUT_MS)
     })
-    if (!response.ok) return result(response.status === 404 ? 'not-found' : 'network-error')
+    if (!response.ok) return { status: response.status === 404 ? 'not-found' : 'network-error' }
     body = await response.json()
   } catch (error) {
-    return result(error instanceof SyntaxError ? 'invalid-response' : 'network-error')
+    return { status: error instanceof SyntaxError ? 'invalid-response' : 'network-error' }
   }
 
   const names = typeof body === 'object' && body !== null ? (body as { names?: unknown }).names : undefined
-  if (!isStringRecord(names)) return result('invalid-response')
+  if (!isStringRecord(names)) return { status: 'invalid-response' }
   const found = names[parsed.name] ?? names[parsed.name.toLowerCase()]
-  if (!found) return result('not-found')
-  return result(found.toLowerCase() === pubkey.toLowerCase() ? 'verified' : 'pubkey-mismatch')
+  if (!found) return { status: 'not-found' }
+  return /^[0-9a-f]{64}$/iu.test(found) ? { pubkey: found.toLowerCase() } : { status: 'invalid-response' }
+}
+
+/** Asks the identifier's domain which key it maps the name to, and compares it with `pubkey` (hex). */
+export async function verifyNip05(identifier: string, pubkey: string, fetcher: typeof fetch = fetch): Promise<Nip05Result> {
+  const trimmed = identifier.trim()
+  const parsed = parseNip05Identifier(trimmed)
+  if (!parsed) return { status: 'malformed', identifier: trimmed }
+  const result = (status: Nip05Status): Nip05Result => ({ status, identifier: trimmed, domain: parsed.domain })
+  const lookup = await resolveNip05(trimmed, fetcher)
+  if ('status' in lookup) return result(lookup.status)
+  return result(lookup.pubkey === pubkey.toLowerCase() ? 'verified' : 'pubkey-mismatch')
 }

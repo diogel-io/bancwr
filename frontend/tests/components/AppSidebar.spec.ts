@@ -20,18 +20,19 @@ describe('AppSidebar', () => {
     signInAs('administrator')
     const component = await mountSuspended(AppSidebar)
 
-    for (const label of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile']) {
+    for (const label of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows']) {
       expect(component.text()).toContain(label)
     }
-    expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile'])
+    expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile', '/follows'])
   })
 
-  it('offers users and signers the dashboard and their own profile only (#26, #30)', async () => {
+  it('offers users the dashboard, their profile and follows, and signers no follows (#26, #30, #32)', async () => {
+    const expected: Record<string, string[]> = { user: ['/', '/profile', '/follows'], signer: ['/', '/profile'] }
     for (const role of ['user', 'signer'] as Role[]) {
       signInAs(role)
       const component = await mountSuspended(AppSidebar)
 
-      expect(hrefs(component), role).toEqual(['/', '/profile'])
+      expect(hrefs(component), role).toEqual(expected[role])
       expect(component.text(), role).not.toContain('Config')
     }
   })

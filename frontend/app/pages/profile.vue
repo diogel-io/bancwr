@@ -3,16 +3,15 @@
 // their relays, signed by their own signer; the bunker is not involved.
 import { npubEncode } from 'nostr-tools/nip19'
 import { ProfileError } from '~/composables/useProfile'
-import { checkedSigner, rememberSignerMethod, SignerMismatch, type SignerMethod } from '~/composables/useUserSigner'
+import { SignerCancelled } from '~/composables/useSignerPrompt'
+import { SignerMismatch } from '~/composables/useUserSigner'
 import { BlossomError, uploadToBlossom } from '~/utils/blossom'
 import { ImageError, prepareImage, type ImageKind } from '~/utils/image'
 import { validateForm } from '~/utils/profile'
-import type { NostrSigner } from '~/utils/nostr-sign-in'
 import type { PublishResult } from '~/utils/relay-io'
 
 const profile = useProfile()
 const { state, form, dirty, exists, pubkey, blossomServer, searched } = profile
-const userSigner = useUserSigner()
 const nip46 = useNip46()
 
 const npub = computed(() => pubkey.value ? npubEncode(pubkey.value) : '')
@@ -33,47 +32,7 @@ const published = ref<PublishResult>()
 
 onMounted(() => profile.load())
 
-/** The member closed the reconnect dialog without connecting. */
-class SignerCancelled extends Error {}
-
-/**
- * Runs `work` with the member's signer. Without one (another tab after a NIP-46 sign-in, or an
- * extension now on another key), asks them to reconnect it first; closing that dialog cancels.
- */
-const reconnecting = ref(false)
-let pending: { work: (signer: NostrSigner) => Promise<void>, resolve: () => void, reject: (error: Error) => void } | undefined
-
-async function withSigner(work: (signer: NostrSigner) => Promise<void>): Promise<void> {
-  const signer = await userSigner.signer()
-  if (signer) return work(signer)
-  pending?.reject(new SignerCancelled())
-  return new Promise((resolve, reject) => {
-    pending = { work, resolve, reject }
-    reconnecting.value = true
-  })
-}
-
-async function reconnected(signer: NostrSigner, method: SignerMethod): Promise<string | undefined> {
-  rememberSignerMethod(method)
-  const waiting = pending
-  pending = undefined
-  reconnecting.value = false
-  if (!waiting) return undefined
-  try {
-    await waiting.work(checkedSigner(signer, pubkey.value))
-    waiting.resolve()
-  } catch (failure) {
-    waiting.reject(failure instanceof Error ? failure : new Error(String(failure)))
-  }
-  return undefined
-}
-
-watch(reconnecting, (open) => {
-  if (open || !pending) return
-  const waiting = pending
-  pending = undefined
-  waiting.reject(new SignerCancelled())
-})
+const { reconnecting, withSigner, reconnected } = useSignerPrompt()
 
 function message(failure: unknown, fallback: string): string {
   if (failure instanceof ProfileError || failure instanceof SignerMismatch || failure instanceof BlossomError || failure instanceof ImageError) {
@@ -169,11 +128,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
             </h2>
           </template>
 
-          <ProfileNotFound
+          <NotFoundOnRelays
             v-if="!exists"
             class="mb-6"
             :searched="searched"
             :search="profile.searchRelay"
+            data-testid="profile-not-found"
           />
 
           <ProfileForm
