@@ -4,7 +4,7 @@ import { canOpen } from '~/utils/access'
 
 defineProps<{ collapsed?: boolean }>()
 
-// Flat, because Bancwr has five screens. The template this is modelled on nests a Settings
+// Flat, because Bancwr has six screens. The template this is modelled on nests a Settings
 // section, but it has sixteen.
 const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', to: '/' },
@@ -12,7 +12,9 @@ const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Team', icon: 'i-lucide-users', to: '/team' },
   { label: 'Logs', icon: 'i-lucide-scroll-text', to: '/logs' },
   // Every role's own profile (#30).
-  { label: 'Profile', icon: 'i-lucide-user', to: '/profile' }
+  { label: 'Profile', icon: 'i-lucide-user', to: '/profile' },
+  // Administrators' and users' own follow list (#32).
+  { label: 'Follows', icon: 'i-lucide-users-round', to: '/follows' }
 ]
 
 // Only what the signed-in role may open (#26): the middleware refuses the rest anyway, so offering

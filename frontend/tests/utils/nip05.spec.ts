@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { parseNip05Identifier, verifyNip05 } from '~/utils/nip05'
+import { parseNip05Identifier, resolveNip05, verifyNip05 } from '~/utils/nip05'
 
 const pubkey = 'ab'.repeat(32)
 const answer = (body: unknown, status = 200) => vi.fn(async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }))
@@ -40,5 +40,18 @@ describe('verifyNip05', () => {
     const fetcher = answer({})
     await verifyNip05('not an identifier', pubkey, fetcher)
     expect(fetcher).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveNip05 (#32)', () => {
+  it('returns the key the domain lists, lowercased', async () => {
+    expect(await resolveNip05('alice@example.com', answer({ names: { alice: pubkey.toUpperCase() } }))).toEqual({ pubkey })
+  })
+
+  it('says why when it cannot', async () => {
+    expect(await resolveNip05('alice', answer({}))).toEqual({ status: 'malformed' })
+    expect(await resolveNip05('alice@example.com', answer({ names: {} }))).toEqual({ status: 'not-found' })
+    expect(await resolveNip05('alice@example.com', answer({ names: { alice: 'not-hex' } }))).toEqual({ status: 'invalid-response' })
+    expect(await resolveNip05('alice@example.com', answer('', 503))).toEqual({ status: 'network-error' })
   })
 })

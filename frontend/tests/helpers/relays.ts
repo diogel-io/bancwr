@@ -15,9 +15,12 @@ export class FakeRelays implements RelayIO {
   /** The relays each publish went to. */
   publishedTo: string[][] = []
   queries = 0
+  /** Every filter asked. */
+  filters: Filter[] = []
 
   async query(relays: string[], filter: Filter): Promise<QueryResult> {
     this.queries++
+    this.filters.push(filter)
     const reached = relays.filter(url => !this.down.has(url))
     const held = (id: string) => {
       const holders = Object.entries(this.only).filter(([, ids]) => ids.includes(id)).map(([url]) => url)
@@ -41,4 +44,9 @@ export class FakeRelays implements RelayIO {
 let id = 0
 export function profileEvent(pubkey: string, content: Record<string, unknown>, created_at: number): NostrEvent {
   return { id: String(++id).padStart(64, '0'), pubkey, kind: 0, created_at, tags: [], content: JSON.stringify(content), sig: '' }
+}
+
+/** Any event, for kinds other than 0. */
+export function nostrEvent(pubkey: string, kind: number, tags: string[][], created_at: number, content = ''): NostrEvent {
+  return { id: String(++id).padStart(64, '0'), pubkey, kind, created_at, tags, content, sig: '' }
 }
