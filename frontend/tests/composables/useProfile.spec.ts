@@ -66,6 +66,30 @@ describe('useProfile', () => {
     expect(profile.dirty.value).toBe(false)
   })
 
+  it('gives the footer the saved name and picture, without a reload (#72)', async () => {
+    relays.events.push(profileEvent(me, { name: 'alice', picture: 'https://img.example/old.png' }, 100))
+    const profile = useProfile({ io: relays })
+    await profile.load()
+
+    profile.form.value.display_name = 'Alice B'
+    profile.form.value.picture = 'https://img.example/new.png'
+    await profile.save(signer())
+
+    expect(useSignedInProfile().profile.value).toEqual({ name: 'Alice B', picture: 'https://img.example/new.png' })
+  })
+
+  it('leaves the footer alone when no relay accepted the save (#72)', async () => {
+    relays.events.push(profileEvent(me, { name: 'alice' }, 100))
+    const profile = useProfile({ io: relays })
+    await profile.load()
+    const before = useSignedInProfile().profile.value
+    relays.refuse = true
+
+    profile.form.value.display_name = 'Never saved'
+    await expect(profile.save(signer())).rejects.toThrow()
+    expect(useSignedInProfile().profile.value).toEqual(before)
+  })
+
   it('publishes after the newest event even when the clock is behind it', async () => {
     const future = Math.floor(Date.now() / 1000) + 3600
     relays.events.push(profileEvent(me, { name: 'a' }, future))

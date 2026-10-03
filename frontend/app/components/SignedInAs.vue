@@ -1,19 +1,12 @@
 <script setup lang="ts">
 // Whose data a page edits (#70): the signed-in key, with its name when its profile is found
 // quickly. Shown on /profile, /follows and /relays, so the identity is on the page, not only in
-// the sidebar footer.
-import type { FollowProfile } from '~/utils/follows'
-import { lookupKeyProfile, lookupRelays, queryRelays } from '~/utils/key-profile'
-
+// the sidebar footer. The lookup is the footer's, shared (#72), so it isn't repeated per page.
 const auth = useAuth()
-const config = useRuntimeConfig().public
+const { profile, load } = useSignedInProfile()
 const user = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value : undefined)
-const profile = ref<FollowProfile>()
 
-onMounted(async () => {
-  if (!user.value) return
-  profile.value = await lookupKeyProfile(user.value.pubkey, lookupRelays(config.profileRelays, config.indexerRelays), queryRelays)
-})
+onMounted(() => void load())
 
 const short = computed(() => user.value ? `${user.value.npub.slice(0, 12)}…${user.value.npub.slice(-6)}` : '')
 </script>

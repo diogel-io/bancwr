@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
+import { useState } from '#imports'
 import { signInAs } from '../helpers/session'
 import SignedInAs from '~/components/SignedInAs.vue'
 
@@ -12,6 +13,11 @@ vi.mock('~/utils/key-profile', () => ({
 }))
 
 describe('SignedInAs (#70)', () => {
+  // The lookup is shared, once per key (#72); each test starts without one.
+  beforeEach(() => {
+    useState('signed-in-profile').value = { pubkey: '', status: 'idle' }
+  })
+
   it('names the signed-in key, with its npub', async () => {
     found.value = { name: 'Alice', createdAt: 1 }
     signInAs('user')

@@ -19,6 +19,7 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
   const member = useMemberRelays(deps)
   const { relays, searched, blossomServer } = member
   const auth = useAuth()
+  const signedIn = useSignedInProfile()
   const pubkey = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : '')
 
   const state = ref<LoadState>('idle')
@@ -102,6 +103,8 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
     }
     exists.value = true
     saved.value = copy(form.value)
+    // The footer's avatar and name follow the save, without a reload (#72).
+    signedIn.setFromContent(event.content)
     return result
   }
 
