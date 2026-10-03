@@ -12,8 +12,8 @@ export type RelayListState = 'idle' | 'loading' | 'loaded' | 'failed'
 
 export class RelayListError extends Error {}
 
-export const NO_RELAY_ON_SAVE = 'Couldn\'t read your relay list from any relay, so saving now could drop relays. Check your connection and try again.'
-export const INCOMPLETE_READ = 'Couldn\'t read your full relay list: the relays that had it did not answer this time, so saving now could drop relays. Try again.'
+export const RELAY_LIST_NO_RELAY_ON_SAVE = 'Couldn\'t read your relay list from any relay, so saving now could drop relays. Check your connection and try again.'
+export const RELAY_LIST_INCOMPLETE_READ = 'Couldn\'t read your full relay list: the relays that had it did not answer this time, so saving now could drop relays. Try again.'
 
 export function useRelayList(deps: { io?: RelayIO } = {}) {
   const member = useMemberRelays(deps)
@@ -131,9 +131,9 @@ export function useRelayList(deps: { io?: RelayIO } = {}) {
    */
   async function save(signer: NostrSigner): Promise<PublishResult> {
     const { event: current, reached } = await latest()
-    if (reached === 0) throw new RelayListError(NO_RELAY_ON_SAVE)
+    if (reached === 0) throw new RelayListError(RELAY_LIST_NO_RELAY_ON_SAVE)
     if (loaded.value && (!current || current.created_at < loaded.value.created_at)) {
-      throw new RelayListError(INCOMPLETE_READ)
+      throw new RelayListError(RELAY_LIST_INCOMPLETE_READ)
     }
 
     const staged = changes()

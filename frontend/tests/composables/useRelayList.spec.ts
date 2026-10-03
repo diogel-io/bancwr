@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { FakeRelays, nostrEvent } from '../helpers/relays'
 import { signInAs } from '../helpers/session'
-import { INCOMPLETE_READ, NO_RELAY_ON_SAVE, useRelayList } from '~/composables/useRelayList'
+import { RELAY_LIST_INCOMPLETE_READ, RELAY_LIST_NO_RELAY_ON_SAVE, useRelayList } from '~/composables/useRelayList'
 import { DEFAULT_INDEXER_RELAYS, DEFAULT_PROFILE_RELAYS } from '~/utils/profile-relays'
 import type { EventTemplate, NostrSigner, SignedEvent } from '~/utils/nostr-sign-in'
 
@@ -76,7 +76,7 @@ describe('useRelayList', () => {
     list.stageAdd('wss://b.example')
     relays.down = new Set([...EVERY_RELAY, 'wss://a.example/'])
     const sign = signer()
-    await expect(list.save(sign)).rejects.toThrow(NO_RELAY_ON_SAVE)
+    await expect(list.save(sign)).rejects.toThrow(RELAY_LIST_NO_RELAY_ON_SAVE)
     expect(sign.signEvent).not.toHaveBeenCalled()
     expect(relays.published).toEqual([])
   })
@@ -92,7 +92,7 @@ describe('useRelayList', () => {
     list.stageAdd('wss://d.example')
     relays.down = new Set([EVERY_RELAY[0]!])
     const sign = signer()
-    await expect(list.save(sign)).rejects.toThrow(INCOMPLETE_READ)
+    await expect(list.save(sign)).rejects.toThrow(RELAY_LIST_INCOMPLETE_READ)
     expect(sign.signEvent).not.toHaveBeenCalled()
     expect(relays.published).toEqual([])
   })

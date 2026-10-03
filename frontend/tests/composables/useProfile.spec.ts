@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { FakeRelays, profileEvent } from '../helpers/relays'
 import { signInAs } from '../helpers/session'
-import { NO_RELAY_ON_SAVE, useProfile } from '~/composables/useProfile'
+import { PROFILE_NO_RELAY_ON_SAVE, useProfile } from '~/composables/useProfile'
 import { DEFAULT_INDEXER_RELAYS, DEFAULT_PROFILE_RELAYS } from '~/utils/profile-relays'
 import type { EventTemplate, NostrSigner, SignedEvent } from '~/utils/nostr-sign-in'
 
@@ -85,7 +85,7 @@ describe('useProfile', () => {
     relays.down = new Set(profile.relays.value)
 
     const sign = signer()
-    await expect(profile.save(sign)).rejects.toThrow(NO_RELAY_ON_SAVE)
+    await expect(profile.save(sign)).rejects.toThrow(PROFILE_NO_RELAY_ON_SAVE)
     expect(sign.signEvent).not.toHaveBeenCalled()
     expect(relays.published).toEqual([])
     expect(profile.dirty.value).toBe(true)

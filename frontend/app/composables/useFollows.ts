@@ -11,8 +11,8 @@ export type FollowsState = 'idle' | 'loading' | 'loaded' | 'failed'
 
 export class FollowsError extends Error {}
 
-export const NO_RELAY_ON_SAVE = 'Couldn\'t read your follow list from any relay, so saving now could drop follows. Check your connection and try again.'
-export const INCOMPLETE_READ = 'Couldn\'t read your full follow list: the relays that had it did not answer this time, so saving now could drop follows. Try again.'
+export const FOLLOWS_NO_RELAY_ON_SAVE = 'Couldn\'t read your follow list from any relay, so saving now could drop follows. Check your connection and try again.'
+export const FOLLOWS_INCOMPLETE_READ = 'Couldn\'t read your full follow list: the relays that had it did not answer this time, so saving now could drop follows. Try again.'
 
 /** Kind 0 lookups per request, so a list of thousands does not become one huge filter. */
 export const PROFILE_CHUNK = 250
@@ -118,9 +118,9 @@ export function useFollows(deps: { io?: RelayIO } = {}) {
    */
   async function save(signer: NostrSigner): Promise<PublishResult> {
     const { event: current, reached } = await latest()
-    if (reached === 0) throw new FollowsError(NO_RELAY_ON_SAVE)
+    if (reached === 0) throw new FollowsError(FOLLOWS_NO_RELAY_ON_SAVE)
     if (loaded.value && (!current || current.created_at < loaded.value.created_at)) {
-      throw new FollowsError(INCOMPLETE_READ)
+      throw new FollowsError(FOLLOWS_INCOMPLETE_READ)
     }
 
     const adds = [...pendingAdds.value]

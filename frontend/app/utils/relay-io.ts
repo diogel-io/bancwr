@@ -21,7 +21,7 @@ export interface RelayIO {
   publish(relays: string[], event: NostrEvent): Promise<PublishResult>
 }
 
-export const CONNECT_TIMEOUT_MS = 4000
+export const RELAY_CONNECT_TIMEOUT_MS = 4000
 export const QUERY_WAIT_MS = 5000
 
 export function createRelayIO(): RelayIO {
@@ -29,7 +29,7 @@ export function createRelayIO(): RelayIO {
   return {
     async query(relays, filter) {
       // Connect first, relay by relay, so a save can tell "no relay answered" from "no profile".
-      const attempts = await Promise.allSettled(relays.map(url => pool.ensureRelay(url, { connectionTimeout: CONNECT_TIMEOUT_MS })))
+      const attempts = await Promise.allSettled(relays.map(url => pool.ensureRelay(url, { connectionTimeout: RELAY_CONNECT_TIMEOUT_MS })))
       const reached = relays.filter((_, i) => attempts[i]!.status === 'fulfilled')
       const failed = relays.filter((_, i) => attempts[i]!.status === 'rejected')
       const events = reached.length ? await pool.querySync(reached, filter, { maxWait: QUERY_WAIT_MS }) : []

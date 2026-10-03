@@ -9,7 +9,7 @@ export type LoadState = 'idle' | 'loading' | 'loaded' | 'failed'
 
 export class ProfileError extends Error {}
 
-export const NO_RELAY_ON_SAVE = 'Couldn\'t read your current profile from any relay, so saving now could lose fields set in other apps. Check your connection and try again.'
+export const PROFILE_NO_RELAY_ON_SAVE = 'Couldn\'t read your current profile from any relay, so saving now could lose fields set in other apps. Check your connection and try again.'
 
 function copy(form: ProfileForm): ProfileForm {
   return { ...form, birthday: { ...form.birthday } }
@@ -82,7 +82,7 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
    */
   async function save(signer: NostrSigner): Promise<PublishResult> {
     const { event: current, reached } = await latest()
-    if (reached === 0) throw new ProfileError(NO_RELAY_ON_SAVE)
+    if (reached === 0) throw new ProfileError(PROFILE_NO_RELAY_ON_SAVE)
 
     const content = mergeProfile(current ? parseProfileContent(current.content) : null, form.value)
     const now = Math.floor(Date.now() / 1000)

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { npubEncode } from 'nostr-tools/nip19'
 import { FakeRelays, nostrEvent, profileEvent } from '../helpers/relays'
 import { signInAs } from '../helpers/session'
-import { INCOMPLETE_READ, NO_RELAY_ON_SAVE, PROFILE_CHUNK, useFollows } from '~/composables/useFollows'
+import { FOLLOWS_INCOMPLETE_READ, FOLLOWS_NO_RELAY_ON_SAVE, PROFILE_CHUNK, useFollows } from '~/composables/useFollows'
 import { DEFAULT_INDEXER_RELAYS, DEFAULT_PROFILE_RELAYS } from '~/utils/profile-relays'
 import type { EventTemplate, NostrSigner, SignedEvent } from '~/utils/nostr-sign-in'
 
@@ -75,7 +75,7 @@ describe('useFollows', () => {
     relays.down = new Set(EVERY_RELAY)
 
     const sign = signer()
-    await expect(list.save(sign)).rejects.toThrow(NO_RELAY_ON_SAVE)
+    await expect(list.save(sign)).rejects.toThrow(FOLLOWS_NO_RELAY_ON_SAVE)
     expect(sign.signEvent).not.toHaveBeenCalled()
     expect(relays.published).toEqual([])
   })
@@ -92,7 +92,7 @@ describe('useFollows', () => {
     list.stageAdd(key(4))
     relays.down = new Set([EVERY_RELAY[0]!])
     const sign = signer()
-    await expect(list.save(sign)).rejects.toThrow(INCOMPLETE_READ)
+    await expect(list.save(sign)).rejects.toThrow(FOLLOWS_INCOMPLETE_READ)
     expect(sign.signEvent).not.toHaveBeenCalled()
     expect(relays.published).toEqual([])
   })
