@@ -1,10 +1,13 @@
 // Sign-in (#11), through the real stack: every acceptance criterion of diogel-io/bancwr#11.
 import type { Page } from '@playwright/test'
-import { installExtension } from './extension'
+import { continueAsKey, installExtension } from './extension'
 import { anonymousTest as test, expect } from './fixtures'
 import { generateNsec, npubFromNsec } from './keys'
 
-const signInWithExtension = (page: Page) => page.getByRole('button', { name: 'Sign in with extension' }).click()
+async function signInWithExtension(page: Page) {
+  await page.getByRole('button', { name: 'Sign in with extension' }).click()
+  await continueAsKey(page)
+}
 
 test('every page sends a visitor with no session to sign-in, typed URLs included', async ({ page }) => {
   for (const path of ['/', '/config', '/team', '/logs', '/no-access']) {
@@ -69,6 +72,7 @@ test('a registered key signs in through a NIP-46 remote signer', async ({ page }
   await page.goto('/sign-in')
   await page.getByPlaceholder('bunker://…').fill(process.env.E2E_NIP46_URI!)
   await page.getByRole('button', { name: 'Connect and sign in' }).click()
+  await continueAsKey(page)
 
   await expect(page).toHaveURL('/', { timeout: 30_000 })
   await expect(page.getByRole('group', { name: /^Signed in as / })).toHaveAttribute('aria-label', /, User$/)
@@ -79,4 +83,25 @@ test('a bunker:// string that is not one is refused before anything is contacted
   await page.getByPlaceholder('bunker://…').fill('alice@example.com')
   await page.getByRole('button', { name: 'Connect and sign in' }).click()
   await expect(page.getByTestId('sign-in-error')).toContainText('bunker://')
+})
+
+test('the key is confirmed before anything is signed, and another can be chosen (#70)', async ({ page }) => {
+  const nsec = process.env.E2E_USER_NSEC!
+  await installExtension(page, nsec)
+  await page.goto('/sign-in')
+  await page.getByRole('button', { name: 'Sign in with extension' }).click()
+
+  // The extension's key is shown, and nothing is signed yet.
+  await expect(page.getByTestId('confirm-npub')).toHaveText(npubFromNsec(nsec))
+  await page.getByTestId('confirm-another').click()
+  await expect(page.getByTestId('another-key-guidance')).toContainText('disconnect')
+  await expect(page).toHaveURL('/sign-in')
+  expect((await page.request.get('/api/auth/session')).status()).toBe(401)
+
+  // Continuing signs in as that key, which the pages that edit it then name.
+  await page.getByRole('button', { name: 'Sign in with extension' }).click()
+  await continueAsKey(page)
+  await expect(page).toHaveURL('/')
+  await page.goto('/profile')
+  await expect(page.getByTestId('signed-in-as')).toContainText(npubFromNsec(nsec))
 })

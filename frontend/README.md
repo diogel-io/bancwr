@@ -198,6 +198,18 @@ Node 20; the rule stands for those reasons, not for a missing API.
 - The bunker's own key never reaches the frontend. A signed-in user's events are signed through
   NIP-07 or NIP-46 with their key: `useUserSigner()` (below).
 
+### Signing in: confirming the key
+
+`SignerConnect` asks the signer which key it holds and shows it (name and picture from its kind 0
+when found within 3 s, `utils/key-profile.ts`; otherwise the npub) with **Continue** and **Use
+another key** before anything is signed (#70). An extension decides the key, and Porwr binds each
+site to the key it first connected with, whatever is selected, so a member could otherwise sign in
+as a key they did not mean. **Use another key** signs nothing and says how to switch: disconnect
+the site in the extension, or paste another `bunker://` string. A signer that then signs with a key
+other than the one confirmed is refused. Reconnecting a signer (`expectedPubkey`) skips the
+confirmation: it already refuses any other key. `/profile`, `/follows` and `/relays` show whose
+data they edit (`SignedInAs`).
+
 ### Profile
 
 `/profile` (#30) edits the signed-in member's own kind 0 profile, for every role. Everything runs in

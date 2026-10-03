@@ -102,6 +102,11 @@ Open Bancwr at `NUXT_SITE_ORIGIN` and sign in with a key registered in the vault
 - a Nostr browser extension (NIP-07), or
 - a remote signer (NIP-46), by pasting its `bunker://` connection string.
 
+Before anything is signed, Bancwr shows the key your signer chose and asks you to continue as it
+(#70). Extensions decide which key signs, and some, such as Porwr, keep using the key a site first
+connected with whichever is selected: to sign in with another, disconnect Bancwr's address in the
+extension's connected sites first.
+
 There is no field for an nsec: Bancwr never asks for a private key. A key that signs in but is not
 registered sees a page with its npub, to send to an administrator. Signing out ends the session
 everywhere it was copied, and restarting the frontend signs everyone out.

@@ -15,3 +15,8 @@ export async function installExtension(page: Page, nsec: string) {
     }
   })
 }
+
+/** Sign-in confirms the signer's key before anything is signed (#70): continue as it. */
+export async function continueAsKey(page: Page) {
+  await page.getByTestId('confirm-continue').click({ timeout: 30_000 })
+}

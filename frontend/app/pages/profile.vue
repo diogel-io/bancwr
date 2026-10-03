@@ -93,6 +93,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     </template>
 
     <template #body>
+      <SignedInAs class="mb-4" />
       <div
         v-if="state === 'idle' || state === 'loading'"
         class="flex items-center gap-2 text-sm text-muted"

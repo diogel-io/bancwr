@@ -17,6 +17,13 @@ const { signInWithNostr, refresh, navigateTo, connect, cancel, extension, remote
 }))
 
 vi.mock('~/utils/nostr-sign-in', () => ({ signInWithNostr }))
+// No relays from tests: the confirmation's name lookup (#70) finds a name, or none.
+const { keyProfile } = vi.hoisted(() => ({ keyProfile: { value: undefined as unknown } }))
+vi.mock('~/utils/key-profile', () => ({
+  lookupKeyProfile: async () => keyProfile.value,
+  lookupRelays: () => [],
+  queryRelays: async () => []
+}))
 mockNuxtImport('useAuth', () => () => ({ refresh }))
 mockNuxtImport('navigateTo', () => navigateTo)
 // Built when the page calls it, after mount() has set this test's values. The test app also
@@ -50,10 +57,19 @@ const never = () => new Promise(() => {})
 const button = (component: Awaited<ReturnType<typeof mount>>, text: string) =>
   component.findAll('button').find(b => b.text().includes(text))
 
+/** Sign in with extension, then continue as the key it chose (#70). */
+async function signInWithExtension(component: Awaited<ReturnType<typeof mount>>) {
+  await button(component, 'Sign in with extension')!.trigger('click')
+  await flushPromises()
+  await component.find('[data-testid="confirm-continue"]').trigger('click')
+  await flushPromises()
+}
+
 describe('Sign-in page', () => {
   beforeEach(() => {
-    for (const fn of [signInWithNostr, refresh, navigateTo, connect, cancel, signer.getPublicKey]) fn.mockReset()
+    for (const fn of [signInWithNostr, refresh, navigateTo, connect, cancel, signer.getPublicKey, signer.signEvent]) fn.mockReset()
     signer.getPublicKey.mockResolvedValue(extensionPubkey)
+    keyProfile.value = undefined
   })
 
   it('explains a missing extension and keeps the remote signer available', async () => {
@@ -67,9 +83,9 @@ describe('Sign-in page', () => {
   it('signs in with the extension and goes to the dashboard', async () => {
     signInWithNostr.mockResolvedValue({ status: 200, pubkey: 'a', npub: 'npub1a', role: 'administrator' })
     const component = await mount(true)
-    await button(component, 'Sign in with extension')!.trigger('click')
-    await flushPromises()
-    expect(signInWithNostr).toHaveBeenCalledWith(signer, window.location.origin)
+    await signInWithExtension(component)
+    // A wrapper that checks the key it signs with is the one confirmed (#70).
+    expect(signInWithNostr).toHaveBeenCalledWith(expect.objectContaining({ signEvent: expect.any(Function) }), window.location.origin)
     expect(refresh).toHaveBeenCalled()
     expect(navigateTo).toHaveBeenCalledWith('/')
   })
@@ -77,16 +93,14 @@ describe('Sign-in page', () => {
   it('sends an unregistered key to the no-access page', async () => {
     signInWithNostr.mockResolvedValue({ status: 403, error: 'not_registered', npub: 'npub1x' })
     const component = await mount(true)
-    await button(component, 'Sign in with extension')!.trigger('click')
-    await flushPromises()
+    await signInWithExtension(component)
     expect(navigateTo).toHaveBeenCalledWith('/no-access')
   })
 
   it('says so when the extension declines', async () => {
     signInWithNostr.mockRejectedValue(new Error('User rejected'))
     const component = await mount(true)
-    await button(component, 'Sign in with extension')!.trigger('click')
-    await flushPromises()
+    await signInWithExtension(component)
     expect(component.find('[data-testid="sign-in-error"]').text()).toContain('did not sign the request')
     expect(navigateTo).not.toHaveBeenCalled()
   })
@@ -104,21 +118,83 @@ describe('Sign-in page', () => {
     const component = await mount(true)
     for (const [reason, status, text] of reasons) {
       signInWithNostr.mockResolvedValueOnce({ status, error: status === 401 ? 'not_authenticated' : 'forbidden', reason })
-      await button(component, 'Sign in with extension')!.trigger('click')
-      await flushPromises()
+      await signInWithExtension(component)
       expect(component.find('[data-testid="sign-in-error"]').text(), reason).toContain(text)
     }
     expect(navigateTo).not.toHaveBeenCalled()
   })
 
-  it('asks the extension for its key first, and shows it while waiting for the signature', async () => {
+  it('asks the extension for its key, shows it, and signs nothing until continued (#70)', async () => {
     signInWithNostr.mockImplementation(never)
+    keyProfile.value = { name: 'Alice', createdAt: 1 }
     const component = await mount(true)
     await button(component, 'Sign in with extension')!.trigger('click')
     await flushPromises()
 
-    expect(signer.getPublicKey.mock.invocationCallOrder[0]).toBeLessThan(signInWithNostr.mock.invocationCallOrder[0]!)
-    expect(component.find('[data-testid="extension-npub"]').text()).toBe(`Signing in as ${npubEncode(extensionPubkey)}`)
+    expect(component.find('[data-testid="confirm-npub"]').text()).toBe(npubEncode(extensionPubkey))
+    expect(component.find('[data-testid="confirm-name"]').text()).toBe('Alice')
+    expect(component.find('[data-testid="confirm-continue"]').text()).toBe('Continue as Alice')
+    expect(signInWithNostr).not.toHaveBeenCalled()
+    expect(signer.signEvent).not.toHaveBeenCalled()
+
+    await component.find('[data-testid="confirm-continue"]').trigger('click')
+    await flushPromises()
+    expect(signInWithNostr).toHaveBeenCalled()
+  })
+
+  it('shows a short npub when the key has no profile', async () => {
+    const component = await mount(true)
+    await button(component, 'Sign in with extension')!.trigger('click')
+    await flushPromises()
+    const npub = npubEncode(extensionPubkey)
+    expect(component.find('[data-testid="confirm-name"]').text()).toBe(`${npub.slice(0, 12)}…${npub.slice(-6)}`)
+  })
+
+  it('signs nothing on Use another key, and says how to switch keys in the extension (#70)', async () => {
+    const component = await mount(true)
+    await button(component, 'Sign in with extension')!.trigger('click')
+    await flushPromises()
+    await component.find('[data-testid="confirm-another"]').trigger('click')
+    await flushPromises()
+
+    expect(signInWithNostr).not.toHaveBeenCalled()
+    expect(component.find('[data-testid="confirm-key"]').exists()).toBe(false)
+    const guidance = component.find('[data-testid="another-key-guidance"]').text()
+    expect(guidance).toContain('keep using the key a site first connected with')
+    expect(guidance).toContain(window.location.host)
+    // And the extension button is back, to try again.
+    expect(button(component, 'Sign in with extension')).toBeDefined()
+  })
+
+  it('refuses a signer that signs with another key than the one confirmed (#70)', async () => {
+    const other = 'cd'.repeat(32)
+    signer.signEvent.mockResolvedValue({ kind: 27235, created_at: 1, tags: [], content: '', id: 'e'.repeat(64), pubkey: other, sig: 'f'.repeat(128) })
+    // As the real one does: ask the signer to sign the login event.
+    signInWithNostr.mockImplementation(async (wrapped: { signEvent: (t: unknown) => Promise<unknown> }) => {
+      await wrapped.signEvent({ kind: 27235, created_at: 1, tags: [], content: '' })
+      return { status: 200, pubkey: other, npub: 'npub1other', role: 'user' }
+    })
+    const component = await mount(true)
+    await signInWithExtension(component)
+
+    expect(component.find('[data-testid="sign-in-error"]').text()).toContain('not the key you confirmed')
+    expect(navigateTo).not.toHaveBeenCalled()
+  })
+
+  it('confirms a remote signer\'s key too, and Use another key disconnects it (#70)', async () => {
+    connect.mockResolvedValue({ getPublicKey: async () => extensionPubkey, signEvent: vi.fn() })
+    const component = await mount(false)
+    await component.find('input').setValue(`bunker://${'cd'.repeat(32)}?relay=wss://relay.example`)
+    await button(component, 'Connect and sign in')!.trigger('click')
+    await flushPromises()
+    expect(component.find('[data-testid="confirm-npub"]').text()).toBe(npubEncode(extensionPubkey))
+    expect(signInWithNostr).not.toHaveBeenCalled()
+
+    await component.find('[data-testid="confirm-another"]').trigger('click')
+    await flushPromises()
+    expect(cancel).toHaveBeenCalled()
+    expect(component.find('[data-testid="another-key-guidance"]').text()).toContain('connection string')
+    expect((component.find('input').element as HTMLInputElement).value).toBe('')
   })
 
   it('treats a refusal to share the key like a declined signature, and signs nothing', async () => {
