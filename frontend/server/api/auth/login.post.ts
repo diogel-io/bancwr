@@ -9,7 +9,7 @@
 import { npubEncode } from 'nostr-tools/nip19'
 import { challengeStore } from '../../utils/auth/challenges'
 import { LoginError, verifyLoginRequest } from '../../utils/auth/login-event'
-import { bunkerPubkey, memberRole } from '../../utils/auth/members'
+import { bunkerLacksAdministrator, bunkerPubkey, memberRole } from '../../utils/auth/members'
 import { startSession } from '../../utils/auth/session'
 
 export default defineEventHandler(async (event) => {
@@ -40,7 +40,10 @@ export default defineEventHandler(async (event) => {
   const role = await memberRole(event, pubkey)
   if (!role) {
     setResponseStatus(event, 403)
-    return { error: 'not_registered', npub }
+    // With no administrator, the no-access page explains how the first one is set (#74).
+    return (await bunkerLacksAdministrator(event))
+      ? { error: 'not_registered', npub, noAdministrator: true }
+      : { error: 'not_registered', npub }
   }
   return { pubkey, npub, role }
 })

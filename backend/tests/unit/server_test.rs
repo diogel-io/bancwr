@@ -58,6 +58,8 @@ async fn test_status_handler() {
     let expected_pubkey = keys.public_key().to_bech32().unwrap();
     let signer = Signer::new(keys.secret_key().clone());
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
+    // A configured bunker has an administrator; without one the report is degraded (#74).
+    db.add_team_member("Admin", &Keys::generate().public_key().to_hex(), bunker::registry::Role::Administrator).unwrap();
     let config = Config {
         secret_key: keys.secret_key().clone(),
         port: 3000,
@@ -89,7 +91,7 @@ async fn test_status_handler() {
     // NIP-46 is off here, so the relay check is disabled and the signer and database decide (#27).
     assert_eq!(status.status, Overall::Healthy);
     let names: Vec<&str> = status.checks.iter().map(|check| check.name.as_str()).collect();
-    assert_eq!(names, ["signer", "database", "relays"]);
+    assert_eq!(names, ["signer", "database", "relays", "administrator"]);
     assert_eq!(status.checks[2].status, CheckStatus::Disabled);
     assert_eq!(status.pubkey, expected_pubkey);
     // From the config, which Config::load fills from BANCWR_VERSION (#35).
