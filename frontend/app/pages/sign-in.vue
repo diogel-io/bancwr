@@ -54,6 +54,7 @@ async function signIn(signer: NostrSigner, method: SignerMethod) {
 
     <SignerConnect
       :use="signIn"
+      confirm-key
       extension-label="Sign in with extension"
       bunker-label="Connect and sign in"
       error-testid="sign-in-error"

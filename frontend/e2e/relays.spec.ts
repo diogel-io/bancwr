@@ -4,7 +4,7 @@
 import { SimplePool } from 'nostr-tools/pool'
 import { finalizeEvent, getPublicKey, type NostrEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
-import { installExtension } from './extension'
+import { continueAsKey, installExtension } from './extension'
 import { anonymousTest, test, expect } from './fixtures'
 
 const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
@@ -31,6 +31,7 @@ anonymousTest('a member edits their relay list, and it reaches every relay with 
   await installExtension(page, nsec)
   await page.goto('/sign-in')
   await page.getByRole('button', { name: 'Sign in with extension' }).click()
+  await continueAsKey(page)
   await expect(page).toHaveURL('/')
   await page.getByRole('navigation').getByRole('link', { name: 'Relays', exact: true }).click()
 

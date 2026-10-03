@@ -7,7 +7,7 @@ import type { Page, Route } from '@playwright/test'
 import { SimplePool } from 'nostr-tools/pool'
 import { finalizeEvent, getPublicKey, type NostrEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
-import { installExtension } from './extension'
+import { continueAsKey, installExtension } from './extension'
 import { anonymousTest, test, expect, type Role } from './fixtures'
 
 const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
@@ -30,6 +30,7 @@ async function signInWithExtension(page: Page, nsec: string) {
   await installExtension(page, nsec)
   await page.goto('/sign-in')
   await page.getByRole('button', { name: 'Sign in with extension' }).click()
+  await continueAsKey(page)
   await expect(page).toHaveURL('/')
 }
 
@@ -58,6 +59,7 @@ anonymousTest('a member signed in with NIP-46 saves through the same remote sign
   await page.goto('/sign-in')
   await page.getByPlaceholder('bunker://…').fill(process.env.E2E_NIP46_URI!)
   await page.getByRole('button', { name: 'Connect and sign in' }).click()
+  await continueAsKey(page)
   await expect(page).toHaveURL('/', { timeout: 30_000 })
 
   // A full load: the connection is resumed from this tab's session, not made again.
