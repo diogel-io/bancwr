@@ -58,6 +58,8 @@ test('an unregistered key reaches only the no-access page, which shows its npub'
   await expect(page.getByText('This key is not registered with this bunker')).toBeVisible()
   await expect(page.getByTestId('presented-npub')).toHaveText(npubFromNsec(stranger))
   await expect(page.getByText('vault administrator')).toBeVisible()
+  // This stack has an administrator, so no first-administrator guidance (#74).
+  await expect(page.getByTestId('no-administrator')).toHaveCount(0)
 
   for (const path of ['/', '/team', '/sign-in']) {
     await page.goto(path)
@@ -104,4 +106,16 @@ test('the key is confirmed before anything is signed, and another can be chosen 
   await expect(page).toHaveURL('/')
   await page.goto('/profile')
   await expect(page.getByTestId('signed-in-as')).toContainText(npubFromNsec(nsec))
+})
+
+test('the bunker\'s own key is refused, with why and how the first administrator is set (#74)', async ({ page }) => {
+  test.skip(!process.env.BUNKER_NSEC, 'The bunker key is unknown: set BUNKER_NSEC when using E2E_BASE_URL.')
+  await installExtension(page, process.env.BUNKER_NSEC!)
+  await page.goto('/sign-in')
+  await signInWithExtension(page)
+
+  const error = page.getByTestId('sign-in-error')
+  await expect(error).toContainText('the bunker signs for others')
+  await expect(error).toContainText('BANCWR_ADMIN_PUBKEY')
+  await expect(page).toHaveURL('/sign-in')
 })

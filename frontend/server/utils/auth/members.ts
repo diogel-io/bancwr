@@ -14,6 +14,24 @@ export async function bunkerPubkey(event: H3Event): Promise<string> {
   return decoded.data
 }
 
+/**
+ * Whether the bunker has no administrator (#74): its `administrator` health check warns. Then
+ * nobody can register keys, and an unregistered key should be told how the first administrator is
+ * set (BANCWR_ADMIN_PUBKEY), not to ask an administrator who doesn't exist.
+ */
+export function lacksAdministrator(status: Pick<BunkerStatus, 'checks'>): boolean {
+  return status.checks.some(check => check.name === 'administrator' && check.status === 'warn')
+}
+
+/** Asks the bunker whether it has no administrator. Best effort: an unreadable status says no. */
+export async function bunkerLacksAdministrator(event: H3Event): Promise<boolean> {
+  try {
+    return lacksAdministrator(await bunkerServiceFetch<BunkerStatus>(event, '/api/bunker/status'))
+  } catch {
+    return false
+  }
+}
+
 /** The member's role, or undefined when the key is not in the vault or holds no valid role. */
 export async function memberRole(event: H3Event, pubkey: string): Promise<Role | undefined> {
   try {

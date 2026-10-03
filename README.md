@@ -171,7 +171,17 @@ environment:
 - Once any administrator exists it does nothing: it never re-adds a key you have removed, and never
   demotes anyone. You can leave it set, but it is tidier to remove it once you have signed in.
 
-Without it, and with no administrator registered, the bunker logs a warning at every start.
+Without it, and with no administrator registered, the bunker logs a warning at every start, and
+its health shows `administrator` as a warning (#74). Anyone who signs in with their own key is told
+the bunker has no administrator yet and how to make that key the first: set `BANCWR_ADMIN_PUBKEY`
+to the npub the page shows, restart the bunker, and sign in again.
+
+#### Why not the bunker's key?
+
+The bunker's own key (`BUNKER_NSEC`) can never sign in or be registered, as an administrator or
+anything else. The bunker signs for other people over NIP-46, so anyone it signs for could get it
+to sign a Bancwr login and act as that key. Signing in with it would also mean putting the server's
+signing key into a browser extension. The rule is rule 10 of the sign-in decision record.
 
 Keys are stored in hex and shown as npubs. Upgrading from a version before this change migrates
 existing members at startup: the roles `admin` and `viewer` become `administrator` and `user`, and

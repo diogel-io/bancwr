@@ -36,7 +36,7 @@ test('the detail lists each check, with the bunker\'s NIP-46 relay connected (#3
   await indicator(page).click()
 
   await expect(detail(page)).toContainText('Bunker health: Healthy')
-  for (const [check, state] of [['signer', 'OK'], ['database', 'OK'], ['relays', 'OK']] as const) {
+  for (const [check, state] of [['signer', 'OK'], ['database', 'OK'], ['relays', 'OK'], ['administrator', 'OK']] as const) {
     await expect(detail(page).locator(`[data-check="${check}"]`)).toContainText(state)
   }
   await expect(detail(page)).toContainText('All 1 relays connected.')

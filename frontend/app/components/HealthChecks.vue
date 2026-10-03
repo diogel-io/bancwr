@@ -4,7 +4,7 @@ import type { CheckStatus, HealthCheck } from '#shared/types/bunker'
 
 defineProps<{ checks: HealthCheck[] }>()
 
-const NAMES: Record<string, string> = { signer: 'Signer', database: 'Database', relays: 'Relays', bunker: 'Bunker' }
+const NAMES: Record<string, string> = { signer: 'Signer', database: 'Database', relays: 'Relays', administrator: 'Administrator', bunker: 'Bunker' }
 const BADGES: Record<CheckStatus, { label: string, color: 'success' | 'warning' | 'error' | 'neutral' }> = {
   pass: { label: 'OK', color: 'success' },
   warn: { label: 'Needs attention', color: 'warning' },

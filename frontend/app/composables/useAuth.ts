@@ -3,7 +3,8 @@ import type { Role } from '#shared/types/bunker'
 
 export type AuthState =
   | { status: 'signed-in', pubkey: string, npub: string, role: Role }
-  | { status: 'not-registered', npub: string }
+  /** noAdministrator: the bunker has none yet, so nobody can register this key (#74). */
+  | { status: 'not-registered', npub: string, noAdministrator?: boolean }
   | { status: 'signed-out' }
 
 export function useAuth() {
@@ -16,9 +17,9 @@ export function useAuth() {
       const session = await requestFetch<{ pubkey: string, npub: string, role: Role }>('/api/auth/session')
       state.value = { status: 'signed-in', ...session }
     } catch (error) {
-      const failure = error as { statusCode?: number, data?: { error?: string, npub?: string } }
+      const failure = error as { statusCode?: number, data?: { error?: string, npub?: string, noAdministrator?: boolean } }
       state.value = failure.statusCode === 403 && failure.data?.error === 'not_registered' && failure.data.npub
-        ? { status: 'not-registered', npub: failure.data.npub }
+        ? { status: 'not-registered', npub: failure.data.npub, ...(failure.data.noAdministrator ? { noAdministrator: true } : {}) }
         : { status: 'signed-out' }
     }
     return state.value

@@ -2,6 +2,7 @@
 // relay that is up, a port nothing listens on, a database whose table is gone.
 use bunker::config::Config;
 use bunker::db::Database;
+use bunker::registry::Role;
 use bunker::health::{self, assess, relay_check, Check, CheckStatus, Overall};
 use bunker::relay::RelayClient;
 use bunker::signer::Signer;
@@ -15,7 +16,14 @@ fn check(status: CheckStatus) -> Check {
     Check { name: "x".to_string(), status, detail: String::new(), relays: None }
 }
 
+/// A bunker with an administrator registered, as a configured one has (#74).
 fn state(db: Database, nip46_enabled: bool, relay_urls: Vec<String>) -> AppState {
+    db.add_team_member("Admin", &Keys::generate().public_key().to_hex(), Role::Administrator).unwrap();
+    bare_state(db, nip46_enabled, relay_urls)
+}
+
+/// A bunker exactly as given: no administrator unless the database has one.
+fn bare_state(db: Database, nip46_enabled: bool, relay_urls: Vec<String>) -> AppState {
     let keys = Keys::generate();
     let config = Config {
         secret_key: keys.secret_key().clone(),
@@ -171,4 +179,36 @@ async fn no_relay_reachable_is_unhealthy() {
 
     assert_eq!(overall, Overall::Unhealthy);
     assert_eq!(named(&checks, health::RELAYS).status, CheckStatus::Fail);
+}
+
+#[tokio::test]
+async fn no_administrator_is_degraded_and_says_how_to_set_one() {
+    let state = bare_state(Database::new(":memory:").unwrap(), false, vec![]);
+
+    let (overall, checks) = health::report(&state).await;
+
+    assert_eq!(overall, Overall::Degraded);
+    let administrator = named(&checks, health::ADMINISTRATOR);
+    assert_eq!(administrator.status, CheckStatus::Warn);
+    assert!(administrator.detail.contains("BANCWR_ADMIN_PUBKEY"), "{}", administrator.detail);
+    assert!(administrator.detail.contains("never the bunker's own key"), "{}", administrator.detail);
+}
+
+#[tokio::test]
+async fn an_administrator_passes_and_members_of_other_roles_do_not_count() {
+    let db = Database::new(":memory:").unwrap();
+    db.add_team_member("User", &Keys::generate().public_key().to_hex(), Role::User).unwrap();
+    db.add_team_member("Signer", &Keys::generate().public_key().to_hex(), Role::Signer).unwrap();
+    assert_eq!(health::check_administrator(&db).status, CheckStatus::Warn);
+
+    db.add_team_member("Admin", &Keys::generate().public_key().to_hex(), Role::Administrator).unwrap();
+    assert_eq!(health::check_administrator(&db).status, CheckStatus::Pass);
+}
+
+#[tokio::test]
+async fn the_report_has_all_four_checks() {
+    let state = state(Database::new(":memory:").unwrap(), false, vec![]);
+    let (_, checks) = health::report(&state).await;
+    let names: Vec<&str> = checks.iter().map(|check| check.name.as_str()).collect();
+    assert_eq!(names, vec![health::SIGNER, health::DATABASE, health::RELAYS, health::ADMINISTRATOR]);
 }
