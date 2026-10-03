@@ -17,7 +17,7 @@ const REASONS: Record<string, string> = {
   unknown_challenge: 'The sign-in request expired. Try again.',
   bad_signature: 'The signer returned an invalid signature.',
   wrong_kind: 'The signer signed a different kind of event than was asked for.',
-  bunker_key: 'This is the bunker\'s own key, which can never be used to sign in.'
+  bunker_key: 'This is the bunker\'s own key, which can never sign in: the bunker signs for others, so anyone it signs for could sign in as it. Sign in with your own key; the first administrator is set with BANCWR_ADMIN_PUBKEY.'
 }
 
 async function finish(result: SignInResult, method: SignerMethod): Promise<string | undefined> {

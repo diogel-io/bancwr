@@ -83,18 +83,22 @@ Returns the bunker's health, public key and version. It answers 200 whatever the
 report, not a probe. Container probes use `/health`, which touches nothing, so a flapping relay
 never restarts the container.
 
-`status` is `healthy`, `degraded` or `unhealthy`, from three checks in `checks`:
+`status` is `healthy`, `degraded` or `unhealthy`, from four checks in `checks`:
 
 | Check | `pass` | `warn` | `fail` |
 |-------|--------|--------|--------|
 | `signer` | signs and verifies a throwaway event, never published | | it cannot |
 | `database` | the audit log's table answers | | it does not |
 | `relays` | every NIP-46 relay is connected | some are, not all | none is, or NIP-46 is on with no relays |
+| `administrator` | an administrator is registered | none is, so nobody can manage the bunker (set `BANCWR_ADMIN_PUBKEY`) | the team could not be read |
 
 Any `fail` makes the bunker `unhealthy`; otherwise any `warn` makes it `degraded`. No relay
 connected is a failure because NIP-46 is the bunker's only signing path. With NIP-46 off, the
 relay check is `disabled` and does not count. A relay still connecting counts as not connected, so
 for the first seconds after a start the relay check reads red.
+
+The frontend reads a `warn` on `administrator` as "no administrator yet": a key that signs in but
+is not registered is then told how the first administrator is set, not to ask one (#74).
 
 Every role can read status, so `detail` is fixed wording plus relay URLs: never raw errors, paths
 or keys. The raw error is in the bunker log.

@@ -37,7 +37,8 @@ async fn test_api_status() {
         serde_json::json!([
             { "name": "signer", "status": "pass", "detail": "The signing key signs and verifies." },
             { "name": "database", "status": "pass", "detail": "The database answers." },
-            { "name": "relays", "status": "disabled", "detail": "NIP-46 is turned off (NIP46_ENABLED), so no relays are used." }
+            { "name": "relays", "status": "disabled", "detail": "NIP-46 is turned off (NIP46_ENABLED), so no relays are used." },
+            { "name": "administrator", "status": "pass", "detail": "An administrator is registered." }
         ])
     );
 }

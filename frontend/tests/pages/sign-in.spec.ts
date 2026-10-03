@@ -113,7 +113,8 @@ describe('Sign-in page', () => {
       ['unknown_challenge', 401, 'request expired'],
       ['bad_signature', 401, 'invalid signature'],
       ['wrong_kind', 401, 'different kind of event'],
-      ['bunker_key', 403, 'bunker\'s own key']
+      ['bunker_key', 403, 'bunker\'s own key'],
+      ['bunker_key', 403, 'the first administrator is set with BANCWR_ADMIN_PUBKEY']
     ]
     const component = await mount(true)
     for (const [reason, status, text] of reasons) {

@@ -4,6 +4,8 @@ definePageMeta({ layout: 'auth' })
 
 const auth = useAuth()
 const npub = computed(() => auth.state.value.status === 'not-registered' ? auth.state.value.npub : '')
+// A bunker with no administrator can't register anyone; say how the first one is set (#74).
+const noAdministrator = computed(() => auth.state.value.status === 'not-registered' && auth.state.value.noAdministrator === true)
 const copied = ref(false)
 
 async function copy() {
@@ -17,7 +19,24 @@ async function copy() {
     <h1 class="text-lg font-semibold">
       This key is not registered with this bunker
     </h1>
-    <p class="text-sm text-muted">
+    <div
+      v-if="noAdministrator"
+      class="space-y-2 text-sm text-muted"
+      data-testid="no-administrator"
+    >
+      <p>
+        This bunker has no administrator yet, so nobody can register keys. Whoever runs it sets
+        <code>BANCWR_ADMIN_PUBKEY</code> to this key's npub and restarts the bunker; this key then
+        becomes the first administrator. Then sign in again.
+      </p>
+      <p>
+        The bunker's own key (<code>BUNKER_NSEC</code>) can never be the administrator.
+      </p>
+    </div>
+    <p
+      v-else
+      class="text-sm text-muted"
+    >
       You signed in, but only keys registered in the vault can use Bancwr. Contact the vault
       administrator and ask them to add this key:
     </p>

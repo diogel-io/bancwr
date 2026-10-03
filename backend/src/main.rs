@@ -54,7 +54,8 @@ async fn serve() -> anyhow::Result<()> {
         },
         None if db.administrator_count()? == 0 => warn!(
             "No administrator is registered, so nobody can administer this bunker. Set \
-             BANCWR_ADMIN_PUBKEY to the first administrator's npub and restart."
+             BANCWR_ADMIN_PUBKEY to the first administrator's npub and restart. It cannot be the \
+             bunker's own key (BUNKER_NSEC): the bunker signs for others, so that key never signs in."
         ),
         None => {}
     }

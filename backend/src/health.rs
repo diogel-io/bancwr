@@ -1,6 +1,6 @@
 //! The bunker's health, for `GET /api/bunker/status` (#27).
 //!
-//! Three checks, each reading state the bunker already holds: none opens a connection, so a
+//! Four checks, each reading state the bunker already holds: none opens a connection, so a
 //! status request cannot hang on a relay. `/health` stays separate and dependency-free, for the
 //! container probe: a flapping relay must not restart the container.
 //!
@@ -19,6 +19,7 @@ use tracing::warn;
 pub const SIGNER: &str = "signer";
 pub const DATABASE: &str = "database";
 pub const RELAYS: &str = "relays";
+pub const ADMINISTRATOR: &str = "administrator";
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -80,6 +81,7 @@ pub async fn report(state: &AppState) -> (Overall, Vec<Check>) {
         check_signer(&signer).await,
         check_database(&state.db),
         check_relays(state).await,
+        check_administrator(&state.db),
     ];
     (assess(&checks), checks)
 }
@@ -107,6 +109,25 @@ pub fn check_database(db: &Database) -> Check {
         Err(error) => {
             warn!("Health check: the database failed: {}", error);
             Check::new(DATABASE, CheckStatus::Fail, "The database did not answer. See the bunker log.")
+        }
+    }
+}
+
+/// Whether anyone can manage the bunker (#74). Without an administrator nobody can register keys,
+/// and the only way to get one is BANCWR_ADMIN_PUBKEY at startup; the bunker's own key never can
+/// be one (sign-in ADR, rule 10). Yellow rather than red: the bunker still signs for the keys it
+/// has. The frontend reads `warn` here as "no administrator" to guide whoever signs in.
+pub fn check_administrator(db: &Database) -> Check {
+    match db.administrator_count() {
+        Ok(0) => Check::new(
+            ADMINISTRATOR,
+            CheckStatus::Warn,
+            "No administrator is registered, so nobody can manage this bunker. Set BANCWR_ADMIN_PUBKEY to the first administrator's npub (never the bunker's own key) and restart the bunker.",
+        ),
+        Ok(_) => Check::new(ADMINISTRATOR, CheckStatus::Pass, "An administrator is registered."),
+        Err(error) => {
+            warn!("Health check: could not count administrators: {}", error);
+            Check::new(ADMINISTRATOR, CheckStatus::Fail, "Could not read the team. See the bunker log.")
         }
     }
 }
