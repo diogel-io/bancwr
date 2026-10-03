@@ -8,38 +8,46 @@
 
 ## Podman Images
 
-Images are published to GitHub Container Registry (GHCR) on every push to `master`.
-
-Available tags:
+Images are published to GitHub Container Registry (GHCR). Backend and frontend share one version
+and are released together.
 
 | Tag | Points at |
 |-----|-----------|
-| `latest` | The current `master` commit. This is trunk, not a reviewed release. |
-| `master` | The same image as `latest`. |
-| `sha-<short>` | One specific commit, for pinning. |
-| `<semVer>` | The GitVersion version of that build, such as `0.1.0-49` from `master` or `0.1.0` from the `v0.1.0` tag. |
-| `<version>` | Published when a `v*` tag is released, without the `v` prefix, so `v0.1.0` publishes `0.1.0`. No release has been cut yet. |
+| `latest` | The newest release. What `compose.yaml` follows, pinned to its version. |
+| `<version>`, such as `0.1.0` | That release. Rebuilt weekly on fresh base images, so the digest can change; the code does not. |
+| `<major>.<minor>`, such as `0.1` | The newest patch of that release line. |
+| `edge` | Trunk: the latest `master` commit, not a reviewed release. |
+| `master` | The same image as `edge`. |
+| `sha-<short>` | One specific commit. |
+| `<semVer>` | The GitVersion version of a trunk build, such as `0.1.1-3`. |
 
-Until a release exists, pin to a `sha-` tag if you need a fixed image.
+`compose.yaml` pins an exact version, so upgrading is a deliberate change to that file. Use
+`edge` only to try what has merged but not been released.
 
 Versions, tags, and the release process are described in [docs/releasing.md](docs/releasing.md).
 
 ### Backend
 ```bash
-# Pull the current master build
+# The newest release
 podman pull ghcr.io/diogel-io/bancwr-diogel-backend:latest
 
-# Pin to a specific commit
-podman pull ghcr.io/diogel-io/bancwr-diogel-backend:sha-1dbcab3
+# A specific release
+podman pull ghcr.io/diogel-io/bancwr-diogel-backend:0.1.0
+
+# Trunk
+podman pull ghcr.io/diogel-io/bancwr-diogel-backend:edge
 ```
 
 ### Frontend
 ```bash
-# Pull the current master build
+# The newest release
 podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:latest
 
-# Pin to a specific commit
-podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:sha-1dbcab3
+# A specific release
+podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:0.1.0
+
+# Trunk
+podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
 ```
 
 ## Running the Environment

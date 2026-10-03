@@ -22,6 +22,14 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
 
+  # Which commits a release builds and which tags it publishes, above all that :latest only ever
+  # goes to the highest stable release (#15).
+  release-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/test-release-scripts.sh
+
   build:
     runs-on: ubuntu-latest
     strategy:

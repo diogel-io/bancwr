@@ -1,0 +1,40 @@
+name: Release targets
+
+# Which commits a release run builds, and as what (#15): see .github/scripts/release-targets.sh.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: workflow_dispatch only. The default branch (empty means it) or a v* tag.
+        type: string
+        default: ''
+    outputs:
+      targets:
+        description: 'JSON array of {"ref", "kind": "trunk"|"release", "tag", "latest"}; [] when there is nothing to build.'
+        value: ${{ jobs.targets.outputs.targets }}
+
+permissions:
+  contents: read
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      # Every tag, to find the highest release.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: targets
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          targets=$(bash .github/scripts/release-targets.sh)
+          echo "Targets: ${targets}"
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"

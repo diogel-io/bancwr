@@ -58,24 +58,56 @@ podman run --rm -v "$PWD:/repo:Z" docker.io/gittools/gitversion:6.8.2 /repo /sho
 
 ## Image tags
 
-Every push to `master` and every `v*` tag publishes both images to GHCR, and so does the weekly
-rebuild of `master` (see [Weekly rebuild](#weekly-rebuild)):
+`:latest` is the newest reviewed release, and trunk is `:edge` (#15). Before #15 every push to
+`master` wrote `:latest`, so a self-hoster following it ran whatever merged last.
 
 | Tag | Written on | Points at |
 | --- | --- | --- |
-| `latest` | push to `master`, weekly rebuild | The current `master` commit. Trunk, not a reviewed release. |
-| `master` | push to `master`, weekly rebuild | The same image as `latest`. |
+| `latest` | a `v*` tag that is the highest stable release; the weekly rebuild of that release | The newest release. |
+| `<version>` | a `v*` tag; the weekly rebuild of the newest release | That release, so `v0.1.0` publishes `0.1.0`. |
+| `<major>.<minor>` | a stable `v*` tag | The newest patch of that line, such as `0.1`. |
+| `edge` | push to `master`; the weekly rebuild of `master` | Trunk. Not a reviewed release. |
+| `master` | the same | The same image as `edge`. |
+| `<semVer>` | push to `master`; the weekly rebuild of `master` | The GitVersion version of a trunk build, such as `0.1.1-3`. |
 | `sha-<short>` | every run | One specific commit. |
-| `<semVer>` | every run | The GitVersion version: `0.1.0-49` from `master`, `0.1.0` from `v0.1.0`. |
-| `<version>` | `v*` tag | The released version without the `v` prefix, so `v0.1.0` publishes `0.1.0`. |
 
-Making `latest` release-only and adding an `edge` tag for trunk is tracked in
-[#15](https://github.com/diogel-io/bancwr/issues/15).
+The rules live in two scripts, tested by `.github/scripts/test-release-scripts.sh` (CI's
+`release-scripts` job): `release-targets.sh` decides which commits a run builds, and
+`image-tags.sh` which tags each gets. `release-image.yml` builds, gates and publishes one image for
+one target; `release-backend.yml` and `release-frontend.yml` only call it.
+
+- **`latest` only moves forward.** It goes to a tag only if that tag is the highest stable
+  `v<major>.<minor>.<patch>` by version (`0.10.0` is above `0.2.0`). A patch to an older line, such
+  as `v0.1.5` after `v0.2.0`, publishes `0.1.5` and `0.1` and leaves `latest` alone. A
+  pre-release tag (`v1.0.0-rc.1`) publishes its version and `sha-` only.
+- **There is no `:<major>` alias**: while the major version is 0, `:0` would float across
+  breaking releases.
+- **A rebuilt release keeps its version, not its digest.** The weekly rebuild republishes the
+  newest release's tags on fresh base images, from the same commit. Pin by digest only if you also
+  want to miss those fixes.
+
+### Seeing what a run would publish
+
+Run **Release Backend** or **Release Frontend** by hand with **publish** off. It builds, tests and
+scans, prints the tags it would push, and pushes nothing. **ref** is `master` (or empty) or a `v*`
+tag to rebuild:
+
+```bash
+gh workflow run "Release Backend" -R diogel-io/bancwr -f publish=false
+gh workflow run "Release Backend" -R diogel-io/bancwr -f publish=false -f ref=v0.1.0
+```
+
+A release's version is its tag. A trunk build's is GitVersion's, which in Actions follows the branch
+the run was started from: started from another branch (`--ref`), a preview of `master` shows that
+branch's label, such as `0.1.0-my-branch.1`. Runs on `master` itself are not affected.
 
 ## Cutting a release
 
 1. Check that every issue in the release's milestone is closed or moved to a later milestone.
-2. Update your local `master` and confirm the version GitVersion will produce:
+2. Pin `compose.yaml` to the new version, for both images, in a pull request of its own, and merge
+   it. The tagged commit's `compose.yaml` then names its own release, so a checkout of the tag runs
+   it. The tag run warns (it does not fail) when they differ.
+3. Update your local `master` and confirm the version GitVersion will produce:
 
    ```bash
    git switch master
@@ -83,25 +115,25 @@ Making `latest` release-only and adding an `edge` tag for trunk is tracked in
    podman run --rm -v "$PWD:/repo:Z" docker.io/gittools/gitversion:6.8.2 /repo /showvariable MajorMinorPatch
    ```
 
-3. Create and push an annotated tag from your own account:
+4. Create and push an annotated tag from your own account:
 
    ```bash
    git tag -a v0.1.0 -m "Bancwr 0.1.0"
    git push origin v0.1.0
    ```
 
-4. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
-   images carry the `0.1.0` tag in GHCR. Each runs the full test suite first (see
-   [The test gate](#the-test-gate)); if a test fails, nothing is published and the job graph shows
-   `test` failed before `release`.
-5. Create the GitHub release from the tag with generated notes. `.github/release.yml` groups them
+5. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
+   images carry `0.1.0`, `0.1` and `latest` in GHCR, and that `latest` and `0.1.0` have the same
+   digest. Each runs the full test suite first (see [The test gate](#the-test-gate)); if a test
+   fails, nothing is published and the job graph shows `test` failed before `release`.
+6. Create the GitHub release from the tag with generated notes. `.github/release.yml` groups them
    by pull request label.
 
    ```bash
    gh release create v0.1.0 --generate-notes --verify-tag
    ```
 
-6. Close the milestone.
+7. Close the milestone.
 
 ### The vulnerability gate
 
@@ -116,7 +148,8 @@ Trivy scans the image itself, not only the source, before anything is published:
 | CI `build`, every pull request and push | The image that would ship | `trivy-image-backend`, `trivy-image-frontend` | Yes, on a fixable critical or high |
 | CI `build` | The lockfiles, build-time dependencies included | `trivy-fs-backend`, `trivy-fs-frontend` | No, report only |
 | Release workflows, before pushing | The image about to be published | (table in the job log) | Yes, on a fixable critical or high |
-| `trivy-security.yml`, Mondays 06:00 UTC | The published `:latest`, as users pull it | `trivy-published-backend`, `trivy-published-frontend` | No, report only |
+| `trivy-security.yml`, Mondays 06:00 UTC | The published `:latest`, the newest release, as users pull it | `trivy-published-backend`, `trivy-published-frontend` | No, report only |
+| `trivy-security.yml`, Mondays 06:00 UTC | The published `:edge`, trunk | `trivy-edge-backend`, `trivy-edge-frontend` | No, report only |
 
 Each scan has its own category. They used to share `trivy-backend` and `trivy-frontend`, so every
 CI run replaced the published-image results and the base-image findings vanished from view.
@@ -128,12 +161,18 @@ date, in a pull request of its own.
 
 ### Weekly rebuild
 
-Both release workflows also run every Monday at 05:00 UTC, and by hand from the Actions tab
-(`workflow_dispatch`). They rebuild the default branch with fresh base images (`pull: true`), run the
-tests and the vulnerability gate, and republish `latest`, `master`, `sha-<short>` and the current
-`<semVer>`. The version does not change, only the digest: a base-image fix reaches `latest` within a
-week without anyone merging anything. If the gate fails, nothing is published and the run is red.
-A scheduled or manual run only ever publishes the default branch.
+Both release workflows also run every Monday at 05:00 UTC. Each rebuilds **two targets** with fresh
+base images (`pull: true`), each from its own commit and through its own tests and vulnerability
+gate:
+
+- **`master`**, republishing `edge`, `master`, `sha-<short>` and its `<semVer>`;
+- **the newest stable release**, once there is one, republishing its version, `<major>.<minor>`
+  and `latest`.
+
+The versions do not change, only the digests: a base-image fix reaches what people run within a
+week without anyone merging or releasing anything. If a target's gate fails, nothing is published
+for that target and the run is red. Before the first release only `master` is rebuilt, and the
+weekly scan skips `:latest` with a notice. A run never publishes any other branch.
 
 **GitHub disables scheduled workflows after 60 days without repository activity** (it happened to
 the Trivy scan before #8). A quiet period therefore silently stops both the rebuild and the scan.
