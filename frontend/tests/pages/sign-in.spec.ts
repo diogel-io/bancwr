@@ -142,6 +142,19 @@ describe('Sign-in page', () => {
     expect(signInWithNostr).toHaveBeenCalled()
   })
 
+  it('loads the key\'s picture without a referrer, the policy set before src (#72)', async () => {
+    keyProfile.value = { name: 'Alice', picture: 'https://img.example/alice.png', createdAt: 1 }
+    const component = await mount(true)
+    await button(component, 'Sign in with extension')!.trigger('click')
+    await flushPromises()
+
+    const img = component.find('[data-testid="confirm-key"] img')
+    expect(img.attributes('src')).toBe('https://img.example/alice.png')
+    const order = (img.element as HTMLImageElement).getAttributeNames()
+    expect(order[0]).toBe('referrerpolicy')
+    expect(img.attributes('referrerpolicy')).toBe('no-referrer')
+  })
+
   it('shows a short npub when the key has no profile', async () => {
     const component = await mount(true)
     await button(component, 'Sign in with extension')!.trigger('click')

@@ -12,6 +12,7 @@ import { Nip46Cancelled, Nip46Timeout } from '~/composables/useNip46'
 import type { SignerMethod } from '~/composables/useUserSigner'
 import type { FollowProfile } from '~/utils/follows'
 import { lookupKeyProfile, lookupRelays, queryRelays } from '~/utils/key-profile'
+import { NoReferrerImg } from '~/utils/no-referrer-img'
 import type { NostrSigner } from '~/utils/nostr-sign-in'
 
 const props = withDefaults(defineProps<{
@@ -32,6 +33,8 @@ const props = withDefaults(defineProps<{
   errorTestid: 'signer-error'
 })
 
+// The key's picture is a third-party URL: no referrer (#72).
+const avatarAs = { img: NoReferrerImg }
 const nip07 = useNip07()
 const nip46 = useNip46()
 const config = useRuntimeConfig().public
@@ -211,6 +214,7 @@ const phaseText = computed(() => ({
         <UAvatar
           :src="pendingProfile?.picture"
           :alt="pendingName"
+          :as="avatarAs"
           size="lg"
         />
         <div class="min-w-0">
