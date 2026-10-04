@@ -67,6 +67,13 @@ NUXT_SITE_ORIGIN=http://localhost:3001
 Plain `http://` is accepted only for localhost; anywhere else Bancwr must be served over HTTPS (see
 the root README). Sign in with a NIP-07 extension or a NIP-46 `bunker://` string.
 
+`BANCWR_ADMIN_PUBKEY` must be your own key, never the bunker's (`BUNKER_NSEC`). The bunker key can
+never sign in (403 `bunker_key`) or be registered, because the bunker signs for others (sign-in
+ADR, rule 10; #74). If you start the backend without `BANCWR_ADMIN_PUBKEY`, it has no
+administrator: its health shows `administrator` as a warning, and signing in with your own key
+lands on the no-access page, which says to set `BANCWR_ADMIN_PUBKEY` to that key's npub and restart
+the backend.
+
 To point the frontend at a backend somewhere other than `localhost:3000`:
 
 ```bash
