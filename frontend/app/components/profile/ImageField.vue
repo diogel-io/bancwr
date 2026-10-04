@@ -3,6 +3,7 @@
 // fills the field; nothing is published until the profile is saved.
 import { checkImage, type ImageKind } from '~/utils/image'
 import { isHttpUrl } from '~/utils/profile'
+import { NoReferrerImg } from '~/utils/no-referrer-img'
 
 const props = defineProps<{
   label: string
@@ -50,13 +51,13 @@ async function chosen(event: Event) {
         class="overflow-hidden rounded-md border border-default bg-elevated"
         :class="kind === 'banner' ? 'aspect-[3/1] w-full' : 'size-24'"
       >
-        <img
+        <!-- No referrer, the policy set before src (#75). -->
+        <NoReferrerImg
           :src="preview"
           :alt="`${label} preview`"
           class="size-full object-cover"
-          referrerpolicy="no-referrer"
           @error="broken = true"
-        >
+        />
       </div>
       <UInput
         v-model="url"

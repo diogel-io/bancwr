@@ -1,9 +1,12 @@
 <script setup lang="ts">
 // How the profile will look (#30), from the form as it is edited.
 import { isHttpUrl, type ProfileForm } from '~/utils/profile'
+import { NoReferrerImg } from '~/utils/no-referrer-img'
 
 const props = defineProps<{ form: ProfileForm, npub: string }>()
 
+// Third-party pictures load with no referrer, the policy set before src (#75).
+const avatarAs = { img: NoReferrerImg }
 const image = (value: string) => isHttpUrl(value.trim()) ? value.trim() : undefined
 const name = computed(() => props.form.display_name.trim() || props.form.name.trim() || 'Unnamed')
 </script>
@@ -14,18 +17,18 @@ const name = computed(() => props.form.display_name.trim() || props.form.name.tr
     data-testid="profile-preview"
   >
     <div class="aspect-[3/1] w-full bg-elevated">
-      <img
+      <NoReferrerImg
         v-if="image(form.banner)"
         :src="image(form.banner)"
         alt=""
         class="size-full object-cover"
-        referrerpolicy="no-referrer"
-      >
+      />
     </div>
     <div class="space-y-3 p-4">
       <UAvatar
         :src="image(form.picture)"
         :alt="name"
+        :as="avatarAs"
         size="3xl"
         class="-mt-12 ring-4 ring-default"
       />
