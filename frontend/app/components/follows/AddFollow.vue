@@ -4,7 +4,10 @@
 import { npubEncode } from 'nostr-tools/nip19'
 import { displayName, validateFollowInput, type FollowProfile } from '~/utils/follows'
 import { parseNip05Identifier, resolveNip05, type Nip05Lookup } from '~/utils/nip05'
+import { NoReferrerImg } from '~/utils/no-referrer-img'
 
+// Third-party pictures load with no referrer, the policy set before src (#75).
+const avatarAs = { img: NoReferrerImg }
 const props = defineProps<{
   /** Keys already followed or staged. */
   following: Set<string>
@@ -111,6 +114,7 @@ const preview = computed(() => candidate.value
       <UAvatar
         :src="preview.profile?.picture"
         :alt="preview.name"
+        :as="avatarAs"
         size="md"
       />
       <div class="min-w-0 flex-1">

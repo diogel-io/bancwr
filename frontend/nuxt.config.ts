@@ -34,8 +34,18 @@ export default defineNuxtConfig({
         '@nuxt/ui'
     ],
     devtools: {enabled: true},
+    // Cross-origin requests carry no Referer, so third-party hosts (profile pictures, NIP-05,
+    // Blossom) aren't told which Bancwr is calling (#75). Bancwr's own requests keep theirs. The
+    // meta tag below says the same, in case a proxy in front drops the header; third-party images
+    // also set it themselves (utils/no-referrer-img.ts).
+    routeRules: {
+        '/**': {headers: {'Referrer-Policy': 'same-origin'}}
+    },
     app: {
         head: {
+            meta: [
+                {name: 'referrer', content: 'same-origin'}
+            ],
             link: [
                 // The Diogel mark. The SVG follows the browser's colour scheme; the .ico cannot, and
                 // carries 16/32/48 for the contexts that fall back to it.

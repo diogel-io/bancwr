@@ -2,7 +2,10 @@
 // One followed key (#32): picture, name and npub, with Remove, or Undo for a staged change.
 import { npubEncode } from 'nostr-tools/nip19'
 import { displayName, type Follow, type FollowProfile } from '~/utils/follows'
+import { NoReferrerImg } from '~/utils/no-referrer-img'
 
+// Third-party pictures load with no referrer, the policy set before src (#75).
+const avatarAs = { img: NoReferrerImg }
 const props = defineProps<{
   follow: Follow
   profile?: FollowProfile
@@ -24,6 +27,7 @@ const name = computed(() => displayName(props.follow, props.profile))
     <UAvatar
       :src="profile?.picture"
       :alt="name"
+      :as="avatarAs"
       size="md"
     />
     <div

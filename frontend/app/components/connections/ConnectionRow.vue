@@ -4,7 +4,10 @@
 import { npubEncode } from 'nostr-tools/nip19'
 import type { Nip46Connection } from '#shared/types/bunker'
 import { kindLabel, relativeTime, revokedReason } from '~/utils/connections'
+import { NoReferrerImg } from '~/utils/no-referrer-img'
 
+// Third-party pictures load with no referrer, the policy set before src (#75).
+const avatarAs = { img: NoReferrerImg }
 const props = defineProps<{
   connection: Nip46Connection
   /** Whom it is for, shown to administrators. */
@@ -35,6 +38,7 @@ function revoke() {
     <UAvatar
       :src="image"
       :alt="name"
+      :as="avatarAs"
       icon="i-lucide-app-window"
       size="md"
     />

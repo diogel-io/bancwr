@@ -7,28 +7,14 @@ import { finalizeEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
 import { continueAsKey, installExtension } from './extension'
 import { anonymousTest, expect } from './fixtures'
-import { generateNsec, npubFromNsec } from './keys'
-import { cookieJarPost, signInAs } from './sign-in'
-import { baseUrl } from './stack'
+import { npubFromNsec } from './keys'
+import { newMember } from './members'
 
 const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
 const pool = new SimplePool()
 
 // A 1x1 PNG, enough for the browser to load it.
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
-
-/** A new key registered as a user by the administrator, with no profile anywhere yet. */
-async function newMember(): Promise<string> {
-  const nsec = generateNsec()
-  const jar = cookieJarPost()
-  await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), jar.post)
-  const added = await jar.post(`${baseUrl()}/api/bunker/team`, {
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: `avatar ${Date.now()}`, pubkey: npubFromNsec(nsec), role: 'user' })
-  })
-  expect(added.status).toBe(200)
-  return nsec
-}
 
 async function seedProfile(nsec: string, content: Record<string, unknown>) {
   const event = finalizeEvent({ kind: 0, created_at: Math.floor(Date.now() / 1000) - 60, tags: [], content: JSON.stringify(content) }, decode(nsec).data as Uint8Array)

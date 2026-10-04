@@ -205,6 +205,25 @@ Node 20; the rule stands for those reasons, not for a missing API.
 - The bunker's own key never reaches the frontend. A signed-in user's events are signed through
   NIP-07 or NIP-46 with their key: `useUserSigner()` (below).
 
+### Third-party hosts get no Referer
+
+Profile pictures and banners, follow and connected-app avatars, NIP-05 lookups and Blossom uploads
+all reach hosts Bancwr doesn't run. None of them is told which Bancwr is calling (#75):
+
+- **Every response carries `Referrer-Policy: same-origin`** (`routeRules` in `nuxt.config.ts`),
+  with a matching `<meta name="referrer">` in case a proxy drops the header. Cross-origin requests
+  send no `Referer`; Bancwr's own requests keep theirs.
+- **Third-party images also set it themselves**, through `NoReferrerImg`
+  (`app/utils/no-referrer-img.ts`): `<NoReferrerImg :src>` for a plain image, and
+  `:as="{ img: NoReferrerImg }"` on a `UAvatar`. A `referrerpolicy` attribute alone isn't enough:
+  the browser starts the request when `src` is set, and `UAvatar` sets `src` before the attributes
+  it passes through, so the policy arrived too late (#72).
+- **`tests/referrer-policy.spec.ts` reads every template** and fails on a `UAvatar` or `<img>` with
+  a dynamic `src` that skips `NoReferrerImg`. A local image (the logo, the QR code) goes on its
+  allowlist with the reason.
+
+The image hosts still see the viewer's IP address, as with any picture loaded from the web.
+
 ### Signing in: confirming the key
 
 `SignerConnect` asks the signer which key it holds and shows it (name and picture from its kind 0
