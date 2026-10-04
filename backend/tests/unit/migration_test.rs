@@ -143,3 +143,75 @@ fn a_database_from_before_31_gains_revoked_by() {
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert!(db.list_nip46_connections(None).unwrap().is_empty());
 }
+
+/// A database as it was before diogel-io/workspace#38: at version 4, `signing_logs` without the
+/// member columns, holding `rows` of (client pubkey, timestamp), and `connections` of
+/// (id, client pubkey, member, connected_at, revoked_at).
+fn database_before_38(connections: &[(&str, &str, &str, &str, Option<&str>)], rows: &[(&str, &str)]) -> NamedTempFile {
+    let file = NamedTempFile::new().unwrap();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE signing_logs DROP COLUMN member_pubkey;
+         ALTER TABLE signing_logs DROP COLUMN connection_id;
+         PRAGMA user_version = 4;",
+    )
+    .unwrap();
+    for (id, client, member, connected_at, revoked_at) in connections {
+        conn.execute(
+            "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at)
+             VALUES (?1, ?1, ?2, ?2, 'x', 'sign_event:1', ?3, ?3)",
+            params![format!("token-{}", id), member, connected_at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nip46_connections (id, client_pubkey, token_id, for_pubkey, perms, connected_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, 'sign_event:1', ?5, ?6)",
+            params![id, client, format!("token-{}", id), member, connected_at, revoked_at],
+        )
+        .unwrap();
+    }
+    for (i, (client, timestamp)) in rows.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO signing_logs (id, event_id, pubkey, event_kind, timestamp) VALUES (?1, ?2, ?3, 1, ?4)",
+            params![format!("00000000-0000-4000-8000-00000000000{}", i), format!("event-{}", i), client, timestamp],
+        )
+        .unwrap();
+    }
+    file
+}
+
+#[test]
+fn a_database_from_before_38_attributes_its_log_to_the_connection_active_at_each_signature() {
+    let client = Keys::generate().public_key().to_hex();
+    let alice = Keys::generate().public_key().to_hex();
+    let bob = Keys::generate().public_key().to_hex();
+    // The same client key connected for Alice, was revoked, then connected for Bob.
+    let file = database_before_38(
+        &[
+            ("c-alice", &client, &alice, "2026-01-01T00:00:00+00:00", Some("2026-01-02T00:00:00.500+00:00")),
+            ("c-bob", &client, &bob, "2026-01-03T00:00:00+00:00", None),
+        ],
+        &[
+            (&client, "2026-01-01T12:00:00.123456789+00:00"), // Alice's connection
+            (&client, "2026-01-04T00:00:00+00:00"),           // Bob's
+            (&client, "2026-01-02T12:00:00+00:00"),           // between the two: neither
+            (&Keys::generate().public_key().to_hex(), "2026-01-01T12:00:00+00:00"), // an unknown client
+        ],
+    );
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+
+    let by_event = |event: &str| db.get_recent_logs(10).unwrap().into_iter().find(|l| l.event_id == event).unwrap();
+    let alices = by_event("event-0");
+    assert_eq!(alices.member_pubkey.as_deref(), Some(alice.as_str()));
+    assert_eq!(alices.connection_id.as_deref(), Some("c-alice"));
+    let bobs = by_event("event-1");
+    assert_eq!(bobs.member_pubkey.as_deref(), Some(bob.as_str()));
+    assert_eq!(bobs.connection_id.as_deref(), Some("c-bob"));
+    for unattributed in ["event-2", "event-3"] {
+        let log = by_event(unattributed);
+        assert_eq!((log.member_pubkey, log.connection_id), (None, None), "{}", unattributed);
+    }
+}

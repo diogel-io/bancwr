@@ -20,6 +20,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("store pubkeys as lowercase hex", canonicalise_pubkeys),
     ("persist NIP-46 connection tokens and connections", nip46_connections),
     ("record who revoked a NIP-46 connection", nip46_revoked_by),
+    ("record the member and connection a signature was for", signing_log_member),
 ];
 
 /// The version a fully migrated database is at.
@@ -148,5 +149,43 @@ fn nip46_connections(tx: &Transaction) -> anyhow::Result<()> {
 ///    ended any other way (logout, replaced, member removed).
 fn nip46_revoked_by(tx: &Transaction) -> anyhow::Result<()> {
     tx.execute_batch("ALTER TABLE nip46_connections ADD COLUMN revoked_by TEXT;")?;
+    Ok(())
+}
+
+/// 5. The member and connection each signature was for (diogel-io/workspace#38). `pubkey` has
+///    always held the NIP-46 client's key, which the console showed as the member. Existing rows
+///    are attributed to the connection that client held when it signed: connected at or before the
+///    signature, and not revoked before it. A row no connection accounts for keeps NULLs.
+fn signing_log_member(tx: &Transaction) -> anyhow::Result<()> {
+    // Added only when missing, so a database whose version was rewound re-runs this cleanly.
+    let columns: Vec<String> = tx
+        .prepare("SELECT name FROM pragma_table_info('signing_logs')")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for column in ["member_pubkey", "connection_id"] {
+        if !columns.iter().any(|c| c == column) {
+            tx.execute_batch(&format!("ALTER TABLE signing_logs ADD COLUMN {} TEXT;", column))?;
+        }
+    }
+    // julianday, not text comparison: RFC 3339 timestamps vary in their fractional digits.
+    tx.execute_batch(
+        "UPDATE signing_logs SET connection_id = (
+             SELECT c.id FROM nip46_connections c
+             WHERE c.client_pubkey = signing_logs.pubkey
+               AND julianday(c.connected_at) <= julianday(signing_logs.timestamp)
+               AND (c.revoked_at IS NULL OR julianday(c.revoked_at) >= julianday(signing_logs.timestamp))
+             ORDER BY julianday(c.connected_at) DESC
+             LIMIT 1
+         );
+         UPDATE signing_logs SET member_pubkey = (
+             SELECT c.for_pubkey FROM nip46_connections c WHERE c.id = signing_logs.connection_id
+         )
+         WHERE connection_id IS NOT NULL;",
+    )?;
+    let unattributed: i64 =
+        tx.query_row("SELECT count(*) FROM signing_logs WHERE connection_id IS NULL", [], |row| row.get(0))?;
+    if unattributed > 0 {
+        warn!("{} signing log entries could not be attributed to a NIP-46 connection; they show no member", unattributed);
+    }
     Ok(())
 }

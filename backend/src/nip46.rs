@@ -6,7 +6,7 @@
 //! intersected with what the client asked for. Every request after `connect` needs an active
 //! connection whose member is still in the vault. Clients sign as the bunker's key: "for a member"
 //! is attribution and accountability, not a separate key.
-use crate::db::{ClientMetadata, Database, RedeemRefusal};
+use crate::db::{ClientMetadata, Database, Nip46Connection, RedeemRefusal};
 use crate::signer::Signer;
 use chrono::Utc;
 use nostr::hashes::{sha256, Hash};
@@ -91,7 +91,7 @@ impl Nip46Handler {
         };
 
         match request.method.as_str() {
-            "sign_event" => self.handle_sign_event(request, client_pubkey, &connection.id, &connection.perms).await,
+            "sign_event" => self.handle_sign_event(request, client_pubkey, &connection).await,
             "get_public_key" => Nip46Response::ok(request.id, self.signer.read().await.public_key_hex()),
             "ping" => Nip46Response::ok(request.id, "pong"),
             // The bunker's relays do not change at runtime.
@@ -148,7 +148,7 @@ impl Nip46Handler {
     }
 
     /// sign_event: only kinds the connection was granted.
-    async fn handle_sign_event(&self, request: Nip46Request, client_pubkey: PublicKey, connection_id: &str, perms: &[String]) -> Nip46Response {
+    async fn handle_sign_event(&self, request: Nip46Request, client_pubkey: PublicKey, connection: &Nip46Connection) -> Nip46Response {
         let Some(unsigned_event_json) = request.params.first() else {
             return Nip46Response::err(request.id, "Missing event to sign");
         };
@@ -170,17 +170,25 @@ impl Nip46Handler {
             Err(e) => return Nip46Response::err(request.id, format!("Invalid event JSON: {}", e)),
         };
         let kind = unsigned_event.kind.as_u16();
-        if !perms.contains(&sign_permission(kind)) {
+        if !connection.perms.contains(&sign_permission(kind)) {
             return Nip46Response::err(request.id, format!("Forbidden: this connection may not sign kind {}", kind));
         }
 
         match self.signer.read().await.sign_event(unsigned_event).await {
             Ok(signed_event) => {
                 let now = Utc::now();
-                if let Err(e) = self.db.touch_nip46_connection(connection_id, now) {
+                if let Err(e) = self.db.touch_nip46_connection(&connection.id, now) {
                     warn!("Failed to record NIP-46 connection use: {}", e);
                 }
-                if let Err(e) = self.db.log_signing_event(&signed_event.id.to_hex(), &client_pubkey.to_hex(), kind as u32, now) {
+                // The client asked; the member is who the connection signs for (diogel-io/workspace#38).
+                if let Err(e) = self.db.log_signing_event(
+                    &signed_event.id.to_hex(),
+                    &client_pubkey.to_hex(),
+                    Some(&connection.for_pubkey),
+                    Some(&connection.id),
+                    kind as u32,
+                    now,
+                ) {
                     warn!("Failed to log signing event: {}", e);
                 }
                 Nip46Response::ok(request.id, signed_event.as_json())

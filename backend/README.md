@@ -172,12 +172,23 @@ Response:
   {
     "id": "...",
     "event_id": "...",
-    "pubkey": "npub1...",
+    "pubkey": "<hex>",
     "event_kind": 1,
-    "timestamp": "2024-01-01T12:00:00Z"
+    "timestamp": "2024-01-01T12:00:00Z",
+    "member_pubkey": "<hex>",
+    "member_name": "Alice",
+    "connection_id": "..."
   }
 ]
 ```
+
+- `pubkey` is the key that asked for the signature: the NIP-46 app's key, not the member's.
+- `member_pubkey` is the vault member the app's connection was made for, and `connection_id` the
+  connection that signed (diogel-io/workspace#38). Entries logged before that change are
+  attributed at upgrade to the connection the app held when it signed; any no connection accounts
+  for have both as `null`.
+- `member_name` is that member's name, read when the log is, so it is `null` once they have been
+  removed.
 
 ## NIP-46 Remote Signing
 The bunker supports the NIP-46 remote signing protocol (read at nips commit `0046368a`). When
