@@ -215,3 +215,36 @@ fn a_database_from_before_38_attributes_its_log_to_the_connection_active_at_each
         assert_eq!((log.member_pubkey, log.connection_id), (None, None), "{}", unattributed);
     }
 }
+
+#[test]
+fn a_database_from_before_78_gains_the_bunker_relays_table() {
+    // As master left it before #78: at version 5, without `bunker_relays`.
+    let file = NamedTempFile::new().unwrap();
+    {
+        drop(Database::new(file.path().to_str().unwrap()).unwrap());
+        let conn = Connection::open(file.path()).unwrap();
+        conn.execute_batch("DROP TABLE bunker_relays; PRAGMA user_version = 5;").unwrap();
+    }
+    assert_eq!(user_version(&file), 5);
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert!(db.list_bunker_relays().unwrap().is_empty());
+}
+
+#[test]
+fn rerunning_the_bunker_relays_migration_keeps_the_stored_list() {
+    // A database whose version was rewound past #78 re-runs migration 6: it must neither fail on
+    // the existing table nor empty it.
+    let file = NamedTempFile::new().unwrap();
+    {
+        let db = Database::new(file.path().to_str().unwrap()).unwrap();
+        db.replace_bunker_relays(&["wss://a.example".to_string()], "admin", chrono::Utc::now()).unwrap();
+        drop(db);
+        Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 5;").unwrap();
+    }
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(db.list_bunker_relays().unwrap().iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://a.example"]);
+}

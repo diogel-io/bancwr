@@ -153,3 +153,25 @@ export interface IssueTokenResponse {
   kinds: number[]
   expires_at: string
 }
+
+/** Where the bunker's own relays come from (#78): `environment` is NIP46_RELAYS, read-only here. */
+export type RelaySource = 'environment' | 'console'
+
+/** GET /api/bunker/relays, and the answer to PUT (administrators). */
+export interface BunkerRelays {
+  source: RelaySource
+  /** NIP46_ENABLED: while on, a saved list needs at least one relay. */
+  nip46_enabled: boolean
+  /** In order, as they appear in a bunker:// string, with whether each is connected now. */
+  relays: RelayHealth[]
+}
+
+/** PUT /api/bunker/relays: the whole list, replacing the one saved. */
+export interface ReplaceBunkerRelaysRequest {
+  relays: string[]
+}
+
+/** The bunker's relay limits (#78), as backend/src/bunker_relays.rs enforces them. */
+export const MAX_BUNKER_RELAYS = 6
+/** Fewer than this is allowed, but every connected app then depends on one relay. */
+export const ADVISED_MIN_BUNKER_RELAYS = 2

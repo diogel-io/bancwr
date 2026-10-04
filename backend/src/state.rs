@@ -4,6 +4,7 @@ use crate::signer::Signer;
 use crate::db::Database;
 use crate::nip46::Nip46Handler;
 use crate::config::Config;
+use crate::relay::RelayHandle;
 use nostr_relay_pool::RelayPool;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +19,12 @@ pub struct AppState {
     http_request_count: Arc<AtomicU64>,
     /// The NIP-46 relay pool, once the relay client has started, for the health check (#27).
     relay_pool: Arc<RwLock<Option<RelayPool>>>,
+    /// The running relay client's handle, once it has started, so a relay list saved in the
+    /// console applies at once (#78). None while NIP-46 is off.
+    relay_handle: Arc<RwLock<Option<RelayHandle>>>,
+    /// Held across a relay list's save and its application, so two saves apply in the order
+    /// they were stored (#78).
+    pub relays_update: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -34,6 +41,8 @@ impl AppState {
             config,
             http_request_count: Arc::new(AtomicU64::new(0)),
             relay_pool: Arc::new(RwLock::new(None)),
+            relay_handle: Arc::new(RwLock::new(None)),
+            relays_update: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -52,5 +61,13 @@ impl AppState {
 
     pub async fn relay_pool(&self) -> Option<RelayPool> {
         self.relay_pool.read().await.clone()
+    }
+
+    pub async fn set_relay_handle(&self, handle: RelayHandle) {
+        *self.relay_handle.write().await = Some(handle);
+    }
+
+    pub async fn relay_handle(&self) -> Option<RelayHandle> {
+        self.relay_handle.read().await.clone()
     }
 }

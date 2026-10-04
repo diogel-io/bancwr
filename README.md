@@ -119,6 +119,15 @@ kinds it may sign; every app signs as the bunker's key, never as the member's. C
 across restarts and can be revoked. See "Connecting an app" in
 [`backend/README.md`](backend/README.md#connecting-an-app-53).
 
+Apps reach the bunker through its relays, which every `bunker://` string carries. After the first
+start, an administrator chooses them on the **Config** page under **Bunker relays**: from a search
+of known relays (NIP-66 reports from relay monitors) or by address, between one and six, and two or
+more is advised. They are kept in the bunker's database, never published to Nostr, and apply at
+once, without a restart. `NIP46_RELAYS`, when set, overrides them: the bunker then uses that list
+and the Config page shows it read-only. See "Bunker relays" in
+[`backend/README.md`](backend/README.md#bunker-relays-78). These are not members' own relay lists,
+which each member edits on the **Relays** page.
+
 ### HTTPS
 
 Sign-in needs HTTPS. The session cookie is `Secure`, so browsers only send it over HTTPS, or to

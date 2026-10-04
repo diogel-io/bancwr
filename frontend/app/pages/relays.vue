@@ -315,8 +315,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
           <template #description>
             <p>
               This bunker reaches NIP-46 clients through {{ bunkerRelays.map(r => host(r.url)).join(', ') }}.
-              These are operator settings (<code>NIP46_RELAYS</code>), separate from your list:
-              the bunker signs as itself, never as you.
+              An administrator sets these under Config (or with <code>NIP46_RELAYS</code>), separate
+              from your list: the bunker signs as itself, never as you.
             </p>
           </template>
         </UAlert>

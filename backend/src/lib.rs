@@ -14,3 +14,5 @@ pub mod proxy_auth;
 pub mod healthcheck;
 pub mod health;
 pub mod connections_api;
+pub mod bunker_relays;
+pub mod relays_api;

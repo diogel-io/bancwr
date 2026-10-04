@@ -94,7 +94,9 @@ impl Nip46Handler {
             "sign_event" => self.handle_sign_event(request, client_pubkey, &connection).await,
             "get_public_key" => Nip46Response::ok(request.id, self.signer.read().await.public_key_hex()),
             "ping" => Nip46Response::ok(request.id, "pong"),
-            // The bunker's relays do not change at runtime.
+            // No relay change is proposed. An administrator can change the bunker's relays (#78),
+            // but moving connected apps to the new list is out of its scope: an app on a removed
+            // relay reconnects with a new bunker:// string.
             "switch_relays" => Nip46Response::ok(request.id, "null"),
             "logout" => {
                 // NIP-46: reply "ack", and remove the session. The reply is built first; the

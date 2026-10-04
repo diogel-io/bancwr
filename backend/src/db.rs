@@ -699,3 +699,58 @@ impl Database {
         Ok(count as usize)
     }
 }
+
+/// One of the bunker's own NIP-46 relays, as stored by the console (#78).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BunkerRelay {
+    /// Normalised (`bunker_relays::normalise_relay_url`).
+    pub url: String,
+    /// Its place in the list, from 0: the order of the relays in a `bunker://` string.
+    pub position: i64,
+    /// The administrator who first added it (hex); empty when the router ran without the guard.
+    pub added_by: String,
+    pub added_at: DateTime<Utc>,
+}
+
+impl Database {
+    /// The stored relay list, in the administrator's order (#78).
+    pub fn list_bunker_relays(&self) -> anyhow::Result<Vec<BunkerRelay>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT url, position, added_by, added_at FROM bunker_relays ORDER BY position ASC")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(BunkerRelay {
+                    url: row.get(0)?,
+                    position: row.get(1)?,
+                    added_by: row.get(2)?,
+                    added_at: parse_time(&row.get::<_, String>(3)?)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Replaces the stored list with `urls`, in that order, in one transaction, so the list is
+    /// always saved whole (#78). A relay already listed keeps who added it and when; a new one is
+    /// recorded as added by `by` at `now`. `urls` must already be validated and normalised
+    /// (`bunker_relays::validate`): the table refuses a duplicate, which fails the whole save.
+    pub fn replace_bunker_relays(&self, urls: &[String], by: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let existing: std::collections::HashMap<String, (String, String)> = {
+            let mut stmt = tx.prepare("SELECT url, added_by, added_at FROM bunker_relays")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?))))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        tx.execute("DELETE FROM bunker_relays", [])?;
+        for (position, url) in urls.iter().enumerate() {
+            let (added_by, added_at) = existing.get(url).cloned().unwrap_or_else(|| (by.to_string(), now.to_rfc3339()));
+            tx.execute(
+                "INSERT INTO bunker_relays (url, position, added_by, added_at) VALUES (?1, ?2, ?3, ?4)",
+                params![url, position as i64, added_by, added_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}

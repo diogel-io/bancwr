@@ -21,6 +21,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("persist NIP-46 connection tokens and connections", nip46_connections),
     ("record who revoked a NIP-46 connection", nip46_revoked_by),
     ("record the member and connection a signature was for", signing_log_member),
+    ("store the bunker's own NIP-46 relays", bunker_relays),
 ];
 
 /// The version a fully migrated database is at.
@@ -187,5 +188,21 @@ fn signing_log_member(tx: &Transaction) -> anyhow::Result<()> {
     if unattributed > 0 {
         warn!("{} signing log entries could not be attributed to a NIP-46 connection; they show no member", unattributed);
     }
+    Ok(())
+}
+
+/// 6. The bunker's own NIP-46 relays (#78), as an administrator sets them in the console: kept
+///    here, never published to Nostr, and in force unless NIP46_RELAYS overrides them. `position`
+///    keeps the administrator's order, which is the order of the relays in a `bunker://` string.
+///    `IF NOT EXISTS`, so a database whose version was rewound re-runs this cleanly.
+fn bunker_relays(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS bunker_relays (
+            url TEXT PRIMARY KEY,
+            position INTEGER NOT NULL,
+            added_by TEXT NOT NULL,
+            added_at TEXT NOT NULL
+        );",
+    )?;
     Ok(())
 }

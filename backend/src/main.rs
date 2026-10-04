@@ -1,3 +1,4 @@
+use bunker::bunker_relays::{self, EffectiveRelays, RelaySource};
 use bunker::config::Config;
 use bunker::db::{Database, SeedOutcome};
 use bunker::relay::RelayClient;
@@ -79,15 +80,21 @@ async fn serve() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("HTTP server error: {}", e))
     });
 
-    // Start NIP-46 relay client (if enabled)
+    // Start NIP-46 relay client (if enabled), on the relays in force (#78): NIP46_RELAYS when set,
+    // otherwise the list saved in the console. It starts with none too, so the first list an
+    // administrator saves takes effect without a restart.
     let relay_task = if config.nip46_enabled {
         let relay_state = state.clone();
         Some(tokio::spawn(async move {
             info!("Starting NIP-46 relay client...");
-            let client = RelayClient::new(
-                config.relay_urls,
-                relay_state,
-            ).await?;
+            let client = {
+                // Held until the client's handle is in the state, so a list saved meanwhile is not
+                // stored without being applied.
+                let _update = relay_state.relays_update.lock().await;
+                let relays = bunker_relays::effective_relays(&relay_state).await?;
+                log_relay_source(&relays, &relay_state.db);
+                RelayClient::new(relays.urls, relay_state.clone()).await?
+            };
             client.run().await
         }))
     } else {
@@ -118,4 +125,27 @@ async fn serve() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Says which relays the bunker starts on, and where they come from (#78).
+fn log_relay_source(relays: &EffectiveRelays, db: &Database) {
+    match relays.source {
+        RelaySource::Environment => {
+            info!("NIP-46 relays from NIP46_RELAYS: {}", relays.urls.join(", "));
+            match db.list_bunker_relays() {
+                Ok(stored) if !stored.is_empty() => warn!(
+                    "NIP46_RELAYS is set, so the {} relays saved in the console are ignored. Unset it \
+                     and restart to use them.",
+                    stored.len()
+                ),
+                Ok(_) => {}
+                Err(e) => warn!("Could not read the relays saved in the console: {}", e),
+            }
+        }
+        RelaySource::Console if relays.urls.is_empty() => warn!(
+            "NIP-46 is on but no relays are configured, so no app can reach the bunker yet. An \
+             administrator sets them under Config, Bunker relays, or set NIP46_RELAYS."
+        ),
+        RelaySource::Console => info!("NIP-46 relays from the console: {}", relays.urls.join(", ")),
+    }
 }

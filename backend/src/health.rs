@@ -21,6 +21,9 @@ pub const DATABASE: &str = "database";
 pub const RELAYS: &str = "relays";
 pub const ADMINISTRATOR: &str = "administrator";
 
+/// NIP-46 on with no relays from either source (#78).
+pub const NO_RELAYS: &str = "NIP-46 is on but no relays are configured. An administrator sets them under Config, Bunker relays, or with NIP46_RELAYS.";
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CheckStatus {
@@ -142,7 +145,7 @@ pub fn relay_check(enabled: bool, configured: &[String], connected: &HashSet<Rel
         return Check::new(RELAYS, CheckStatus::Disabled, "NIP-46 is turned off (NIP46_ENABLED), so no relays are used.");
     }
     if configured.is_empty() {
-        return Check::new(RELAYS, CheckStatus::Fail, "NIP-46 is on but no relays are configured (NIP46_RELAYS).");
+        return Check::new(RELAYS, CheckStatus::Fail, NO_RELAYS);
     }
 
     let relays: Vec<RelayHealth> = configured
@@ -165,13 +168,9 @@ pub fn relay_check(enabled: bool, configured: &[String], connected: &HashSet<Rel
     Check { relays: Some(relays), ..Check::new(RELAYS, status, detail) }
 }
 
-/// Reads which relays the NIP-46 pool reports connected. Connecting or pending counts as not
-/// connected: the bunker cannot sign through them yet.
-pub async fn check_relays(state: &AppState) -> Check {
-    let (enabled, configured) = {
-        let config = state.config.read().await;
-        (config.nip46_enabled, config.relay_urls.clone())
-    };
+/// The relays the NIP-46 pool reports connected. Connecting or pending counts as not connected:
+/// the bunker cannot sign through them yet. Empty before the relay client starts.
+pub async fn connected_relays(state: &AppState) -> HashSet<RelayUrl> {
     let mut connected = HashSet::new();
     if let Some(pool) = state.relay_pool().await {
         for (url, relay) in pool.relays().await {
@@ -180,5 +179,18 @@ pub async fn check_relays(state: &AppState) -> Check {
             }
         }
     }
-    relay_check(enabled, &configured, &connected)
+    connected
+}
+
+/// The relay check over the relays in force (#78): `NIP46_RELAYS`, or the console's list.
+pub async fn check_relays(state: &AppState) -> Check {
+    let enabled = state.config.read().await.nip46_enabled;
+    let configured = match crate::bunker_relays::effective_relays(state).await {
+        Ok(relays) => relays.urls,
+        Err(error) => {
+            warn!("Health check: could not read the bunker's relays: {}", error);
+            return Check::new(RELAYS, CheckStatus::Fail, "Could not read the bunker's relays. See the bunker log.");
+        }
+    };
+    relay_check(enabled, &configured, &connected_relays(state).await)
 }
