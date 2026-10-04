@@ -324,3 +324,42 @@ fn an_unattributed_log_entry_has_no_member() {
     let log = &db.get_recent_logs(10).unwrap()[0];
     assert_eq!((log.member_pubkey.as_ref(), log.member_name.as_ref(), log.connection_id.as_ref()), (None, None, None));
 }
+
+// The bunker's own relays (#78): saved whole, in the administrator's order.
+#[test]
+fn bunker_relays_are_replaced_whole_and_listed_in_order() {
+    let db = Database::new(":memory:").unwrap();
+    assert!(db.list_bunker_relays().unwrap().is_empty());
+
+    let first = Utc::now() - chrono::Duration::hours(1);
+    let urls = |list: &[&str]| list.iter().map(|u| u.to_string()).collect::<Vec<_>>();
+    db.replace_bunker_relays(&urls(&["wss://c.example", "wss://a.example", "wss://b.example"]), "alice", first).unwrap();
+    let listed = db.list_bunker_relays().unwrap();
+    assert_eq!(listed.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://c.example", "wss://a.example", "wss://b.example"]);
+    assert_eq!(listed.iter().map(|r| r.position).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert!(listed.iter().all(|r| r.added_by == "alice"));
+
+    // Reordered, one dropped, one added: a relay kept keeps who added it and when.
+    let later = Utc::now();
+    db.replace_bunker_relays(&urls(&["wss://b.example", "wss://d.example", "wss://c.example"]), "bob", later).unwrap();
+    let listed = db.list_bunker_relays().unwrap();
+    assert_eq!(listed.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://b.example", "wss://d.example", "wss://c.example"]);
+    let by_url = |url: &str| listed.iter().find(|r| r.url == url).unwrap().clone();
+    assert_eq!(by_url("wss://b.example").added_by, "alice");
+    assert_eq!(by_url("wss://b.example").added_at.timestamp(), first.timestamp());
+    assert_eq!(by_url("wss://d.example").added_by, "bob");
+
+    db.replace_bunker_relays(&[], "bob", Utc::now()).unwrap();
+    assert!(db.list_bunker_relays().unwrap().is_empty());
+}
+
+#[test]
+fn a_failed_bunker_relays_save_changes_nothing() {
+    let db = Database::new(":memory:").unwrap();
+    db.replace_bunker_relays(&["wss://a.example".to_string()], "alice", Utc::now()).unwrap();
+
+    // A duplicate breaks the primary key part-way through: the transaction keeps the old list.
+    let duplicate = vec!["wss://b.example".to_string(), "wss://b.example".to_string()];
+    assert!(db.replace_bunker_relays(&duplicate, "alice", Utc::now()).is_err());
+    assert_eq!(db.list_bunker_relays().unwrap().iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://a.example"]);
+}

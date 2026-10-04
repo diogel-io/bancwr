@@ -58,6 +58,7 @@ the vault on every request:
 | `GET /api/bunker/status` | yes | yes | yes | yes |
 | `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | | |
 | `GET`, `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
+| `GET`, `PUT /api/bunker/relays` | yes | | | |
 | `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | | yes |
 | `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
 | `GET /api/bunker/connections` | all | own | own | |
@@ -197,12 +198,69 @@ kind 24133 events encrypted with NIP-44 (or NIP-04, which older clients still se
 answered in the scheme it used). It answers relays' NIP-42 AUTH challenges with its key.
 
 ### Configuration
-Enable NIP-46 and specify relays in your `.env` file or environment variables:
+Enable NIP-46 in your `.env` file or environment variables:
 
 ```env
 NIP46_ENABLED=true
-NIP46_RELAYS=wss://relay.nsecbunker.com,wss://relay.damus.io
 ```
+
+Then choose the bunker's relays in the console (see [Bunker relays](#bunker-relays-78)), or pin
+them with `NIP46_RELAYS`, which overrides the console:
+
+```env
+NIP46_RELAYS=wss://relay.nsec.app,wss://relay.damus.io
+```
+
+With NIP-46 on and no relays from either, the bunker still starts and listens for a list to be
+saved; until then the relay check is red and no token can be issued.
+
+### Bunker relays (#78)
+The relays the bunker reaches NIP-46 apps through, and that every `bunker://` string carries. They
+are the bunker's own, kept in its database (`bunker_relays`) and never published to Nostr; members'
+NIP-65 relay lists are separate.
+
+Which list is in force:
+
+- **`NIP46_RELAYS`, when set and non-empty, always decides** (`source: "environment"`). A list saved
+  in the console is then ignored (the bunker logs this at startup), and cannot be changed over the
+  API. Unset the variable and restart to manage the relays in the console. There is no seeding:
+  the variable's relays are never copied into the database.
+- Otherwise, **the list an administrator saved** (`source: "console"`).
+
+Token `bunker://` strings, the `relays` health check and the running relay client all use the list
+in force.
+
+`GET /api/bunker/relays` (administrators) returns it in order, with whether each relay is connected
+now:
+
+```json
+{
+  "source": "console",
+  "nip46_enabled": true,
+  "relays": [
+    { "url": "wss://relay.nsec.app", "connected": true },
+    { "url": "wss://relay.damus.io", "connected": false }
+  ]
+}
+```
+
+`PUT /api/bunker/relays` (administrators) with `{ "relays": ["wss://…", …] }` replaces the saved
+list whole, in that order, applies it to the running relay client at once (new relays are added,
+connected and subscribed to NIP-46 requests; dropped ones are disconnected), and answers as `GET`
+does. Addresses are normalised (host lowercased, a trailing slash on an empty path dropped). It is
+refused, with `{ "error", "message" }`, and nothing saved:
+
+| Status | `error` | When |
+|--------|---------|------|
+| 409 | `relays_from_environment` | `NIP46_RELAYS` is set |
+| 400 | `invalid_relay_url` | not `wss://`, or `ws://` other than `localhost`, `127.0.0.1` or `[::1]`; credentials or a `#fragment`; over 255 characters |
+| 400 | `duplicate_relay` | the same relay twice, after normalising |
+| 400 | `too_many_relays` | more than 6 |
+| 400 | `no_relays` | an empty list while NIP-46 is on |
+
+An app learned the bunker's relays from its `bunker://` string. Removing a relay it uses cuts it off
+until it reconnects with a new string, which always carries the current list; the console warns
+before such a save.
 
 ### Connecting an app (#53)
 Turning NIP-46 on connects nothing by itself: an app connects only with a **connection token** an

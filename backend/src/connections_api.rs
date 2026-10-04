@@ -29,13 +29,13 @@ pub const DEFAULT_TOKEN_HOURS: u32 = 24;
 pub const MAX_TOKEN_HOURS: u32 = 24 * 7;
 pub const MAX_LABEL_CHARS: usize = 100;
 
-type ApiError = (StatusCode, Json<Value>);
+pub(crate) type ApiError = (StatusCode, Json<Value>);
 
-fn api_error(status: StatusCode, error: &str, message: &str) -> ApiError {
+pub(crate) fn api_error(status: StatusCode, error: &str, message: &str) -> ApiError {
     (status, Json(json!({ "error": error, "message": message })))
 }
 
-fn database_error(e: anyhow::Error) -> ApiError {
+pub(crate) fn database_error(e: anyhow::Error) -> ApiError {
     error!("Database error in the connection routes: {}", e);
     api_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error", "Database error")
 }
@@ -43,7 +43,7 @@ fn database_error(e: anyhow::Error) -> ApiError {
 /// The caller's key and whether they administer. Without the guard (an unauthenticated test
 /// router; a running bunker always has it, #11) the caller is treated as an administrator, as the
 /// other administration routes are then open too.
-fn caller(caller: Option<Extension<Caller>>) -> (String, bool) {
+pub(crate) fn caller(caller: Option<Extension<Caller>>) -> (String, bool) {
     match caller.map(|Extension(c)| c) {
         Some(Caller::Member { pubkey, role }) => (pubkey, role == Role::Administrator),
         Some(Caller::Service) => (String::new(), false),
@@ -168,12 +168,16 @@ pub async fn issue_token(
     Json(request): Json<IssueTokenRequest>,
 ) -> Result<Json<IssueTokenResponse>, ApiError> {
     let (caller_pubkey, _) = caller(who);
-    let (enabled, relays) = {
-        let config = state.config.read().await;
-        (config.nip46_enabled, config.relay_urls.clone())
-    };
+    // The relays in force (#78): NIP46_RELAYS, or the list saved in the console. A token always
+    // carries the current list.
+    let enabled = state.config.read().await.nip46_enabled;
+    let relays = crate::bunker_relays::effective_relays(&state).await.map_err(database_error)?.urls;
     if !enabled || relays.is_empty() {
-        return Err(api_error(StatusCode::CONFLICT, "nip46_disabled", "NIP-46 is turned off, or no relays are configured (NIP46_ENABLED, NIP46_RELAYS)."));
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "nip46_disabled",
+            "NIP-46 is turned off (NIP46_ENABLED), or no relays are configured: set them under Config, Bunker relays, or with NIP46_RELAYS.",
+        ));
     }
 
     let label = request.label.trim();

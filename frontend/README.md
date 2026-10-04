@@ -302,9 +302,25 @@ list `/profile` and `/follows` read through, so they use the new list straight a
   indexers, as NIP-65 asks, so relays dropped from the list do not keep the old one.
 - NIP-65's advice (2 to 4 of each) and a missing write relay are shown, not enforced. With no list,
   the page says which relays Bancwr uses instead and offers to start from the defaults.
-- The bunker's own NIP-46 relays (`NIP46_RELAYS`, from `/api/bunker/status`) are shown for
-  context: they are operator settings, and unrelated to the member's list, since the bunker signs
-  only as itself.
+- The bunker's own NIP-46 relays (from `/api/bunker/status`) are shown for context: an
+  administrator sets them under Config (see below), and they are unrelated to the member's list,
+  since the bunker signs only as itself.
+
+### Bunker relays
+
+The Config page's **Bunker relays** section (#78, administrators) sets the relays NIP-46 apps reach
+the bunker through, over `GET` and `PUT /api/bunker/relays` (see `backend/README.md`). They are
+stored by the bunker, never published to Nostr.
+
+- While the bunker's `NIP46_RELAYS` is set, the list is shown read-only, with its live status.
+- Otherwise relays are added by address (the rules above, but `wss://`, or `ws://` on this machine
+  only, as the bunker requires) or from a search, removed, and saved whole; the bunker applies the
+  list at once. One to six relays; fewer than two is warned about. Saving a removal first warns that
+  apps connected through it must reconnect with a new `bunker://` string.
+- The search reads NIP-66 relay discovery reports (kind 30166, `app/utils/relay-discovery.ts`)
+  from the indexer relays, showing each relay's `rtt-open` and whether it requires auth or payment
+  (`R` tags), filtered by address. They are unverified hints from relay monitors. When none
+  answers, a short built-in list is offered instead.
 
 ### Connected apps
 

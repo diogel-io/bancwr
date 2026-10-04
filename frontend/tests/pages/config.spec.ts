@@ -73,4 +73,17 @@ describe('Config page', () => {
 
     expect(component.find('[data-testid="forbidden-notice"]').text()).toContain('Your role no longer allows this page')
   })
+
+  it('shows the bunker\'s own relays below the key (#78), read-only when NIP46_RELAYS sets them', async () => {
+    registerEndpoint('/api/bunker/config', () => fromEnv)
+    registerEndpoint('/api/bunker/relays', () => ({ source: 'environment', nip46_enabled: true, relays: [{ url: 'wss://env.example', connected: true }] }))
+
+    const component = await mountSuspended(Config)
+
+    const section = component.find('[data-testid="bunker-relays-section"]')
+    expect(section.text()).toContain('Bunker relays')
+    expect(section.text()).toContain('wss://env.example')
+    expect(section.find('[data-testid="bunker-relays-read-only"]').exists()).toBe(true)
+    expect(component.findAll('input')).toHaveLength(0)
+  })
 })

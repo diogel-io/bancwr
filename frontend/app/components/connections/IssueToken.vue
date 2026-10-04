@@ -42,7 +42,7 @@ const canIssue = computed(() => !!label.value.trim() && 'kinds' in kinds.value &
 const qr = computed(() => issued.value ? `data:image/svg+xml;utf8,${encodeURIComponent(renderSVG(issued.value.uri, { border: 1 }))}` : '')
 
 const ERRORS: Record<string, string> = {
-  nip46_disabled: 'NIP-46 is turned off on this bunker. Set NIP46_ENABLED=true and NIP46_RELAYS, then restart it.',
+  nip46_disabled: 'NIP-46 is turned off on this bunker (NIP46_ENABLED=true turns it on), or it has no relays: an administrator adds them under Config, Bunker relays.',
   not_registered: 'Connections can only be issued for members of the vault.'
 }
 

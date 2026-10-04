@@ -326,7 +326,9 @@ pub fn create_router(state: AppState) -> Router {
         // Read-only: the signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC (#42).
         .route("/api/bunker/config", get(get_config))
         .route("/api/bunker/team", get(get_team).post(add_team_member))
-        .route("/api/bunker/team/:id", delete(remove_team_member));
+        .route("/api/bunker/team/:id", delete(remove_team_member))
+        // The bunker's own NIP-46 relays (#78): NIP46_RELAYS when set, otherwise the console's list.
+        .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
     let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
     // NIP-46 connections (#53): tokens and revocation for administrators; the list for every

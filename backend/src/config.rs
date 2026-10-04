@@ -39,7 +39,10 @@ pub struct Config {
     pub secret_key: SecretKey,
     pub port: u16,
     pub db_path: String,
-    pub relay_urls: Vec<String>,  // NIP-46 relays to connect to
+    /// NIP46_RELAYS, as given. When non-empty it overrides the relays saved in the console, which
+    /// are then read-only (#78). Read the relays in force with `bunker_relays::effective_relays`,
+    /// never this field alone.
+    pub relay_urls: Vec<String>,
     pub nip46_enabled: bool,      // Enable NIP-46 protocol
     pub nsec_file: Option<String>,
     pub version: String,          // BANCWR_VERSION, reported by /api/bunker/status (#35)
