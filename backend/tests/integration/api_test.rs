@@ -48,7 +48,7 @@ async fn test_api_get_logs() {
     let app = common::spawn(true).await;
     // POST /sign is gone (#25), so the log is arranged directly.
     let pubkey = app.bunker.public_key().to_bech32().unwrap();
-    app.db.log_signing_event("event-for-logs-test", &pubkey, 1, Utc::now()).unwrap();
+    app.db.log_signing_event("event-for-logs-test", &pubkey, None, None, 1, Utc::now()).unwrap();
 
     let res = app.get("/api/bunker/logs").send().await.unwrap();
 
@@ -58,6 +58,8 @@ async fn test_api_get_logs() {
     assert_eq!(logs[0]["event_id"], "event-for-logs-test");
     assert_eq!(logs[0]["event_kind"], 1);
     assert_eq!(logs[0]["pubkey"], pubkey);
+    // Logged without a connection: no member (diogel-io/workspace#38).
+    assert!(logs[0]["member_pubkey"].is_null() && logs[0]["member_name"].is_null() && logs[0]["connection_id"].is_null());
 }
 
 #[tokio::test]

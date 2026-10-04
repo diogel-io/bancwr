@@ -22,7 +22,7 @@ fn test_db_log_signing_event() {
     let kind = 1;
     let now = Utc::now();
 
-    db.log_signing_event(event_id, pubkey, kind, now).expect("Failed to log event");
+    db.log_signing_event(event_id, pubkey, None, None, kind, now).expect("Failed to log event");
 
     let logs = db.get_recent_logs(10).expect("Failed to get logs");
     assert_eq!(logs.len(), 1);
@@ -60,8 +60,8 @@ fn test_db_recent_logs_ordering() {
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     let now = Utc::now();
 
-    db.log_signing_event("event1", "pub1", 1, now).unwrap();
-    db.log_signing_event("event2", "pub2", 2, now + chrono::Duration::seconds(1)).unwrap();
+    db.log_signing_event("event1", "pub1", None, None, 1, now).unwrap();
+    db.log_signing_event("event2", "pub2", None, None, 2, now + chrono::Duration::seconds(1)).unwrap();
 
     let logs = db.get_recent_logs(10).unwrap();
     assert_eq!(logs.len(), 2);
@@ -173,7 +173,7 @@ fn test_db_file_backed_persistence() {
     {
         let db = Database::new(&path).expect("Failed to create file-backed database");
         db.set_config("persist_key", "persist_value").expect("Failed to set config");
-        db.log_signing_event("evt_persist", "pubkey_persist", 1, Utc::now())
+        db.log_signing_event("evt_persist", "pubkey_persist", None, None, 1, Utc::now())
             .expect("Failed to log event");
         db.add_team_member("Bob", &new_pubkey(), Role::Signer)
             .expect("Failed to add member");
@@ -200,9 +200,9 @@ fn test_db_timestamp_ordering_rfc3339() {
     let base = Utc::now();
 
     // Insert out-of-order; expect DESC ordering by RFC3339 text
-    db.log_signing_event("oldest", "pub", 1, base).unwrap();
-    db.log_signing_event("newest", "pub", 1, base + chrono::Duration::seconds(10)).unwrap();
-    db.log_signing_event("middle", "pub", 1, base + chrono::Duration::seconds(5)).unwrap();
+    db.log_signing_event("oldest", "pub", None, None, 1, base).unwrap();
+    db.log_signing_event("newest", "pub", None, None, 1, base + chrono::Duration::seconds(10)).unwrap();
+    db.log_signing_event("middle", "pub", None, None, 1, base + chrono::Duration::seconds(5)).unwrap();
 
     let logs = db.get_recent_logs(10).unwrap();
     assert_eq!(logs[0].event_id, "newest");
@@ -227,10 +227,10 @@ fn test_db_signature_count() {
 
     assert_eq!(db.signature_count().unwrap(), 0);
 
-    db.log_signing_event("e1", "pub", 1, now).unwrap();
+    db.log_signing_event("e1", "pub", None, None, 1, now).unwrap();
     assert_eq!(db.signature_count().unwrap(), 1);
 
-    db.log_signing_event("e2", "pub", 1, now + chrono::Duration::seconds(1)).unwrap();
+    db.log_signing_event("e2", "pub", None, None, 1, now + chrono::Duration::seconds(1)).unwrap();
     assert_eq!(db.signature_count().unwrap(), 2);
 }
 
@@ -293,4 +293,34 @@ fn test_seed_administrator_never_acts_while_an_administrator_exists() {
 
     assert_eq!(db.seed_administrator(&removed_or_other).unwrap(), SeedOutcome::AdministratorExists);
     assert!(db.find_member_by_pubkey(&removed_or_other).unwrap().is_none(), "never re-adds a key");
+}
+
+#[test]
+fn a_log_entry_carries_its_member_and_names_them_while_they_are_in_the_vault() {
+    // diogel-io/workspace#38
+    let db = Database::new(":memory:").unwrap();
+    let member = new_pubkey();
+    let id = db.add_team_member("Alice", &member, Role::User).unwrap();
+    let client = new_pubkey();
+    db.log_signing_event("e1", &client, Some(&member), Some("conn-1"), 1, Utc::now()).unwrap();
+
+    let log = &db.get_recent_logs(10).unwrap()[0];
+    assert_eq!(log.pubkey, client);
+    assert_eq!(log.member_pubkey.as_deref(), Some(member.as_str()));
+    assert_eq!(log.member_name.as_deref(), Some("Alice"));
+    assert_eq!(log.connection_id.as_deref(), Some("conn-1"));
+
+    // Removed: the entry keeps the key, and no longer has a name.
+    db.remove_team_member(id).unwrap();
+    let log = &db.get_recent_logs(10).unwrap()[0];
+    assert_eq!(log.member_pubkey.as_deref(), Some(member.as_str()));
+    assert_eq!(log.member_name, None);
+}
+
+#[test]
+fn an_unattributed_log_entry_has_no_member() {
+    let db = Database::new(":memory:").unwrap();
+    db.log_signing_event("e1", &new_pubkey(), None, None, 1, Utc::now()).unwrap();
+    let log = &db.get_recent_logs(10).unwrap()[0];
+    assert_eq!((log.member_pubkey.as_ref(), log.member_name.as_ref(), log.connection_id.as_ref()), (None, None, None));
 }

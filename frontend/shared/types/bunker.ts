@@ -41,10 +41,16 @@ export interface VersionResponse {
 export interface LogEntry {
   id: string
   event_id: string
+  /** The key that asked for the signature: the NIP-46 app's (hex), not the member's. */
   pubkey: string
   event_kind: number
   /** ISO 8601 */
   timestamp: string
+  /** The vault member the app's connection was made for (hex); null when not known (diogel-io/workspace#38). */
+  member_pubkey?: string | null
+  /** That member's name, while they are still in the vault. */
+  member_name?: string | null
+  connection_id?: string | null
 }
 
 /** GET /api/bunker/metrics */

@@ -306,3 +306,20 @@ async fn a_signer_may_revoke_connections_made_for_them() {
     let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/{}", mine[0].id), &hex).send().await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn the_log_names_the_member_a_signature_was_for_not_the_app() {
+    // diogel-io/workspace#38: the log used to show the client's key as the member.
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let alice = app.register(Role::User);
+    let client = connect_for(&app, &alice).await;
+    assert!(sign_as(&app, &client).await.result.is_some());
+
+    let connection_id = connections(&app, &alice.public_key().to_hex()).await[0].id.clone();
+    let logs: Vec<Value> = app.get("/api/bunker/logs").send().await.unwrap().json().await.unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0]["pubkey"], client.public_key().to_hex());
+    assert_eq!(logs[0]["member_pubkey"], alice.public_key().to_hex());
+    assert_eq!(logs[0]["member_name"], "Member");
+    assert_eq!(logs[0]["connection_id"], connection_id);
+}

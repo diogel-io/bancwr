@@ -17,9 +17,17 @@ pub struct Database {
 pub struct SigningLog {
     pub id: Uuid,
     pub event_id: String,
+    /// The key that asked for the signature: the NIP-46 client's (hex), not the member's.
     pub pubkey: String,
     pub event_kind: u32,
     pub timestamp: DateTime<Utc>,
+    /// The vault member the connection was made for (hex) (diogel-io/workspace#38). None for a row
+    /// logged before #38 that no connection accounts for.
+    pub member_pubkey: Option<String>,
+    /// That member's name, read when the log is: None once the member has been removed.
+    pub member_name: Option<String>,
+    /// The NIP-46 connection that signed.
+    pub connection_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,11 +121,14 @@ impl Database {
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    /// Log a signing event
+    /// Log a signing event. `pubkey` is the requesting client's key; `member_pubkey` and
+    /// `connection_id` say which member and connection it signed for (diogel-io/workspace#38).
     pub fn log_signing_event(
         &self,
         event_id: &str,
         pubkey: &str,
+        member_pubkey: Option<&str>,
+        connection_id: Option<&str>,
         event_kind: u32,
         timestamp: DateTime<Utc>,
     ) -> anyhow::Result<()> {
@@ -125,8 +136,9 @@ impl Database {
         let timestamp_str = timestamp.to_rfc3339();
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         conn.execute(
-            "INSERT INTO signing_logs (id, event_id, pubkey, event_kind, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, event_id, pubkey, event_kind, timestamp_str],
+            "INSERT INTO signing_logs (id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp_str],
         )?;
         Ok(())
     }
@@ -135,18 +147,21 @@ impl Database {
     pub fn get_recent_logs(&self, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, event_id, pubkey, event_kind, timestamp FROM signing_logs ORDER BY timestamp DESC LIMIT ?1",
+            "SELECT l.id, l.event_id, l.pubkey, l.event_kind, l.timestamp, l.member_pubkey, m.name, l.connection_id
+             FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
+             ORDER BY l.timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let id_str: String = row.get(0)?;
             let event_kind_raw: i64 = row.get(3)?;
             let timestamp_str: String = row.get(4)?;
-            Ok((id_str, row.get::<_, String>(1)?, row.get::<_, String>(2)?, event_kind_raw, timestamp_str))
+            let attribution: (Option<String>, Option<String>, Option<String>) = (row.get(5)?, row.get(6)?, row.get(7)?);
+            Ok((id_str, row.get::<_, String>(1)?, row.get::<_, String>(2)?, event_kind_raw, timestamp_str, attribution))
         })?;
 
         let mut logs = Vec::new();
         for row in rows {
-            let (id_str, event_id, pubkey, event_kind_raw, timestamp_str) = row?;
+            let (id_str, event_id, pubkey, event_kind_raw, timestamp_str, (member_pubkey, member_name, connection_id)) = row?;
             let id = Uuid::parse_str(&id_str)
                 .map_err(|e| anyhow::anyhow!("Malformed UUID in signing_logs.id '{}': {}", id_str, e))?;
             let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
@@ -158,6 +173,9 @@ impl Database {
                 pubkey,
                 event_kind: event_kind_raw as u32,
                 timestamp,
+                member_pubkey,
+                member_name,
+                connection_id,
             });
         }
         Ok(logs)

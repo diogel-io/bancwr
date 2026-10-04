@@ -41,9 +41,15 @@ pub struct BunkerStatus {
 pub struct LogEntry {
     pub id: String,
     pub event_id: String,
+    /// The key that asked for the signature: the NIP-46 client's (hex), not the member's.
     pub pubkey: String,
     pub event_kind: u32,
     pub timestamp: String, // ISO 8601 format
+    /// The member the signature was for (hex), when known (diogel-io/workspace#38).
+    pub member_pubkey: Option<String>,
+    /// That member's name, while they are still in the vault.
+    pub member_name: Option<String>,
+    pub connection_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -148,6 +154,9 @@ pub async fn get_logs(
                     pubkey: log.pubkey,
                     event_kind: log.event_kind,
                     timestamp: log.timestamp.to_rfc3339(),
+                    member_pubkey: log.member_pubkey,
+                    member_name: log.member_name,
+                    connection_id: log.connection_id,
                 })
                 .collect();
             Ok(Json(entries))

@@ -105,7 +105,7 @@ async fn test_get_logs_handler() {
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     
     // Log an event manually
-    db.log_signing_event("event_id_1", "pubkey_1", 1, Utc::now()).unwrap();
+    db.log_signing_event("event_id_1", "pubkey_1", None, None, 1, Utc::now()).unwrap();
     
     let config = Config {
         secret_key: keys.secret_key().clone(),
