@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The signed-in member's NIP-65 relay list (#33), for administrators and users (#26): where other
+// The signed-in member's NIP-65 relay list (#33), for administrators and signers (#26, #77): where other
 // apps find their posts (write) and mentions of them (read). Read from and published to their
 // relays, signed by their own signer. Changes are staged and published together.
 import { npubEncode } from 'nostr-tools/nip19'

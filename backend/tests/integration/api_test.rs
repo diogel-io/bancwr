@@ -90,3 +90,34 @@ async fn test_api_is_open_without_a_proxy_secret() {
     let res = app.unsigned(Method::GET, "/api/bunker/team").send().await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn test_api_my_logs_are_the_callers_own() {
+    // GET /api/bunker/logs/mine (#77): only signatures made for the caller as the member
+    // (diogel-io/workspace#38), for the signer dashboard. Never another member's, never one only
+    // the client key matches.
+    let app = common::spawn(true).await;
+    let alice = app.register(bunker::registry::Role::Signer).public_key().to_hex();
+    let bob = app.register(bunker::registry::Role::Signer).public_key().to_hex();
+    let now = Utc::now();
+    app.db.log_signing_event("alice-1", &Keys::generate().public_key().to_hex(), Some(&alice), Some("c-a"), 1, now).unwrap();
+    app.db.log_signing_event("bob-1", &Keys::generate().public_key().to_hex(), Some(&bob), Some("c-b"), 7, now).unwrap();
+    app.db.log_signing_event("alice-2", &Keys::generate().public_key().to_hex(), Some(&alice), Some("c-a"), 1, now + chrono::Duration::seconds(1)).unwrap();
+    app.db.log_signing_event("unattributed", &alice, None, None, 1, now).unwrap();
+
+    let mine = |who: String| {
+        let request = app.signed(Method::GET, "/api/bunker/logs/mine", &who);
+        async move {
+            let res = request.send().await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            res.json::<Vec<Value>>().await.unwrap().iter().map(|l| l["event_id"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(mine(alice.clone()).await, vec!["alice-2", "alice-1"]);
+    assert_eq!(mine(bob.clone()).await, vec!["bob-1"]);
+    assert!(mine(app.admin.public_key().to_hex()).await.is_empty(), "an administrator's own, not everyone's");
+
+    let entry: Vec<Value> = app.signed(Method::GET, "/api/bunker/logs/mine", &bob).send().await.unwrap().json().await.unwrap();
+    assert_eq!(entry[0]["member_pubkey"], bob);
+    assert_eq!(entry[0]["event_kind"], 7);
+}

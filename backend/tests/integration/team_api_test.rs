@@ -1,4 +1,9 @@
+#[path = "../common/mod.rs"]
+mod common;
+
 use bunker::db::Database;
+use bunker::registry::Role;
+use reqwest::Method;
 use bunker::server::create_router;
 use bunker::state::AppState;
 use bunker::config::Config;
@@ -242,11 +247,11 @@ async fn add(address: &str, client: &reqwest::Client, pubkey: &str, role: &str) 
 #[tokio::test]
 async fn test_add_team_member_accepts_the_three_roles_only() {
     let (address, client) = setup_app().await;
-    for role in ["administrator", "user", "signer"] {
+    for role in ["administrator", "signer", "viewer"] {
         assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::OK, "{} is accepted", role);
     }
-    // The pre-#24 names are refused, not translated.
-    for role in ["admin", "viewer"] {
+    // Older names are refused, not translated: pre-#24's `admin` and #24's `user` (#77).
+    for role in ["admin", "user", "Admin", "Viewer"] {
         assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::BAD_REQUEST, "{} is refused", role);
     }
 }
@@ -255,7 +260,7 @@ async fn test_add_team_member_accepts_the_three_roles_only() {
 async fn test_add_team_member_rejects_a_prefix_that_is_not_a_key() {
     let (address, client) = setup_app().await;
     // Accepted before #24, which only checked for the npub1 prefix.
-    let res = add(&address, &client, "npub1bob0000000000000000000000000000000000000000000000000000000000", "user").await;
+    let res = add(&address, &client, "npub1bob0000000000000000000000000000000000000000000000000000000000", "signer").await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -266,7 +271,7 @@ async fn test_add_team_member_accepts_hex_and_refuses_a_duplicate_in_either_form
     let npub = keys.public_key().to_bech32().unwrap();
     let hex = keys.public_key().to_hex();
 
-    assert_eq!(add(&address, &client, &hex, "user").await.status(), StatusCode::OK);
+    assert_eq!(add(&address, &client, &hex, "viewer").await.status(), StatusCode::OK);
     assert_eq!(add(&address, &client, &hex, "signer").await.status(), StatusCode::CONFLICT);
     assert_eq!(add(&address, &client, &npub, "signer").await.status(), StatusCode::CONFLICT, "the same key as an npub");
     assert_eq!(add(&address, &client, &hex.to_uppercase(), "signer").await.status(), StatusCode::CONFLICT, "the same key in upper case");
@@ -315,7 +320,7 @@ async fn test_lookup_by_pubkey_misses_clearly() {
 async fn test_the_last_administrator_cannot_be_removed() {
     // Removing the only administrator would lock everyone out of administration (#25).
     let (address, client) = setup_app().await;
-    for role in ["administrator", "user"] {
+    for role in ["administrator", "signer"] {
         assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::OK);
     }
     let team: Vec<Value> = client.get(format!("{}/api/bunker/team", address)).send().await.unwrap().json().await.unwrap();
@@ -329,4 +334,40 @@ async fn test_the_last_administrator_cannot_be_removed() {
     assert_eq!(add(&address, &client, &new_npub(), "administrator").await.status(), StatusCode::OK);
     let res = client.delete(format!("{}/api/bunker/team/{}", address, id_of("administrator"))).send().await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// The team's access matrix (#77), with the guard on: administrators and viewers read the team
+/// and look a member up; only administrators add and remove; signers do neither.
+#[tokio::test]
+async fn test_the_team_by_role() {
+    let app = common::spawn(true).await;
+    let signer = app.register(Role::Signer).public_key().to_hex();
+    let viewer = app.register(Role::Viewer).public_key().to_hex();
+    let admin = app.admin.public_key().to_hex();
+    let lookup = format!("/api/bunker/team/by-pubkey/{}", signer);
+
+    for (who, may_read) in [(&admin, true), (&viewer, true), (&signer, false)] {
+        let team = app.signed(Method::GET, "/api/bunker/team", who).send().await.unwrap();
+        let found = app.signed(Method::GET, &lookup, who).send().await.unwrap();
+        if may_read {
+            assert_eq!(team.status(), StatusCode::OK);
+            let team: Vec<Value> = team.json().await.unwrap();
+            let roles: Vec<&str> = team.iter().map(|m| m["role"].as_str().unwrap()).collect();
+            assert!(roles.contains(&"administrator") && roles.contains(&"signer") && roles.contains(&"viewer"), "{:?}", roles);
+            assert_eq!(found.status(), StatusCode::OK);
+            assert_eq!(found.json::<Value>().await.unwrap()["role"], "signer");
+        } else {
+            assert_eq!(team.status(), StatusCode::FORBIDDEN);
+            assert_eq!(found.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    let body = serde_json::json!({ "name": "New", "pubkey": new_npub(), "role": "viewer" });
+    for who in [&viewer, &signer] {
+        let res = app.signed(Method::POST, "/api/bunker/team", who).json(&body).send().await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+    let res = app.signed(Method::POST, "/api/bunker/team", &admin).json(&body).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "an administrator adds a viewer");
+    assert_eq!(app.db.get_team_members().unwrap().len(), 4);
 }

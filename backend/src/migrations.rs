@@ -22,6 +22,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("record who revoked a NIP-46 connection", nip46_revoked_by),
     ("record the member and connection a signature was for", signing_log_member),
     ("store the bunker's own NIP-46 relays", bunker_relays),
+    ("replace the roles with administrator, signer and viewer", admin_signer_viewer_roles),
 ];
 
 /// The version a fully migrated database is at.
@@ -40,7 +41,8 @@ pub fn run(conn: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 1. `admin` becomes `administrator` and `viewer` becomes `user`; `signer` is unchanged. Any
+/// 1. `admin` becomes `administrator` and `viewer` becomes `user`; `signer` is unchanged. (#77's
+///    migration 7 later maps these to administrator, signer and viewer.) Any
 ///    other value is left as it is and logged: it grants no access until an administrator fixes it.
 fn rename_roles(tx: &Transaction) -> anyhow::Result<()> {
     tx.execute("UPDATE team_members SET role = 'administrator' WHERE role = 'admin'", [])?;
@@ -204,5 +206,74 @@ fn bunker_relays(tx: &Transaction) -> anyhow::Result<()> {
             added_at TEXT NOT NULL
         );",
     )?;
+    Ok(())
+}
+
+/// 7. The roles become administrator, signer and viewer (#77), replacing #24's administrator, user
+///    and signer. Least privilege: today's `signer` becomes `viewer` first, then `user` becomes
+///    `signer`, in that order so no member is mapped twice; `administrator` is unchanged. A viewer
+///    never holds a NIP-46 connection, so every active connection of a member who is now a viewer
+///    is revoked (`role_changed`), and their unused tokens with it. Every change is logged.
+///
+///    The mapping is recorded in `role_migrations`, and is skipped when already recorded: a
+///    database whose version was rewound re-runs this, and running the mapping twice would turn
+///    the signers it made into viewers. The revocation is idempotent and always runs.
+fn admin_signer_viewer_roles(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS role_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );",
+    )?;
+    let applied: bool =
+        tx.query_row("SELECT EXISTS(SELECT 1 FROM role_migrations WHERE name = '77')", [], |row| row.get(0))?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    if !applied {
+        // (name, from, to): read before any update, so each member is logged with their old role.
+        let changes: Vec<(String, String, &str)> = {
+            let mut stmt = tx.prepare("SELECT name, role FROM team_members WHERE role IN ('signer', 'user')")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            rows.map(|row| row.map(|(name, role)| {
+                let to = if role == "signer" { "viewer" } else { "signer" };
+                (name, role, to)
+            }))
+            .collect::<Result<_, _>>()?
+        };
+        // Signer to viewer first: the other order would turn every user into a viewer.
+        tx.execute("UPDATE team_members SET role = 'viewer' WHERE role = 'signer'", [])?;
+        tx.execute("UPDATE team_members SET role = 'signer' WHERE role = 'user'", [])?;
+        for (name, from, to) in &changes {
+            info!("Team member '{}' changed role from {} to {} (#77)", name, from, to);
+        }
+        tx.execute("INSERT INTO role_migrations (name, applied_at) VALUES ('77', ?1)", params![now])?;
+    }
+
+    // Viewers cannot sign: end what they hold. Read first, to log each one.
+    let revoked: Vec<(String, String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT c.id, m.name, COALESCE(c.client_name, c.client_pubkey) FROM nip46_connections c
+             JOIN team_members m ON m.pubkey = c.for_pubkey
+             WHERE c.revoked_at IS NULL AND m.role = 'viewer'",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (id, member, client) in &revoked {
+        tx.execute(
+            "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'role_changed' WHERE id = ?1",
+            params![id, now],
+        )?;
+        warn!("Revoked NIP-46 connection {} ({}) of '{}': viewers cannot sign (#77)", id, client, member);
+    }
+    let tokens = tx.execute(
+        "UPDATE nip46_tokens SET revoked_at = ?1
+         WHERE revoked_at IS NULL AND used_at IS NULL
+           AND for_pubkey IN (SELECT pubkey FROM team_members WHERE role = 'viewer')",
+        params![now],
+    )?;
+    if tokens > 0 {
+        warn!("Revoked {} unused NIP-46 connection tokens issued for members who are now viewers (#77)", tokens);
+    }
     Ok(())
 }

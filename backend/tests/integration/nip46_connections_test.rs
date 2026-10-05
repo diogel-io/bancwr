@@ -39,10 +39,10 @@ async fn start_bunker_relay_client(app: &common::TestApp, relay: &str) {
 async fn a_standard_nip46_client_connects_with_an_issued_token_and_signs_only_what_was_granted() {
     let relay = MockRelay::run().await.unwrap();
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
-    let user = app.register(Role::User);
+    let user = app.register(Role::Signer);
     start_bunker_relay_client(&app, &relay.url()).await;
 
-    // An administrator issues a token for the user, allowing notes and reactions.
+    // An administrator issues a token for the signer, allowing notes and reactions.
     let res = issue(&app, &app.admin.public_key().to_hex(), json!({ "for_pubkey": user.public_key().to_bech32().unwrap(), "label": "Test client", "kinds": [1, 7] })).await;
     assert_eq!(res.status(), StatusCode::OK);
     let token: IssueTokenResponse = res.json().await.unwrap();
@@ -101,16 +101,19 @@ async fn a_connection_survives_a_bunker_restart() {
 #[tokio::test]
 async fn only_administrators_issue_list_tokens_and_revoke() {
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
-    let user = app.register(Role::User).public_key().to_hex();
-    let signer = app.register(Role::Signer).public_key().to_hex();
+    let user = app.register(Role::Signer).public_key().to_hex();
+    let viewer = app.register(Role::Viewer).public_key().to_hex();
     let admin = app.admin.public_key().to_hex();
 
-    for who in [&user, &signer] {
+    for who in [&user, &viewer] {
         assert_eq!(issue(&app, who, json!({ "label": "x", "kinds": [1] })).await.status(), StatusCode::FORBIDDEN);
         assert_eq!(app.signed(Method::GET, "/api/bunker/connections/tokens", who).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        // Revoking is open to every member since #31, scoped to their own: an unknown id is a 404.
-        assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", who).send().await.unwrap().status(), StatusCode::NOT_FOUND);
     }
+    // Revoking is open to signers since #31, scoped to their own: an unknown id is a 404. A viewer
+    // holds no connections, so the route is refused (#77).
+    assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", &user).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+    assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+    assert_eq!(app.signed(Method::GET, "/api/bunker/connections", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
 
     let issued: IssueTokenResponse = issue(&app, &admin, json!({ "for_pubkey": user, "label": "Laptop", "kinds": [7, 1, 1] })).await.json().await.unwrap();
     let secret = issued.uri.split("secret=").nth(1).unwrap().to_string();
@@ -133,8 +136,8 @@ async fn only_administrators_issue_list_tokens_and_revoke() {
 #[tokio::test]
 async fn each_member_sees_only_their_own_connections_and_an_administrator_sees_all() {
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
-    let alice = app.register(Role::User);
-    let bob = app.register(Role::User);
+    let alice = app.register(Role::Signer);
+    let bob = app.register(Role::Signer);
     let admin = app.admin.public_key().to_hex();
 
     // Connect one client for each, through the handler.
@@ -267,8 +270,8 @@ async fn sign_as(app: &common::TestApp, client: &Keys) -> bunker::nip46::Nip46Re
 #[tokio::test]
 async fn a_member_revokes_their_own_connection_but_not_anyone_elses() {
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
-    let alice = app.register(Role::User);
-    let bob = app.register(Role::User);
+    let alice = app.register(Role::Signer);
+    let bob = app.register(Role::Signer);
     let alice_client = connect_for(&app, &alice).await;
     let bob_client = connect_for(&app, &bob).await;
     let alice_hex = alice.public_key().to_hex();
@@ -311,7 +314,7 @@ async fn a_signer_may_revoke_connections_made_for_them() {
 async fn the_log_names_the_member_a_signature_was_for_not_the_app() {
     // diogel-io/workspace#38: the log used to show the client's key as the member.
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
-    let alice = app.register(Role::User);
+    let alice = app.register(Role::Signer);
     let client = connect_for(&app, &alice).await;
     assert!(sign_as(&app, &client).await.result.is_some());
 
@@ -322,4 +325,76 @@ async fn the_log_names_the_member_a_signature_was_for_not_the_app() {
     assert_eq!(logs[0]["member_pubkey"], alice.public_key().to_hex());
     assert_eq!(logs[0]["member_name"], "Member");
     assert_eq!(logs[0]["connection_id"], connection_id);
+}
+
+#[tokio::test]
+async fn a_token_is_not_issued_for_a_viewer() {
+    // Viewers cannot sign (#77): issuing for one is refused, for an administrator or a signer not.
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let admin = app.admin.public_key().to_hex();
+    let viewer = app.register(Role::Viewer).public_key().to_hex();
+    let signer = app.register(Role::Signer).public_key().to_hex();
+
+    let res = issue(&app, &admin, json!({ "for_pubkey": viewer, "label": "x", "kinds": [1] })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(res.json::<Value>().await.unwrap()["error"], "member_cannot_sign");
+    assert!(app.db.list_nip46_tokens().unwrap().is_empty(), "nothing was issued");
+
+    for who in [&signer, &admin] {
+        let res = issue(&app, &admin, json!({ "for_pubkey": who, "label": "x", "kinds": [1] })).await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn a_member_who_becomes_a_viewer_loses_their_connections_and_stops_signing() {
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let admin = app.admin.public_key().to_hex();
+    let alice = app.register(Role::Signer);
+    let alice_hex = alice.public_key().to_hex();
+    let client = connect_for(&app, &alice).await;
+    assert!(sign_as(&app, &client).await.result.is_some());
+    // A token issued for her but not yet used.
+    let pending: IssueTokenResponse =
+        issue(&app, &admin, json!({ "for_pubkey": alice_hex, "label": "later", "kinds": [1] })).await.json().await.unwrap();
+    let pending_secret = pending.uri.split("secret=").nth(1).unwrap().to_string();
+
+    assert_eq!(app.db.change_member_role(&alice_hex, Role::Viewer).unwrap(), bunker::db::RoleChangeOutcome::Changed);
+
+    // Revoked, with the reason, and refused as a removed member's would be.
+    let listed = connections(&app, &admin).await;
+    let hers = listed.iter().find(|c| c.for_pubkey == alice_hex).unwrap();
+    assert!(hers.revoked_at.is_some());
+    assert_eq!(hers.revoked_reason.as_deref(), Some("role_changed"));
+    assert_eq!(sign_as(&app, &client).await.error.as_deref(), Some(bunker::nip46::NOT_CONNECTED));
+    // Her unused token went with it.
+    let connect = app
+        .state
+        .nip46_handler
+        .handle_request(
+            bunker::nip46::Nip46Request { id: "c".into(), method: "connect".into(), params: vec![app.bunker.public_key().to_hex(), pending_secret] },
+            Keys::generate().public_key(),
+        )
+        .await;
+    assert!(connect.result.is_none());
+    let metrics: Value = app.get("/api/bunker/metrics").send().await.unwrap().json().await.unwrap();
+    assert_eq!(metrics["nip46_connections"], 0);
+}
+
+#[tokio::test]
+async fn a_token_for_a_viewer_does_not_connect() {
+    // The defence behind the API's refusal (#77): redeeming checks the member's role as it is now,
+    // so a token stored for a viewer by any other path still connects nobody.
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let viewer = app.register(Role::Viewer).public_key().to_hex();
+    let now = chrono::Utc::now();
+    app.db
+        .create_nip46_token(&bunker::nip46::hash_secret("s3cret"), &viewer, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1))
+        .unwrap();
+
+    let refusal = app
+        .db
+        .redeem_nip46_token(&bunker::nip46::hash_secret("s3cret"), &Keys::generate().public_key().to_hex(), None, &Default::default(), now)
+        .unwrap();
+    assert_eq!(refusal.err(), Some(bunker::db::RedeemRefusal::MemberCannotSign));
 }

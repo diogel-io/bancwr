@@ -50,10 +50,10 @@ async fn relay_check(app: &common::TestApp) -> Value {
 #[tokio::test]
 async fn only_administrators_read_and_change_the_bunker_relays() {
     let app = console().await;
-    let user = app.register(Role::User).public_key().to_hex();
     let signer = app.register(Role::Signer).public_key().to_hex();
+    let viewer = app.register(Role::Viewer).public_key().to_hex();
 
-    for who in [&user, &signer] {
+    for who in [&signer, &viewer] {
         assert_eq!(app.signed(Method::GET, PATH, who).send().await.unwrap().status(), StatusCode::FORBIDDEN);
         let res = app.signed(Method::PUT, PATH, who).json(&json!({ "relays": ["wss://a.example"] })).send().await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);

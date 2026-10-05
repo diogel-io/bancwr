@@ -15,7 +15,7 @@ describe('useRelayList', () => {
   let relays: FakeRelays
 
   beforeEach(() => {
-    signInAs('user')
+    signInAs('signer')
     relays = new FakeRelays()
   })
 

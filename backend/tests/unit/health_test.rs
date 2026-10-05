@@ -197,7 +197,7 @@ async fn no_administrator_is_degraded_and_says_how_to_set_one() {
 #[tokio::test]
 async fn an_administrator_passes_and_members_of_other_roles_do_not_count() {
     let db = Database::new(":memory:").unwrap();
-    db.add_team_member("User", &Keys::generate().public_key().to_hex(), Role::User).unwrap();
+    db.add_team_member("Viewer", &Keys::generate().public_key().to_hex(), Role::Viewer).unwrap();
     db.add_team_member("Signer", &Keys::generate().public_key().to_hex(), Role::Signer).unwrap();
     assert_eq!(health::check_administrator(&db).status, CheckStatus::Warn);
 

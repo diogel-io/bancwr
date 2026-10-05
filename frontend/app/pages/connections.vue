@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Apps connected to the bunker for the signed-in member (#31), over #53's connections: every app
-// signs as the bunker's key, authorised by an administrator for a member. Users see theirs and
-// administrators all; anyone revokes their own, administrators any. Administrators issue tokens.
+// signs as the bunker's key, authorised by an administrator for a member. For administrators and
+// signers (#77): signers see and revoke theirs, administrators all. Administrators issue tokens,
+// only for admins and signers: viewers hold no connections.
 import { isForbidden } from '~/utils/access'
 
 const {

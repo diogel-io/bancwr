@@ -33,7 +33,7 @@ test('a registered key signs in with NIP-07, and signing out ends the session fo
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
   const admin = npubFromNsec(process.env.E2E_ADMIN_NSEC!)
   const identity = page.getByRole('group', { name: /^Signed in as / })
-  await expect(identity).toHaveAttribute('aria-label', `Signed in as ${admin}, Administrator`)
+  await expect(identity).toHaveAttribute('aria-label', `Signed in as ${admin}, Admin`)
 
   const session = (await context.cookies()).find(c => c.name === 'bancwr-session')!
   expect(session).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict' })
@@ -77,7 +77,7 @@ test('a registered key signs in through a NIP-46 remote signer', async ({ page }
   await continueAsKey(page)
 
   await expect(page).toHaveURL('/', { timeout: 30_000 })
-  await expect(page.getByRole('group', { name: /^Signed in as / })).toHaveAttribute('aria-label', /, User$/)
+  await expect(page.getByRole('group', { name: /^Signed in as / })).toHaveAttribute('aria-label', /, Signer$/)
 })
 
 test('a bunker:// string that is not one is refused before anything is contacted', async ({ page }) => {
@@ -88,7 +88,7 @@ test('a bunker:// string that is not one is refused before anything is contacted
 })
 
 test('the key is confirmed before anything is signed, and another can be chosen (#70)', async ({ page }) => {
-  const nsec = process.env.E2E_USER_NSEC!
+  const nsec = process.env.E2E_SIGNER_NSEC!
   await installExtension(page, nsec)
   await page.goto('/sign-in')
   await page.getByRole('button', { name: 'Sign in with extension' }).click()

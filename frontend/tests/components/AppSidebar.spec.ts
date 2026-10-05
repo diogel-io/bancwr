@@ -26,9 +26,9 @@ describe('AppSidebar', () => {
     expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile', '/follows', '/relays', '/connections'])
   })
 
-  it('offers users the dashboard, profile, follows, relays and connections, and signers only their profile (#26, #30-#33)', async () => {
-    const expected: Record<string, string[]> = { user: ['/', '/profile', '/follows', '/relays', '/connections'], signer: ['/', '/profile'] }
-    for (const role of ['user', 'signer'] as Role[]) {
+  it('offers signers the dashboard, profile, follows, relays and connections, and viewers the dashboard and team (#77)', async () => {
+    const expected: Record<string, string[]> = { signer: ['/', '/profile', '/follows', '/relays', '/connections'], viewer: ['/', '/team'] }
+    for (const role of ['signer', 'viewer'] as Role[]) {
       signInAs(role)
       const component = await mountSuspended(AppSidebar)
 

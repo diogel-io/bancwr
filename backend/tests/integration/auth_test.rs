@@ -1,4 +1,4 @@
-// Who may call /api/bunker/* (#25), with BANCWR_PROXY_SECRET set. Every route is listed, not
+// Who may call /api/bunker/* (#25, #77), with BANCWR_PROXY_SECRET set. Every route is listed, not
 // sampled, so a route added without a guard fails here.
 #[path = "../common/mod.rs"]
 mod common;
@@ -8,25 +8,60 @@ use nostr::prelude::*;
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 
-const ADMINISTRATOR_ROUTES: &[(&str, &str)] = &[
-    ("GET", "/api/bunker/logs"),
-    ("GET", "/api/bunker/metrics"),
-    ("GET", "/api/bunker/config"),
-    ("GET", "/api/bunker/team"),
-    ("POST", "/api/bunker/team"),
-    ("DELETE", "/api/bunker/team/00000000-0000-4000-8000-000000000000"),
-];
-const STATUS: (&str, &str) = ("GET", "/api/bunker/status");
+/// Who may call each route (#77): `A`dministrator, `S`igner, `V`iewer, and the service identity.
+/// Every guarded route is listed, so a route added without a guard, or in the wrong group, fails.
+struct Route {
+    method: &'static str,
+    path: &'static str,
+    roles: &'static [Role],
+    service: bool,
+}
 
-fn lookup_route(app: &common::TestApp) -> (&'static str, String) {
-    ("GET", format!("/api/bunker/team/by-pubkey/{}", app.admin.public_key().to_hex()))
+const A: Role = Role::Administrator;
+const S: Role = Role::Signer;
+const V: Role = Role::Viewer;
+/// Replaced with the administrator's own key, so the lookup finds someone.
+const LOOKUP: &str = "/api/bunker/team/by-pubkey/{admin}";
+
+const ROUTES: &[Route] = &[
+    Route { method: "GET", path: "/api/bunker/status", roles: &[A, S, V], service: true },
+    Route { method: "GET", path: "/api/bunker/logs", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/logs/mine", roles: &[A, S], service: false },
+    Route { method: "GET", path: "/api/bunker/metrics", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/config", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/relays", roles: &[A], service: false },
+    Route { method: "PUT", path: "/api/bunker/relays", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/team", roles: &[A, V], service: false },
+    Route { method: "POST", path: "/api/bunker/team", roles: &[A], service: false },
+    Route { method: "DELETE", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
+    Route { method: "GET", path: LOOKUP, roles: &[A, V], service: true },
+    Route { method: "GET", path: "/api/bunker/connections/tokens", roles: &[A], service: false },
+    Route { method: "POST", path: "/api/bunker/connections/tokens", roles: &[A], service: false },
+    Route { method: "DELETE", path: "/api/bunker/connections/tokens/no-such-token", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/connections", roles: &[A, S], service: false },
+    Route { method: "DELETE", path: "/api/bunker/connections/no-such-connection", roles: &[A, S], service: false },
+];
+
+fn path_of(app: &common::TestApp, route: &Route) -> String {
+    route.path.replace("{admin}", &app.admin.public_key().to_hex())
 }
 
 fn all_routes(app: &common::TestApp) -> Vec<(Method, String)> {
-    let mut routes: Vec<(&str, String)> = ADMINISTRATOR_ROUTES.iter().map(|(m, p)| (*m, p.to_string())).collect();
-    routes.push((STATUS.0, STATUS.1.to_string()));
-    routes.push(lookup_route(app));
-    routes.into_iter().map(|(m, p)| (m.parse().unwrap(), p)).collect()
+    ROUTES.iter().map(|r| (r.method.parse().unwrap(), path_of(app, r))).collect()
+}
+
+/// A signed request for `route` as `identity`, with a valid body, so an allowed write is not
+/// refused for its payload before the guard's decision can be seen.
+fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> reqwest::RequestBuilder {
+    let request = app.signed(route.method.parse().unwrap(), &path_of(app, route), identity);
+    match (route.method, route.path) {
+        ("POST", "/api/bunker/team") => request.json(&member_body()),
+        ("PUT", "/api/bunker/relays") => request.json(&serde_json::json!({ "relays": [] })),
+        ("POST", "/api/bunker/connections/tokens") => {
+            request.json(&serde_json::json!({ "label": "x", "kinds": [1] }))
+        }
+        _ => request,
+    }
 }
 
 async fn body(res: reqwest::Response) -> Value {
@@ -35,7 +70,7 @@ async fn body(res: reqwest::Response) -> Value {
 
 /// A valid POST body, so an allowed POST is not refused for its payload.
 fn member_body() -> Value {
-    serde_json::json!({ "name": "New", "pubkey": Keys::generate().public_key().to_bech32().unwrap(), "role": "user" })
+    serde_json::json!({ "name": "New", "pubkey": Keys::generate().public_key().to_bech32().unwrap(), "role": "signer" })
 }
 
 #[tokio::test]
@@ -91,18 +126,27 @@ async fn an_unregistered_key_is_403_not_registered_with_its_npub() {
     }
 }
 
+/// The access matrix (#77), every route for every role: an allowed caller gets past the guard
+/// (whatever the handler then answers), a refused one gets 403 `forbidden`.
 #[tokio::test]
-async fn user_and_signer_are_refused_administration_but_see_health() {
+async fn each_role_reaches_exactly_its_routes() {
     let app = common::spawn(true).await;
-    for role in [Role::User, Role::Signer] {
-        let member = app.register(role).public_key().to_hex();
-        for (method, path) in ADMINISTRATOR_ROUTES.iter().map(|(m, p)| (m.parse::<Method>().unwrap(), p.to_string())).chain([lookup_route(&app)].map(|(m, p)| (m.parse().unwrap(), p))) {
-            let res = app.signed(method.clone(), &path, &member).send().await.unwrap();
-            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{} on {} {}", role, method, path);
-            assert_eq!(body(res).await["error"], "forbidden");
+    for role in [A, S, V] {
+        let member = if role == A { app.admin.public_key().to_hex() } else { app.register(role).public_key().to_hex() };
+        for route in ROUTES {
+            let res = request_for(&app, route, &member).send().await.unwrap();
+            let status = res.status();
+            if route.roles.contains(&role) {
+                assert!(
+                    status != StatusCode::FORBIDDEN && status != StatusCode::UNAUTHORIZED,
+                    "{} should reach {} {}, got {}",
+                    role, route.method, route.path, status
+                );
+            } else {
+                assert_eq!(status, StatusCode::FORBIDDEN, "{} on {} {}", role, route.method, route.path);
+                assert_eq!(body(res).await["error"], "forbidden", "{} on {} {}", role, route.method, route.path);
+            }
         }
-        let res = app.signed(Method::GET, STATUS.1, &member).send().await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "{} sees bunker health", role);
     }
 }
 
@@ -110,15 +154,16 @@ async fn user_and_signer_are_refused_administration_but_see_health() {
 async fn an_administrator_reaches_every_route() {
     let app = common::spawn(true).await;
     let admin = app.admin.public_key().to_hex();
-    for (method, path) in all_routes(&app) {
-        let mut request = app.signed(method.clone(), &path, &admin);
-        if method == Method::POST {
-            request = request.json(&member_body());
-        }
-        let status = request.send().await.unwrap().status();
-        // DELETE of an unknown id is 404 from the handler: the guard let it through.
-        let expected = if method == Method::DELETE { StatusCode::NOT_FOUND } else { StatusCode::OK };
-        assert_eq!(status, expected, "{} {}", method, path);
+    for route in ROUTES {
+        let status = request_for(&app, route, &admin).send().await.unwrap().status();
+        // DELETE of an unknown id is 404 from the handler, and a token with NIP-46 off is 409:
+        // either way the guard let it through.
+        let expected = match route.method {
+            "DELETE" => StatusCode::NOT_FOUND,
+            "POST" if route.path.ends_with("/tokens") => StatusCode::CONFLICT,
+            _ => StatusCode::OK,
+        };
+        assert_eq!(status, expected, "{} {}", route.method, route.path);
     }
 }
 
@@ -126,18 +171,34 @@ async fn an_administrator_reaches_every_route() {
 async fn the_service_identity_may_only_read_status_and_look_a_key_up() {
     let app = common::spawn(true).await;
     let service = bunker::proxy_auth::SERVICE_IDENTITY;
-
-    let status = app.signed(Method::GET, STATUS.1, service).send().await.unwrap();
-    assert_eq!(status.status(), StatusCode::OK);
-    let (_, lookup) = lookup_route(&app);
-    let found = app.signed(Method::GET, &lookup, service).send().await.unwrap();
-    assert_eq!(found.status(), StatusCode::OK);
-    assert_eq!(body(found).await["role"], "administrator");
-
-    for (method, path) in ADMINISTRATOR_ROUTES {
-        let res = app.signed(method.parse().unwrap(), path, service).send().await.unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN, "service on {} {}", method, path);
+    for route in ROUTES {
+        let res = request_for(&app, route, service).send().await.unwrap();
+        if route.service {
+            assert_eq!(res.status(), StatusCode::OK, "service on {} {}", route.method, route.path);
+        } else {
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "service on {} {}", route.method, route.path);
+        }
     }
+    let lookup = LOOKUP.replace("{admin}", &app.admin.public_key().to_hex());
+    let found = app.signed(Method::GET, &lookup, service).send().await.unwrap();
+    assert_eq!(body(found).await["role"], "administrator");
+}
+
+#[tokio::test]
+async fn a_viewer_reads_the_team_but_cannot_change_it() {
+    let app = common::spawn(true).await;
+    let viewer = app.register(V).public_key().to_hex();
+
+    let team = app.signed(Method::GET, "/api/bunker/team", &viewer).send().await.unwrap();
+    assert_eq!(team.status(), StatusCode::OK);
+    assert_eq!(body(team).await.as_array().unwrap().len(), 2, "the administrator and the viewer");
+
+    let added = app.signed(Method::POST, "/api/bunker/team", &viewer).json(&member_body()).send().await.unwrap();
+    assert_eq!(added.status(), StatusCode::FORBIDDEN);
+    let admin_id = app.db.find_member_by_pubkey(&app.admin.public_key().to_hex()).unwrap().unwrap().id;
+    let removed = app.signed(Method::DELETE, &format!("/api/bunker/team/{}", admin_id), &viewer).send().await.unwrap();
+    assert_eq!(removed.status(), StatusCode::FORBIDDEN);
+    assert_eq!(app.db.get_team_members().unwrap().len(), 2, "nothing changed");
 }
 
 #[tokio::test]

@@ -13,14 +13,14 @@ vi.mock('~/utils/key-profile', () => ({
 }))
 
 const signInAsKey = (pubkey: string) => {
-  useState<AuthState>('auth').value = { status: 'signed-in', pubkey, npub: `npub1${pubkey.slice(0, 4)}`, role: 'user' }
+  useState<AuthState>('auth').value = { status: 'signed-in', pubkey, npub: `npub1${pubkey.slice(0, 4)}`, role: 'signer' }
 }
 
 describe('useSignedInProfile (#72)', () => {
   beforeEach(() => {
     lookups.length = 0
     useState('signed-in-profile').value = { pubkey: '', status: 'idle' }
-    signInAs('user')
+    signInAs('signer')
   })
 
   it('looks the signed-in key up once, however many places ask', async () => {

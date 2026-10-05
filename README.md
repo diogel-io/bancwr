@@ -174,11 +174,22 @@ sudo chown -R 65532:65532 ./data
 
 A new installation needs the same step before the first start.
 
+### Roles
+
+Only keys registered with the bunker can use it, each with one of three roles (#77), stored as
+`administrator`, `signer` and `viewer` and shown as Admin, Signer and Viewer:
+
+| Role | Can |
+|------|-----|
+| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members), Config (including the bunker relays), Logs, and everything a signer and a viewer can do. |
+| Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46). |
+| Viewer | A dashboard with the bunker's health; the team list and each member's profile, read-only. A viewer never holds a NIP-46 connection. |
+
+The API's route-by-role table is in [`backend/README.md`](backend/README.md#access-by-role-77).
+
 ### The first administrator
 
-Only keys registered with the bunker can use it, each with one of three roles: `administrator`,
-`user` or `signer`. Only an administrator can register keys, so the first one comes from the
-environment:
+Only an administrator can register keys, so the first one comes from the environment:
 
 - Set `BANCWR_ADMIN_PUBKEY` to your own npub (or hex). It must not be the bunker's key; the bunker
   refuses to start if it is, or if the value is not a valid key.
@@ -200,6 +211,20 @@ to sign a Bancwr login and act as that key. Signing in with it would also mean p
 signing key into a browser extension. The rule is rule 10 of the sign-in decision record.
 
 Keys are stored in hex and shown as npubs. Upgrading from a version before this change migrates
-existing members at startup: the roles `admin` and `viewer` become `administrator` and `user`, and
-pubkeys are stored in hex. If the same key was registered twice, once as an npub and once as hex,
+existing members at startup: the roles `admin` and `viewer` become `administrator` and `user` (and
+then, since #77, `user` becomes `signer`: see below), and pubkeys are stored in hex. If the same key was registered twice, once as an npub and once as hex,
 the older registration is kept and the other is removed; the log names both.
+
+### Upgrading: roles (#77)
+
+The role values changed from `administrator`, `user` and `signer` to `administrator`, `signer` and
+`viewer`. Members are migrated once, at the first start of the new version, least privilege first:
+
+- `user` becomes `signer`, keeping their pages and connected apps;
+- the old `signer` becomes `viewer`, and loses their NIP-46 connections and unused connection
+  tokens, which are revoked (reason `role_changed`);
+- `administrator` is unchanged.
+
+The log names every member whose role changed and every connection revoked. A script that adds
+members through `POST /api/bunker/team` must send `signer` where it sent `user`: `user` is now
+refused with `400`.

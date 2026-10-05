@@ -1,4 +1,4 @@
-use bunker::db::{Database, RemoveOutcome, SeedOutcome};
+use bunker::db::{ClientMetadata, Database, RemoveOutcome, RoleChangeOutcome, SeedOutcome};
 use bunker::registry::Role;
 use chrono::Utc;
 use nostr::prelude::*;
@@ -102,7 +102,7 @@ fn test_db_team_management() {
 fn test_the_last_administrator_cannot_be_removed() {
     let db = Database::new(":memory:").unwrap();
     let alice = db.add_team_member("Alice", &new_pubkey(), Role::Administrator).unwrap();
-    let bob = db.add_team_member("Bob", &new_pubkey(), Role::User).unwrap();
+    let bob = db.add_team_member("Bob", &new_pubkey(), Role::Signer).unwrap();
 
     assert_eq!(db.remove_team_member(alice).unwrap(), RemoveOutcome::LastAdministrator);
     assert_eq!(db.administrator_count().unwrap(), 1, "she is still there");
@@ -238,11 +238,11 @@ fn test_db_signature_count() {
 fn test_find_member_by_pubkey() {
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     let alice = new_pubkey();
-    db.add_team_member("Alice", &alice, Role::User).unwrap();
+    db.add_team_member("Alice", &alice, Role::Signer).unwrap();
 
     let found = db.find_member_by_pubkey(&alice).unwrap().expect("Alice is registered");
     assert_eq!(found.name, "Alice");
-    assert_eq!(found.role(), Some(Role::User));
+    assert_eq!(found.role(), Some(Role::Signer));
 
     assert!(db.find_member_by_pubkey(&new_pubkey()).unwrap().is_none(), "an unregistered key is a clear miss");
 }
@@ -252,7 +252,7 @@ fn test_administrator_count() {
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     assert_eq!(db.administrator_count().unwrap(), 0);
     db.add_team_member("Alice", &new_pubkey(), Role::Administrator).unwrap();
-    db.add_team_member("Bob", &new_pubkey(), Role::User).unwrap();
+    db.add_team_member("Bob", &new_pubkey(), Role::Signer).unwrap();
     db.add_team_member("Carol", &new_pubkey(), Role::Administrator).unwrap();
     assert_eq!(db.administrator_count().unwrap(), 2);
 }
@@ -261,7 +261,7 @@ fn test_administrator_count() {
 fn test_seed_administrator_adds_when_there_is_none() {
     let db = Database::new(":memory:").unwrap();
     let key = new_pubkey();
-    db.add_team_member("Bob", &new_pubkey(), Role::User).unwrap();
+    db.add_team_member("Bob", &new_pubkey(), Role::Signer).unwrap();
 
     assert_eq!(db.seed_administrator(&key).unwrap(), SeedOutcome::Added);
     let seeded = db.find_member_by_pubkey(&key).unwrap().unwrap();
@@ -300,7 +300,7 @@ fn a_log_entry_carries_its_member_and_names_them_while_they_are_in_the_vault() {
     // diogel-io/workspace#38
     let db = Database::new(":memory:").unwrap();
     let member = new_pubkey();
-    let id = db.add_team_member("Alice", &member, Role::User).unwrap();
+    let id = db.add_team_member("Alice", &member, Role::Signer).unwrap();
     let client = new_pubkey();
     db.log_signing_event("e1", &client, Some(&member), Some("conn-1"), 1, Utc::now()).unwrap();
 
@@ -362,4 +362,100 @@ fn a_failed_bunker_relays_save_changes_nothing() {
     let duplicate = vec!["wss://b.example".to_string(), "wss://b.example".to_string()];
     assert!(db.replace_bunker_relays(&duplicate, "alice", Utc::now()).is_err());
     assert_eq!(db.list_bunker_relays().unwrap().iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://a.example"]);
+}
+
+// Roles (#77): a member who becomes a viewer cannot sign.
+
+/// A connection for `member`, made through a token as the API makes one; returns its client key.
+fn connect(db: &Database, member: &str) -> String {
+    let now = Utc::now();
+    let secret = format!("secret-{}", new_pubkey());
+    db.create_nip46_token(&bunker::nip46::hash_secret(&secret), member, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1))
+        .unwrap();
+    let client = new_pubkey();
+    db.redeem_nip46_token(&bunker::nip46::hash_secret(&secret), &client, None, &ClientMetadata::default(), now).unwrap().unwrap();
+    client
+}
+
+#[test]
+fn changing_a_member_to_viewer_revokes_their_connections_and_tokens() {
+    let db = Database::new(":memory:").unwrap();
+    db.add_team_member("Admin", &new_pubkey(), Role::Administrator).unwrap();
+    let alice = new_pubkey();
+    let bob = new_pubkey();
+    db.add_team_member("Alice", &alice, Role::Signer).unwrap();
+    db.add_team_member("Bob", &bob, Role::Signer).unwrap();
+    let alice_client = connect(&db, &alice);
+    let bob_client = connect(&db, &bob);
+    let now = Utc::now();
+    db.create_nip46_token("unused", &alice, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1)).unwrap();
+
+    assert_eq!(db.change_member_role(&alice, Role::Viewer).unwrap(), RoleChangeOutcome::Changed);
+
+    assert_eq!(db.find_member_by_pubkey(&alice).unwrap().unwrap().role(), Some(Role::Viewer));
+    assert!(db.active_nip46_connection(&alice_client).unwrap().is_none());
+    let hers = &db.list_nip46_connections(Some(&alice)).unwrap()[0];
+    assert_eq!(hers.revoked_reason.as_deref(), Some("role_changed"));
+    assert!(db.list_nip46_tokens().unwrap().iter().filter(|t| t.for_pubkey == alice).all(|t| t.revoked_at.is_some() || t.used_at.is_some()));
+    // Bob is untouched.
+    assert!(db.active_nip46_connection(&bob_client).unwrap().is_some());
+    assert_eq!(db.active_nip46_connection_count().unwrap(), 1);
+
+    // Back to signer: nothing is restored, a new token is needed.
+    assert_eq!(db.change_member_role(&alice, Role::Signer).unwrap(), RoleChangeOutcome::Changed);
+    assert!(db.active_nip46_connection(&alice_client).unwrap().is_none());
+}
+
+#[test]
+fn changing_to_a_role_that_signs_keeps_connections() {
+    let db = Database::new(":memory:").unwrap();
+    db.add_team_member("Admin", &new_pubkey(), Role::Administrator).unwrap();
+    let alice = new_pubkey();
+    db.add_team_member("Alice", &alice, Role::Signer).unwrap();
+    let client = connect(&db, &alice);
+    assert_eq!(db.change_member_role(&alice, Role::Administrator).unwrap(), RoleChangeOutcome::Changed);
+    assert!(db.active_nip46_connection(&client).unwrap().is_some());
+}
+
+#[test]
+fn the_last_administrator_is_never_demoted_and_an_unknown_key_is_not_found() {
+    let db = Database::new(":memory:").unwrap();
+    let alice = new_pubkey();
+    db.add_team_member("Alice", &alice, Role::Administrator).unwrap();
+    assert_eq!(db.change_member_role(&alice, Role::Viewer).unwrap(), RoleChangeOutcome::LastAdministrator);
+    assert_eq!(db.find_member_by_pubkey(&alice).unwrap().unwrap().role(), Some(Role::Administrator));
+    assert_eq!(db.change_member_role(&alice, Role::Administrator).unwrap(), RoleChangeOutcome::Changed, "no change is no demotion");
+    assert_eq!(db.change_member_role(&new_pubkey(), Role::Signer).unwrap(), RoleChangeOutcome::NotFound);
+}
+
+#[test]
+fn a_viewers_connection_signs_nothing_even_if_it_was_not_revoked() {
+    // The defence behind the revocation (#77): a viewer's connection is refused as a removed
+    // member's is, however the role came to be stored.
+    let file = NamedTempFile::new().unwrap();
+    let path = file.path().to_str().unwrap();
+    let db = Database::new(path).unwrap();
+    let alice = new_pubkey();
+    db.add_team_member("Alice", &alice, Role::Signer).unwrap();
+    let client = connect(&db, &alice);
+    rusqlite::Connection::open(path).unwrap().execute("UPDATE team_members SET role = 'viewer'", []).unwrap();
+
+    assert!(db.active_nip46_connection(&client).unwrap().is_none());
+    assert_eq!(db.active_nip46_connection_count().unwrap(), 0);
+}
+
+#[test]
+fn a_members_own_logs_are_only_theirs() {
+    let db = Database::new(":memory:").unwrap();
+    let alice = new_pubkey();
+    let bob = new_pubkey();
+    let now = Utc::now();
+    db.log_signing_event("a1", &new_pubkey(), Some(&alice), Some("c-a"), 1, now).unwrap();
+    db.log_signing_event("b1", &new_pubkey(), Some(&bob), Some("c-b"), 1, now).unwrap();
+    db.log_signing_event("a2", &new_pubkey(), Some(&alice), Some("c-a"), 7, now + chrono::Duration::seconds(1)).unwrap();
+    db.log_signing_event("x", &alice, None, None, 1, now).unwrap();
+
+    let mine: Vec<String> = db.get_recent_logs_for_member(&alice, 10).unwrap().into_iter().map(|l| l.event_id).collect();
+    assert_eq!(mine, vec!["a2", "a1"], "newest first; never by the client key");
+    assert_eq!(db.get_recent_logs_for_member(&alice, 1).unwrap().len(), 1);
 }

@@ -17,9 +17,23 @@ target comes from `NUXT_API_BASE` and defaults to `http://localhost:3000`. Nothi
 proxied. The proxy refuses a target that resolves to this server, rather than looping.
 
 Which role may open which page is set in one place, `app/utils/access.ts`: the sidebar offers only
-those pages, and the route middleware refuses the rest with a permission-denied page. Users and
-signers see the dashboard's bunker health only. A new page adds its route there. This is for
-usability: the bunker enforces the same matrix itself (see [`../backend`](../backend/README.md)).
+those pages, and the route middleware refuses the rest with a permission-denied page. A new page
+adds its route there. This is for usability: the bunker enforces the same matrix itself (see
+[`../backend`](../backend/README.md#access-by-role-77)). The roles (#77) are stored as
+`administrator`, `signer` and `viewer` and shown as Admin, Signer and Viewer:
+
+| Page | Admin | Signer | Viewer |
+|------|:---:|:---:|:---:|
+| `/` (dashboard) | metrics, health, everyone's activity | health, their connected apps, their own signatures | health, a link to the team |
+| `/config`, `/logs` | yes | | |
+| `/team` | yes, with add and remove | | yes, read-only |
+| `/team/[pubkey]` (a member's profile, read-only) | yes | | yes |
+| `/profile`, `/follows`, `/relays`, `/connections` | yes | yes | |
+
+`/team/[pubkey]` (#77) shows a member's name and role from the vault and their kind 0 profile
+(picture, name, about, NIP-05, links) read from their relays with the profile page's relay lookup
+(`useMemberProfile`, over `useMemberRelays`). It never edits or publishes. Each row of the team list
+links to it, by npub; a key not in the vault shows no profile.
 
 Every page's header is `AppNavbar`, which carries the bunker's health top left (`BunkerHealth`):
 green, yellow or red with a text label, and each check's detail on click. It polls
@@ -109,9 +123,10 @@ Each run:
    proves sign-in, the session, the signed proxy and the bunker's guard;
 4. starts a minimal relay (`e2e/relay.ts`, on `127.0.0.1:7777`) and a NIP-46 test signer
    (`e2e/remote-signer.ts`) inside the Playwright process, and registers that signer's key as a
-   `user`, then registers one more key as a `user` and one as a `signer`, for the role specs;
+   `signer`, then registers one more key as a `signer` (`E2E_SIGNER_NSEC`) and one as a `viewer`
+   (`E2E_VIEWER_NSEC`), for the role specs;
 5. runs the specs in Chromium, one at a time. `test` from `e2e/fixtures.ts` starts each one signed
-   in as the administrator, or as another role with `test.use({ role: 'signer' })`;
+   in as the administrator, or as another role with `test.use({ role: 'signer' })` or `'viewer'`;
    `anonymousTest` does not sign in;
 6. saves the container logs to `test-results/compose.log` and removes the stack.
 
@@ -238,7 +253,8 @@ data they edit (`SignedInAs`).
 
 ### Profile
 
-`/profile` (#30) edits the signed-in member's own kind 0 profile, for every role. Everything runs in
+`/profile` (#30) edits the signed-in member's own kind 0 profile, for administrators and signers
+(#77). Everything runs in
 the browser; the bunker is not involved.
 
 - **Signing.** Sign-in records, for the tab, whether the member used NIP-07 or NIP-46.
@@ -267,7 +283,7 @@ the browser; the bunker is not involved.
 ### Follows
 
 `/follows` (#32) edits the signed-in member's own follow list (NIP-02 kind 3, read at nips commit
-`0046368a`), for administrators and users. It uses the same relays and signer as the profile page
+`0046368a`), for administrators and signers. It uses the same relays and signer as the profile page
 (`useMemberRelays`, `useSignerPrompt`). Adds (by npub, hex or NIP-05) and removes are staged and
 published together with **Save changes**.
 
@@ -288,7 +304,7 @@ starts a new list only once the member confirms they have none elsewhere.
 ### Relays
 
 `/relays` (#33) edits the signed-in member's own NIP-65 relay list (kind 10002, read at nips commit
-`0046368a`), for administrators and users: their **write** relays, where other apps read their
+`0046368a`), for administrators and signers: their **write** relays, where other apps read their
 posts, and **read** relays, where apps look for mentions of them. No marker means both. It is the
 list `/profile` and `/follows` read through, so they use the new list straight after a save.
 
@@ -325,16 +341,17 @@ stored by the bunker, never published to Nostr.
 ### Connected apps
 
 `/connections` (#31) lists the apps connected to the bunker over NIP-46 (#53), for administrators
-and users. Every one signs as **the bunker's key**, not the member's: it was authorised by an
+and signers. Every one signs as **the bunker's key**, not the member's: it was authorised by an
 administrator for a member, with a single-use token naming the event kinds it may sign. The page
 says so at the top, always.
 
-- A user sees the apps connected for them; an administrator sees every app and whom it is for.
+- A signer sees the apps connected for them; an administrator sees every app and whom it is for.
 - An app's name, URL and picture are what it says about itself, shown with an **Unverified**
   badge. An app that gave none is shown by its key.
-- Anyone revokes their own apps, and administrators any (confirmed in place). Ended connections
+- A signer revokes their own apps, and administrators any (confirmed in place). Ended connections
   are hidden behind "Show ended", with why and by whom.
-- Administrators issue tokens on the page: for which member, a label, what it may sign (presets or
+- Administrators issue tokens on the page: for which member (admins and signers only: a viewer
+  cannot hold a connection, #77), a label, what it may sign (presets or
   kind numbers) and for how long. The `bunker://` string and its QR code (`uqr`) are shown once,
   and gone after Done: the bunker keeps only a hash of the secret.
 

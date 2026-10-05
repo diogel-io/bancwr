@@ -46,15 +46,16 @@ describe('auth middleware', () => {
     expect(await run('/no-access')).toBe('redirect:/')
   })
 
-  it('lets each role onto the routes it may open, and refuses the rest in place with a 403 (#26)', async () => {
+  it('lets each role onto the routes it may open, and refuses the rest in place with a 403 (#26, #77)', async () => {
+    const member = `/team/${'b'.repeat(64)}`
     const open: Record<Role, string[]> = {
-      administrator: ['/', '/config', '/team', '/logs'],
-      user: ['/'],
-      signer: ['/']
+      administrator: ['/', '/config', '/team', member, '/logs', '/profile', '/connections'],
+      signer: ['/', '/profile', '/connections'],
+      viewer: ['/', '/team', member]
     }
-    for (const role of ['administrator', 'user', 'signer'] as Role[]) {
+    for (const role of ['administrator', 'signer', 'viewer'] as Role[]) {
       asRole(role)
-      for (const path of ['/', '/config', '/team', '/logs']) {
+      for (const path of ['/', '/config', '/team', member, '/logs', '/profile', '/connections']) {
         abortNavigation.mockClear()
         const result = await run(path)
         if (open[role].includes(path)) {

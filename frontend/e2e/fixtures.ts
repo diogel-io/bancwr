@@ -39,19 +39,19 @@ export function contextPost(request: APIRequestContext): PostLike {
   }
 }
 
-export type Role = 'administrator' | 'user' | 'signer'
+export type Role = 'administrator' | 'signer' | 'viewer'
 
-// The keys global-setup.ts registered for each role.
+// The keys global-setup.ts registered for each role (#77).
 const NSEC_VARIABLES: Record<Role, string> = {
   administrator: 'E2E_ADMIN_NSEC',
-  user: 'E2E_USER_NSEC',
-  signer: 'E2E_SIGNER_NSEC'
+  signer: 'E2E_SIGNER_NSEC',
+  viewer: 'E2E_VIEWER_NSEC'
 }
 
 /**
  * `test`: every page starts signed in (#11), through the page's own request context, so the
  * browser holds the session cookie. As the seeded administrator unless a spec says
- * `test.use({ role: 'user' })` or `'signer'` (#26).
+ * `test.use({ role: 'signer' })` or `'viewer'` (#26, #77).
  */
 export const test = anonymousTest.extend<{ role: Role, signedIn: undefined }>({
   role: ['administrator', { option: true }],

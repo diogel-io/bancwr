@@ -56,7 +56,8 @@ const REASONS: Record<string, string> = {
   logout: 'The app logged out',
   revoked: 'Revoked',
   replaced: 'Replaced by a newer connection from the same app',
-  member_removed: 'Its member was removed from the vault'
+  member_removed: 'Its member was removed from the vault',
+  role_changed: 'Its member became a viewer, who cannot sign'
 }
 
 export function revokedReason(reason: string | null): string {

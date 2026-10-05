@@ -9,22 +9,42 @@ use std::str::FromStr;
 use nostr::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// The three roles from the 0.1.0 features doc. Their stored and wire form is lowercase.
+/// The three roles (#77, which replaced #24's administrator, user and signer). Their stored and
+/// wire form is lowercase; the console shows them as Admin, Signer and Viewer.
+///
+/// - `Administrator`: everything, a superset of the other two.
+/// - `Signer`: signs through NIP-46 connections and manages their own profile, follows and relays.
+/// - `Viewer`: reads the team and members' profiles. Never holds a NIP-46 connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Administrator,
-    User,
     Signer,
+    Viewer,
 }
 
 impl Role {
     pub fn as_str(&self) -> &'static str {
         match self {
             Role::Administrator => "administrator",
-            Role::User => "user",
             Role::Signer => "signer",
+            Role::Viewer => "viewer",
         }
+    }
+
+    /// The name people see (#77).
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Role::Administrator => "Admin",
+            Role::Signer => "Signer",
+            Role::Viewer => "Viewer",
+        }
+    }
+
+    /// Whether a member with this role may hold NIP-46 connections and so sign (#77): an
+    /// administrator or a signer, never a viewer.
+    pub fn can_sign(&self) -> bool {
+        matches!(self, Role::Administrator | Role::Signer)
     }
 }
 
@@ -40,13 +60,14 @@ pub struct InvalidRole;
 impl FromStr for Role {
     type Err = InvalidRole;
 
-    /// Only the settled names. The old `admin` and `viewer` are refused, not translated: stored
-    /// values are migrated once (see `db.rs`), and new input must use the new names.
+    /// Only the settled names. Older names (`admin`, and #24's `user`) are refused, not
+    /// translated: stored values are migrated once (see `migrations.rs`), and new input must use
+    /// the current names (#77).
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "administrator" => Ok(Role::Administrator),
-            "user" => Ok(Role::User),
             "signer" => Ok(Role::Signer),
+            "viewer" => Ok(Role::Viewer),
             _ => Err(InvalidRole),
         }
     }

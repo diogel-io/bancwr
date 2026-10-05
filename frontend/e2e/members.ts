@@ -5,7 +5,7 @@ import { generateNsec, npubFromNsec } from './keys'
 import { cookieJarPost, signInAs } from './sign-in'
 import { baseUrl } from './stack'
 
-export async function newMember(role: 'user' | 'signer' = 'user'): Promise<string> {
+export async function newMember(role: 'signer' | 'viewer' = 'signer'): Promise<string> {
   const nsec = generateNsec()
   const jar = cookieJarPost()
   await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), jar.post)

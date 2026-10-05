@@ -3,6 +3,7 @@
 // sign, and for how long. The bunker:// string it returns carries the token's secret and is shown
 // once: the bunker keeps only its hash (#53), so it cannot be shown again.
 import { renderSVG } from 'uqr'
+import { canSign } from '#shared/types/bunker'
 import type { IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
 import { KIND_PRESETS, kindLabel, parseKinds } from '~/utils/connections'
 
@@ -28,8 +29,10 @@ const error = ref<string>()
 const issued = ref<IssueTokenResponse>()
 const copied = ref(false)
 
+// Only members who can sign (#77): admins and signers. A viewer holds no connections, and the
+// bunker refuses a token for one (member_cannot_sign).
 const memberItems = computed(() => props.members
-  .filter(m => m.npub)
+  .filter(m => m.npub && canSign(m.role))
   .map(m => ({ label: m.pubkey === props.self ? `${m.name} (you)` : m.name, value: m.pubkey })))
 const presetItems = computed(() => [
   ...KIND_PRESETS.map((p, i) => ({ label: `${p.label} (${p.kinds.map(kindLabel).join(', ')})`, value: i as number | 'custom' })),
@@ -43,7 +46,8 @@ const qr = computed(() => issued.value ? `data:image/svg+xml;utf8,${encodeURICom
 
 const ERRORS: Record<string, string> = {
   nip46_disabled: 'NIP-46 is turned off on this bunker (NIP46_ENABLED=true turns it on), or it has no relays: an administrator adds them under Config, Bunker relays.',
-  not_registered: 'Connections can only be issued for members of the vault.'
+  not_registered: 'Connections can only be issued for members of the vault.',
+  member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.'
 }
 
 async function submit() {

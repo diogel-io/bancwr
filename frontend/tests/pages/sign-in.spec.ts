@@ -186,7 +186,7 @@ describe('Sign-in page', () => {
     // As the real one does: ask the signer to sign the login event.
     signInWithNostr.mockImplementation(async (wrapped: { signEvent: (t: unknown) => Promise<unknown> }) => {
       await wrapped.signEvent({ kind: 27235, created_at: 1, tags: [], content: '' })
-      return { status: 200, pubkey: other, npub: 'npub1other', role: 'user' }
+      return { status: 200, pubkey: other, npub: 'npub1other', role: 'signer' }
     })
     const component = await mount(true)
     await signInWithExtension(component)

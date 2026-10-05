@@ -74,7 +74,7 @@ pub struct TeamMemberResponse {
     pub pubkey: String,
     /// For display. `None` only for a row stored before #24 whose key is not valid.
     pub npub: Option<String>,
-    /// `administrator`, `user` or `signer`; a row from before #24 may hold another value.
+    /// `administrator`, `signer` or `viewer` (#77); a row from before #24 may hold another value.
     pub role: String,
 }
 
@@ -139,34 +139,58 @@ pub async fn get_metrics(
     })
 }
 
+impl From<crate::db::SigningLog> for LogEntry {
+    fn from(log: crate::db::SigningLog) -> Self {
+        LogEntry {
+            id: log.id.to_string(),
+            event_id: log.event_id,
+            pubkey: log.pubkey,
+            event_kind: log.event_kind,
+            timestamp: log.timestamp.to_rfc3339(),
+            member_pubkey: log.member_pubkey,
+            member_name: log.member_name,
+            connection_id: log.connection_id,
+        }
+    }
+}
+
+/// How many entries `GET /api/bunker/logs/mine` returns: enough for the signer dashboard (#77).
+pub const MY_LOGS_LIMIT: usize = 20;
+
 /// Get signing logs
 /// GET /api/bunker/logs
 pub async fn get_logs(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<LogEntry>>, (StatusCode, String)> {
     match state.db.get_recent_logs(100) {
-        Ok(logs) => {
-            let entries: Vec<LogEntry> = logs
-                .into_iter()
-                .map(|log| LogEntry {
-                    id: log.id.to_string(),
-                    event_id: log.event_id,
-                    pubkey: log.pubkey,
-                    event_kind: log.event_kind,
-                    timestamp: log.timestamp.to_rfc3339(),
-                    member_pubkey: log.member_pubkey,
-                    member_name: log.member_name,
-                    connection_id: log.connection_id,
-                })
-                .collect();
-            Ok(Json(entries))
-        }
+        Ok(logs) => Ok(Json(logs.into_iter().map(Into::into).collect())),
         Err(e) => {
             error!("Failed to fetch logs: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Database error".to_string(),
             ))
+        }
+    }
+}
+
+/// The caller's own recent signatures (#77), for the signer dashboard: those attributed to the
+/// caller as the member (diogel-io/workspace#38), newest first. Administrators and signers; an
+/// administrator sees only their own here too, and everyone's on /logs. Without the guard (an
+/// unauthenticated test router) there is no caller, so nothing is theirs.
+/// GET /api/bunker/logs/mine
+pub async fn get_my_logs(
+    State(state): State<AppState>,
+    who: Option<axum::Extension<crate::proxy_auth::Caller>>,
+) -> Result<Json<Vec<LogEntry>>, (StatusCode, String)> {
+    let Some(axum::Extension(crate::proxy_auth::Caller::Member { pubkey, .. })) = who else {
+        return Ok(Json(Vec::new()));
+    };
+    match state.db.get_recent_logs_for_member(&pubkey, MY_LOGS_LIMIT) {
+        Ok(logs) => Ok(Json(logs.into_iter().map(Into::into).collect())),
+        Err(e) => {
+            error!("Failed to fetch the caller's logs: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()))
         }
     }
 }
@@ -205,7 +229,8 @@ pub async fn add_team_member(
     State(state): State<AppState>,
     Json(request): Json<AddTeamMemberRequest>,
 ) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
-    // The three roles settled in #24; the old `admin` and `viewer` are refused.
+    // The three roles of #77: administrator, signer and viewer. Older names (`admin`, `user`) are
+    // refused with 400.
     let role: Role = request
         .role
         .parse()
@@ -319,27 +344,32 @@ pub fn create_router(state: AppState) -> Router {
         None => routes,
     };
 
+    // The access matrix (#25, #77). A path may sit in two groups with different methods (GET and
+    // POST /api/bunker/team): merging joins them, and each method keeps its own group's guard.
     let health = Router::new().route(STATUS_PATH, get(get_status));
     let administration = Router::new()
         .route("/api/bunker/logs", get(get_logs))
         .route("/api/bunker/metrics", get(get_metrics))
         // Read-only: the signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC (#42).
         .route("/api/bunker/config", get(get_config))
-        .route("/api/bunker/team", get(get_team).post(add_team_member))
+        // Reading the team is TeamReader's; changing it stays the administrator's (#77).
+        .route("/api/bunker/team", post(add_team_member))
         .route("/api/bunker/team/:id", delete(remove_team_member))
         // The bunker's own NIP-46 relays (#78): NIP46_RELAYS when set, otherwise the console's list.
-        .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays));
-    // Also the service identity's: sign-in looks the presented key up before any session exists.
-    let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
-    // NIP-46 connections (#53): tokens and revocation for administrators; the list for every
-    // member, scoped to the caller.
-    let connections_admin = Router::new()
+        .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays))
+        // NIP-46 connection tokens (#53), only for a member who can sign (#77).
         .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
         .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token));
-    // Every member: the list, and revoking, both scoped to the caller (#31).
-    let connections_member = Router::new()
+    // Administrators and viewers read the team (#77).
+    let team_read = Router::new().route("/api/bunker/team", get(get_team));
+    // Also the service identity's: sign-in looks the presented key up before any session exists.
+    let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
+    // Administrators and signers, each scoped to the caller: their connections, and revoking one
+    // (#53, #31; an administrator sees and revokes any), and their own recent signatures (#77).
+    let signer = Router::new()
         .route("/api/bunker/connections", get(crate::connections_api::list_connections))
-        .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection));
+        .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection))
+        .route("/api/bunker/logs/mine", get(get_my_logs));
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no
@@ -348,9 +378,9 @@ pub fn create_router(state: AppState) -> Router {
         .route(HEALTH_PATH, get(health_check))
         .merge(guarded(health, Access::Health))
         .merge(guarded(administration, Access::Administrator))
-        .merge(guarded(lookup, Access::AdministratorOrService))
-        .merge(guarded(connections_admin, Access::Administrator))
-        .merge(guarded(connections_member, Access::Member))
+        .merge(guarded(team_read, Access::TeamReader))
+        .merge(guarded(lookup, Access::TeamReaderOrService))
+        .merge(guarded(signer, Access::Signer))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
