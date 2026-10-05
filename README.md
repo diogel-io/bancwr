@@ -62,7 +62,14 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    - `BANCWR_PROXY_SECRET` and `NUXT_SESSION_PASSWORD`, each from `openssl rand -hex 32`;
    - `NUXT_SITE_ORIGIN`, the `https://` address you will open Bancwr on (see [HTTPS](#https)).
 
-   `podman compose` refuses to start without them.
+   `podman compose` refuses to start without `BANCWR_PROXY_SECRET`, `NUXT_SESSION_PASSWORD` or
+   `NUXT_SITE_ORIGIN`. Without `BUNKER_NSEC` compose starts, but the bunker exits at once and says
+   why. `BANCWR_ADMIN_PUBKEY` is optional: without it, the first key to sign in is told how to
+   become the first administrator.
+
+   NIP-46 is on by default (`NIP46_ENABLED`; set it to `false` to turn it off). After you sign in,
+   choose the bunker's relays under **Config**, **Bunker relays**, or set `NIP46_RELAYS` to fix them
+   in `.env` instead (see [Connecting apps](#connecting-apps-nip-46)).
 3. (Optional) Ensure the Podman socket is running (required for `podman compose`):
    ```bash
    systemctl --user enable --now podman.socket

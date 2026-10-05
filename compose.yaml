@@ -22,6 +22,12 @@ services:
         - BUNKER_PORT=3000
         - RUST_LOG=info
         - DATABASE_PATH=/data/bancwr.db
+        # NIP-46 (#83): on unless .env says false. On connects no app by itself: each needs a
+        # connection token an administrator issues.
+        - NIP46_ENABLED=${NIP46_ENABLED:-true}
+        # Empty uses the relays an administrator chooses under Config, Bunker relays (#78). When
+        # set, it overrides them and the console shows it read-only.
+        - NIP46_RELAYS=${NIP46_RELAYS:-}
       # The bunker runs as UID 65532 (#16), so ./data must be writable by it. Once, before the first
       # start: podman unshare chown -R 65532:65532 ./data   (rootless Podman)
       #        sudo chown -R 65532:65532 ./data             (Docker)
