@@ -30,6 +30,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash .github/scripts/test-release-scripts.sh
 
+  # Every variable .env.example documents reaches the service that reads it under compose (#83).
+  compose-env:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/test-compose-env.sh
+
   build:
     runs-on: ubuntu-latest
     strategy:
