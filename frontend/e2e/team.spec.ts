@@ -14,11 +14,11 @@ test('adds a member through the bunker', async ({ page }) => {
   const name = uniqueName('Alice')
   const pubkey = randomNpub()
 
-  await addMember(page, name, pubkey, 'Administrator')
+  await addMember(page, name, pubkey, 'Admin')
 
   await expect(page.getByText('Member added successfully', { exact: true })).toBeVisible()
   await expect(memberRow(page, name)).toContainText(pubkey)
-  await expect(memberRow(page, name)).toContainText('Administrator')
+  await expect(memberRow(page, name)).toContainText('Admin')
 
   // The form is ready for the next member.
   await expect(page.getByLabel('Name')).toHaveValue('')
@@ -47,7 +47,7 @@ test('removes a member once confirmed (#43)', async ({ page }) => {
 
 test('keeps a member when removal is cancelled', async ({ page }) => {
   const name = uniqueName('Carol')
-  await addMember(page, name, randomNpub(), 'User')
+  await addMember(page, name, randomNpub(), 'Viewer')
   await expect(memberRow(page, name)).toBeVisible()
 
   let message = ''
@@ -62,15 +62,27 @@ test('keeps a member when removal is cancelled', async ({ page }) => {
   await expect(memberRow(page, name)).toBeVisible()
 })
 
-test('offers exactly the three roles (#24)', async ({ page }) => {
+test('offers exactly the three roles (#77)', async ({ page }) => {
   await page.getByRole('combobox').click()
-  await expect(page.getByRole('option')).toHaveText(['Administrator', 'User', 'Signer'])
+  await expect(page.getByRole('option')).toHaveText(['Admin', 'Signer', 'Viewer'])
+})
+
+test('opens a member\'s read-only profile from their row (#77)', async ({ page }) => {
+  const name = uniqueName('Erin')
+  const pubkey = randomNpub()
+  await addMember(page, name, pubkey, 'Signer')
+  await page.getByRole('link', { name: `View ${name}'s profile` }).click()
+
+  await expect(page).toHaveURL(`/team/${pubkey}`)
+  await expect(page.getByTestId('member-summary')).toContainText(name)
+  await expect(page.getByTestId('member-role')).toHaveText('Signer')
+  await expect(page.getByTestId('member-profile-not-found')).toBeVisible({ timeout: 20_000 })
 })
 
 test('refuses the same key twice, even as hex (#24)', async ({ page }) => {
   const name = uniqueName('Dave')
   const key = randomNpub()
-  await addMember(page, name, key, 'User')
+  await addMember(page, name, key, 'Viewer')
   await expect(memberRow(page, name)).toBeVisible()
 
   const refused = page.waitForResponse(response =>

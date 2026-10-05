@@ -9,6 +9,7 @@ import { finalizeEvent, getPublicKey, type NostrEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
 import { continueAsKey, installExtension } from './extension'
 import { anonymousTest, test, expect, type Role } from './fixtures'
+import { newMember } from './members'
 
 const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
 const indexer = `ws://127.0.0.1:${process.env.E2E_INDEXER_PORT || 7778}`
@@ -38,7 +39,7 @@ const nameField = (page: Page) => page.getByLabel('Display name', { exact: true 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type' }
 
 anonymousTest('a member signed in with NIP-07 edits their profile, and fields set elsewhere survive', async ({ page }) => {
-  const nsec = process.env.E2E_USER_NSEC!
+  const nsec = process.env.E2E_SIGNER_NSEC!
   const pubkey = getPublicKey(keyOf(nsec))
   await seedProfile(nsec, { name: 'user', display_name: 'Before', pronouns: 'they/them' })
   await signInWithExtension(page, nsec)
@@ -75,7 +76,7 @@ anonymousTest('a member signed in with NIP-46 saves through the same remote sign
 })
 
 anonymousTest('NIP-05 is verified only on request, and a mismatch is reported', async ({ page }) => {
-  const nsec = process.env.E2E_USER_NSEC!
+  const nsec = process.env.E2E_SIGNER_NSEC!
   const pubkey = getPublicKey(keyOf(nsec))
   const asked: string[] = []
   await page.route('https://nip05.e2e.test/.well-known/nostr.json*', async (route) => {
@@ -100,7 +101,7 @@ anonymousTest('NIP-05 is verified only on request, and a mismatch is reported', 
 })
 
 anonymousTest('a picture is uploaded to Blossom, authorised by the member\'s own key', async ({ page }) => {
-  const nsec = process.env.E2E_USER_NSEC!
+  const nsec = process.env.E2E_SIGNER_NSEC!
   const pubkey = getPublicKey(keyOf(nsec))
   const stored = new Map<string, Buffer>()
   let authorisedBy: string | undefined
@@ -133,8 +134,9 @@ anonymousTest('a picture is uploaded to Blossom, authorised by the member\'s own
 
 anonymousTest('a profile and relay list held only by an indexer are found (#62)', async ({ page }) => {
   // #62 as reported: the key's NIP-65 list names a relay that is down, and the list and profile are
-  // on none of the default relays, only on an indexer.
-  const nsec = process.env.E2E_SIGNER_NSEC!
+  // on none of the default relays, only on an indexer. A fresh signer: the shared one's profile is
+  // already on the default relay from the tests above (#77 made it the profile specs' key too).
+  const nsec = await newMember('signer')
   const key = keyOf(nsec)
   const list = finalizeEvent({ kind: 10002, created_at: Math.floor(Date.now() / 1000) - 120, tags: [['r', 'ws://127.0.0.1:1']], content: '' }, key)
   await Promise.any(pool.publish([indexer], list))
@@ -159,7 +161,7 @@ test('a key with no profile anywhere is told where was searched, and must confir
   await expect(create).toBeEnabled()
 })
 
-for (const role of ['administrator', 'user', 'signer'] as Role[]) {
+for (const role of ['administrator', 'signer'] as Role[]) {
   test.describe(role, () => {
     test.use({ role })
 
@@ -171,6 +173,16 @@ for (const role of ['administrator', 'user', 'signer'] as Role[]) {
     })
   })
 }
+
+test.describe('viewer', () => {
+  test.use({ role: 'viewer' })
+
+  test('cannot open a profile editor (#77)', async ({ page }) => {
+    const response = await page.goto('/profile')
+    expect(response?.status()).toBe(403)
+    await expect(page.getByRole('heading', { name: /You don't have access to your profile/ })).toBeVisible()
+  })
+})
 
 test('is a single column on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })

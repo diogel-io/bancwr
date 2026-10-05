@@ -59,7 +59,8 @@ registerEndpoint('/api/bunker/connections/c1', {
 })
 registerEndpoint('/api/bunker/team', () => [
   { id: '1', name: 'Gary', pubkey: me, npub: 'npub1me', role: 'administrator' },
-  { id: '2', name: 'Bob', pubkey: other, npub: 'npub1bob', role: 'user' }
+  { id: '2', name: 'Bob', pubkey: other, npub: 'npub1bob', role: 'signer' },
+  { id: '3', name: 'Vera', pubkey: 'd'.repeat(64), npub: 'npub1vera', role: 'viewer' }
 ])
 
 const InApp = defineComponent({ render: () => h(UApp, () => h(Connections)) })
@@ -89,13 +90,13 @@ describe('Connections page', () => {
   })
 
   it('always explains that apps sign as the bunker\'s key', async () => {
-    const component = await mount('user')
+    const component = await mount('signer')
     expect(component.find('[data-testid="connections-explainer"]').text()).toContain('sign as this bunker\'s key, not your own')
   })
 
-  it('lists a user\'s apps with their unverified name, kinds and times, and no issuing', async () => {
+  it('lists a signer\'s apps with their unverified name, kinds and times, and no issuing', async () => {
     state.connections = [connection()]
-    const component = await mount('user')
+    const component = await mount('signer')
     const row = component.find('[data-connection="c1"]')
     expect(row.text()).toContain('Damus')
     expect(row.find('[data-testid="unverified"]').exists()).toBe(true)
@@ -110,7 +111,7 @@ describe('Connections page', () => {
 
   it('shows an app that gave no name by its key, without the unverified badge', async () => {
     state.connections = [connection({ client_name: null, client_url: null })]
-    const component = await mount('user')
+    const component = await mount('signer')
     const row = component.find('[data-connection="c1"]')
     expect(row.text()).toContain('npub1')
     expect(row.find('[data-testid="unverified"]').exists()).toBe(false)
@@ -118,7 +119,7 @@ describe('Connections page', () => {
 
   it('revokes only after confirming, and shows who ended it', async () => {
     state.connections = [connection()]
-    const component = await mount('user')
+    const component = await mount('signer')
     const revoke = () => component.find('[data-connection="c1"]').findAll('button').find(b => b.text() === 'Revoke')!
     await revoke().trigger('click')
     expect(state.deleted).toEqual([])
@@ -131,8 +132,8 @@ describe('Connections page', () => {
     expect(component.find('[data-connection="c1"]').text()).toContain('Revoked by you')
   })
 
-  it('shows the empty state, for a user and for an administrator', async () => {
-    const user = await mount('user')
+  it('shows the empty state, for a signer and for an administrator', async () => {
+    const user = await mount('signer')
     expect(user.find('[data-testid="connections-empty"]').text()).toContain('No apps are connected for you')
     expect(user.find('[data-testid="connections-empty"]').text()).toContain('Ask an administrator')
     user.unmount()
@@ -170,6 +171,16 @@ describe('Connections page', () => {
     expect(component.text()).not.toContain('secret=')
   })
 
+  it('offers tokens only for admins and signers, never a viewer (#77)', async () => {
+    const component = await mount('administrator')
+    const forSelect = component.find('[data-testid="issue-token"]').find('button[role="combobox"]')
+    await forSelect.trigger('click')
+    await flushPromises()
+    const options = [...document.body.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
+    expect(options).toEqual(expect.arrayContaining(['Gary (you)', 'Bob']))
+    expect(options).not.toContain('Vera')
+  })
+
   it('explains that NIP-46 is off when the bunker refuses to issue', async () => {
     state.issueStatus = 409
     const component = await mount('administrator')
@@ -182,7 +193,7 @@ describe('Connections page', () => {
 
   it('shows the forbidden notice when the bunker refuses the list', async () => {
     state.listStatus = 403
-    const component = await mount('user')
+    const component = await mount('signer')
     expect(component.find('[data-testid="forbidden-notice"]').exists()).toBe(true)
   })
 })

@@ -17,7 +17,7 @@ async function newestList(on: string, pubkey: string): Promise<NostrEvent | unde
 }
 
 anonymousTest('a member edits their relay list, and it reaches every relay with untouched tags kept', async ({ page }) => {
-  const nsec = process.env.E2E_USER_NSEC!
+  const nsec = process.env.E2E_SIGNER_NSEC!
   const key = decode(nsec).data as Uint8Array
   const me = getPublicKey(key)
   const seeded = finalizeEvent({
@@ -61,8 +61,8 @@ anonymousTest('a member edits their relay list, and it reaches every relay with 
   expect((await newestList(indexer, me))!.tags).toEqual(expected)
 })
 
-test.describe('signer', () => {
-  test.use({ role: 'signer' })
+test.describe('viewer', () => {
+  test.use({ role: 'viewer' })
 
   test('cannot open the relay list', async ({ page }) => {
     const response = await page.goto('/relays')

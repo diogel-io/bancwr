@@ -8,16 +8,16 @@ import { baseUrl, down, up, waitForStack } from './stack'
 /**
  * Starts the e2e stack with throwaway keys and secrets (unless E2E_BASE_URL points at one already
  * running), waits until an administrator can sign in, then starts a relay and a NIP-46 remote
- * signer for the sign-in specs and registers that signer's key as a `user`, and registers one key
- * for each of the other roles (#26).
+ * signer for the sign-in specs and registers that signer's key as a `signer`, and registers one key
+ * for each of the other roles (#26, #77).
  *
  * The specs read what they need from the environment set here: the workers Playwright starts
  * after global setup inherit it.
  *   E2E_BUNKER_NPUB  the bunker's npub
  *   E2E_ADMIN_NSEC   the seeded administrator, which the signed-in fixture signs in as
- *   E2E_NIP46_URI    a bunker:// string for the remote signer, whose key is a registered `user`
- *   E2E_USER_NSEC    a registered `user`, for the role specs
+ *   E2E_NIP46_URI    a bunker:// string for the remote signer, whose key is a registered `signer`
  *   E2E_SIGNER_NSEC  a registered `signer`, for the role specs
+ *   E2E_VIEWER_NSEC  a registered `viewer`, for the role specs
  */
 export default async function globalSetup() {
   if (process.env.E2E_BASE_URL) {
@@ -76,12 +76,12 @@ async function startNip46() {
   const signer = startRemoteSigner(signerNsec, relay)
   handles.e2eNip46 = { stopSigner: signer.stop }
 
-  // Register the signer's key as a user, signed in as the administrator.
+  // Register the signer's key as a signer, signed in as the administrator.
   const jar = cookieJarPost()
   await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), jar.post)
   const added = await jar.post(`${baseUrl()}/api/bunker/team`, {
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'NIP-46 test signer', pubkey: signer.pubkey, role: 'user' })
+    body: JSON.stringify({ name: 'NIP-46 test signer', pubkey: signer.pubkey, role: 'signer' })
   })
   if (added.status !== 200) throw new Error(`Could not register the NIP-46 test signer: HTTP ${added.status}`)
 
@@ -92,7 +92,7 @@ async function startNip46() {
 async function registerRoleKeys() {
   const jar = cookieJarPost()
   await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), jar.post)
-  for (const [role, variable] of [['user', 'E2E_USER_NSEC'], ['signer', 'E2E_SIGNER_NSEC']] as const) {
+  for (const [role, variable] of [['signer', 'E2E_SIGNER_NSEC'], ['viewer', 'E2E_VIEWER_NSEC']] as const) {
     const nsec = generateNsec()
     const added = await jar.post(`${baseUrl()}/api/bunker/team`, {
       headers: { 'Content-Type': 'application/json' },

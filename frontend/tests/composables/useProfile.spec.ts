@@ -15,7 +15,7 @@ describe('useProfile', () => {
   let relays: FakeRelays
 
   beforeEach(() => {
-    signInAs('user')
+    signInAs('signer')
     relays = new FakeRelays()
   })
 

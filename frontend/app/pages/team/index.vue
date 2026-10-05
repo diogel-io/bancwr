@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { useFetch, ref, reactive, useToast } from '#imports'
-import { ROLE_LABELS } from '#shared/types/bunker'
-import type { AddTeamMemberRequest, Role, TeamMember } from '#shared/types/bunker'
+// The vault's members (#24). Administrators add and remove them; viewers read the list (#77), with
+// no add or remove controls, which the bunker would refuse them anyway (#25). Each row links to the
+// member's read-only profile (team/[pubkey].vue).
+import { useFetch, ref, reactive, useToast, computed } from '#imports'
+import { ROLE_LABELS, ROLES } from '#shared/types/bunker'
+import type { AddTeamMemberRequest, TeamMember } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
+
+const auth = useAuth()
+const isAdministrator = computed(() => auth.state.value.status === 'signed-in' && auth.state.value.role === 'administrator')
 
 const { data: team, error, refresh } = await useFetch<TeamMember[]>('/api/bunker/team', { key: 'team-list' })
 
@@ -12,8 +18,8 @@ const state = reactive<AddTeamMemberRequest>({
   role: 'signer'
 })
 
-// The three roles settled in #24, in order of access.
-const roles = (['administrator', 'user', 'signer'] as Role[]).map(value => ({ label: ROLE_LABELS[value], value }))
+// The three roles of #77, in order of access: Admin, Signer, Viewer.
+const roles = ROLES.map(value => ({ label: ROLE_LABELS[value], value }))
 
 const loading = ref(false)
 const toast = useToast()
@@ -42,7 +48,7 @@ const addMember = async () => {
 <template>
   <UDashboardPanel id="team">
     <template #header>
-      <AppNavbar title="Team Management" />
+      <AppNavbar :title="isAdministrator ? 'Team Management' : 'Team'" />
     </template>
 
     <template #body>
@@ -53,10 +59,14 @@ const addMember = async () => {
       >
         <TeamMemberList
           :data="team || []"
+          :read-only="!isAdministrator"
           @refresh="refresh"
         />
 
-        <UCard>
+        <UCard
+          v-if="isAdministrator"
+          data-testid="add-member"
+        >
           <template #header>
             <h3 class="text-base font-semibold leading-6">
               Add Team Member

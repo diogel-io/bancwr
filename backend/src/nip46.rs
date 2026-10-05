@@ -4,8 +4,9 @@
 //! token an administrator issued for a vault member. The connection is stored (it survives a
 //! restart), attributed to that member, and allowed exactly the permissions granted: the token's,
 //! intersected with what the client asked for. Every request after `connect` needs an active
-//! connection whose member is still in the vault. Clients sign as the bunker's key: "for a member"
-//! is attribution and accountability, not a separate key.
+//! connection whose member is still in the vault and may sign: an administrator or a signer, never
+//! a viewer (#77), whose connections are refused as a removed member's are. Clients sign as the
+//! bunker's key: "for a member" is attribution and accountability, not a separate key.
 use crate::db::{ClientMetadata, Database, Nip46Connection, RedeemRefusal};
 use crate::signer::Signer;
 use chrono::Utc;
@@ -139,6 +140,7 @@ impl Nip46Handler {
                     RedeemRefusal::Revoked => "This connection token has been revoked",
                     RedeemRefusal::Expired => "This connection token has expired",
                     RedeemRefusal::MemberRemoved => "This connection token's member is no longer in the vault",
+                    RedeemRefusal::MemberCannotSign => "This connection token's member is a viewer, who cannot sign",
                     RedeemRefusal::NothingGrantable => "None of the requested permissions are allowed by this connection token",
                 })
             }

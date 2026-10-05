@@ -102,30 +102,38 @@ pub fn verify_proxy_request(
     Ok(identity.to_string())
 }
 
-/// Who may call a group of routes.
+/// Who may call a group of routes: the backend's one access matrix (#25, #77). Administrator is
+/// a superset of the other roles. `frontend/app/utils/access.ts` is the console's matching page
+/// matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
     /// Bunker health: every registered role, and the service identity.
     Health,
-    /// Administrators only.
+    /// Administrators only: logs, metrics, config, bunker relays, adding and removing members,
+    /// connection tokens.
     Administrator,
-    /// Administrators, and the service identity (the key lookup sign-in needs).
-    AdministratorOrService,
-    /// Every registered role, not the service identity: routes that scope what they return to
-    /// the caller (#53's connection list).
-    Member,
+    /// Administrators and viewers: reading the team (#77).
+    TeamReader,
+    /// Administrators, viewers, and the service identity: the key lookup, which sign-in needs
+    /// before any session exists, and a viewer's member profile page (#77).
+    TeamReaderOrService,
+    /// Administrators and signers, not the service identity: routes that scope what they return
+    /// to the caller (#53's connection list, #77's own recent signatures).
+    Signer,
 }
 
 impl Access {
     fn allows_role(self, role: Role) -> bool {
         match self {
-            Access::Health | Access::Member => true,
-            Access::Administrator | Access::AdministratorOrService => role == Role::Administrator,
+            Access::Health => true,
+            Access::Administrator => role == Role::Administrator,
+            Access::TeamReader | Access::TeamReaderOrService => matches!(role, Role::Administrator | Role::Viewer),
+            Access::Signer => role.can_sign(),
         }
     }
 
     fn allows_service(self) -> bool {
-        matches!(self, Access::Health | Access::AdministratorOrService)
+        matches!(self, Access::Health | Access::TeamReaderOrService)
     }
 }
 

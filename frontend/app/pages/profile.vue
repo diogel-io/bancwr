@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The signed-in member's own Nostr profile (#30), for every role (#26). Read from and published to
+// The signed-in member's own Nostr profile (#30), for administrators and signers (#26, #77). Read from and published to
 // their relays, signed by their own signer; the bunker is not involved.
 import { npubEncode } from 'nostr-tools/nip19'
 import { ProfileError } from '~/composables/useProfile'

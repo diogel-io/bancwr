@@ -37,11 +37,13 @@ test('the bunker refuses to change relays NIP46_RELAYS sets (409), and keeps the
   expect(await listed.json()).toMatchObject({ source: 'environment', nip46_enabled: true, relays: [{ url: envRelay }] })
 })
 
-test.describe('a user', () => {
-  test.use({ role: 'user' })
+for (const role of ['signer', 'viewer'] as const) {
+  test.describe(`a ${role}`, () => {
+    test.use({ role })
 
-  test('can neither read nor change the bunker relays', async ({ page }) => {
-    expect((await page.request.get('/api/bunker/relays')).status()).toBe(403)
-    expect((await page.request.put('/api/bunker/relays', { data: { relays: ['wss://relay.example.com'] } })).status()).toBe(403)
+    test('can neither read nor change the bunker relays', async ({ page }) => {
+      expect((await page.request.get('/api/bunker/relays')).status()).toBe(403)
+      expect((await page.request.put('/api/bunker/relays', { data: { relays: ['wss://relay.example.com'] } })).status()).toBe(403)
+    })
   })
-})
+}

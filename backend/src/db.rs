@@ -59,6 +59,15 @@ pub enum RemoveOutcome {
     LastAdministrator,
 }
 
+/// What `change_member_role` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RoleChangeOutcome {
+    Changed,
+    NotFound,
+    /// Refused: the member is the only administrator, and the new role is not.
+    LastAdministrator,
+}
+
 /// What `seed_administrator` did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SeedOutcome {
@@ -145,13 +154,26 @@ impl Database {
 
     /// Get recent signing logs (for API)
     pub fn get_recent_logs(&self, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
+        self.recent_logs(None, limit)
+    }
+
+    /// The recent signatures made for one member (#77's `GET /api/bunker/logs/mine`), by the
+    /// member each was attributed to (diogel-io/workspace#38), not the client that asked. A row
+    /// logged before #38 that no connection accounts for has no member, so it is never included.
+    pub fn get_recent_logs_for_member(&self, member_pubkey: &str, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
+        self.recent_logs(Some(member_pubkey), limit)
+    }
+
+    /// Every member's recent signatures, or only `member_pubkey`'s.
+    fn recent_logs(&self, member_pubkey: Option<&str>, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT l.id, l.event_id, l.pubkey, l.event_kind, l.timestamp, l.member_pubkey, m.name, l.connection_id
              FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
+             WHERE ?2 IS NULL OR l.member_pubkey = ?2
              ORDER BY l.timestamp DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
+        let rows = stmt.query_map(params![limit as i64, member_pubkey], |row| {
             let id_str: String = row.get(0)?;
             let event_kind_raw: i64 = row.get(3)?;
             let timestamp_str: String = row.get(4)?;
@@ -316,15 +338,52 @@ impl Database {
             return Ok(SeedOutcome::AdministratorExists);
         }
         if self.find_member_by_pubkey(pubkey)?.is_some() {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-            conn.execute(
-                "UPDATE team_members SET role = ?1 WHERE pubkey = ?2",
-                params![Role::Administrator.as_str(), pubkey],
-            )?;
+            self.change_member_role(pubkey, Role::Administrator)?;
             return Ok(SeedOutcome::Promoted);
         }
         self.add_team_member("Administrator (bootstrap)", pubkey, Role::Administrator)?;
         Ok(SeedOutcome::Added)
+    }
+
+    /// Changes a member's role: the one place a stored role changes after the member is added
+    /// (today only the first-administrator bootstrap promotes; the console has no role editor, so
+    /// a member is removed and added again). `pubkey` must be canonical hex.
+    ///
+    /// A member who becomes a viewer cannot sign (#77): in the same transaction, their active
+    /// NIP-46 connections are revoked (`role_changed`) and their unused tokens with them. The only
+    /// administrator is never demoted, for the reason `remove_team_member` gives.
+    pub fn change_member_role(&self, pubkey: &str, role: Role) -> anyhow::Result<RoleChangeOutcome> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE team_members SET role = ?2 WHERE pubkey = ?1 AND NOT (
+                ?2 != 'administrator' AND role = 'administrator'
+                AND (SELECT count(*) FROM team_members WHERE role = 'administrator') = 1
+            )",
+            params![pubkey, role.as_str()],
+        )?;
+        if changed == 0 {
+            let exists: bool =
+                tx.query_row("SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
+            return Ok(if exists { RoleChangeOutcome::LastAdministrator } else { RoleChangeOutcome::NotFound });
+        }
+        if !role.can_sign() {
+            let now = Utc::now().to_rfc3339();
+            tx.execute(
+                "UPDATE nip46_tokens SET revoked_at = ?2 WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL",
+                params![pubkey, now],
+            )?;
+            let revoked = tx.execute(
+                "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'role_changed'
+                 WHERE for_pubkey = ?1 AND revoked_at IS NULL",
+                params![pubkey, now],
+            )?;
+            if revoked > 0 {
+                info!("Revoked {} NIP-46 connections of {}: a {} cannot sign (#77)", revoked, pubkey, role);
+            }
+        }
+        tx.commit()?;
+        Ok(RoleChangeOutcome::Changed)
     }
 
     /// Remove a team member, unless they are the only administrator: removing them would leave
@@ -438,6 +497,8 @@ pub enum RedeemRefusal {
     Expired,
     /// The member the token was issued for is no longer in the vault.
     MemberRemoved,
+    /// The member the token was issued for is now a viewer, who cannot sign (#77).
+    MemberCannotSign,
     /// The client asked only for permissions the token does not allow.
     NothingGrantable,
 }
@@ -470,6 +531,10 @@ fn parse_time(value: &str) -> rusqlite::Result<DateTime<Utc>> {
 fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTime<Utc>>> {
     value.as_deref().map(parse_time).transpose()
 }
+
+/// Appended inside `EXISTS(SELECT 1 FROM team_members m WHERE ...)`: the member's role may sign
+/// (#77). Matches `Role::can_sign`.
+const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
 const TOKEN_COLUMNS: &str = "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at";
 const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by";
@@ -589,13 +654,12 @@ impl Database {
         if token.expires_at <= now {
             return Ok(Err(RedeemRefusal::Expired));
         }
-        let member: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1)",
-            params![token.for_pubkey],
-            |row| row.get(0),
-        )?;
-        if !member {
-            return Ok(Err(RedeemRefusal::MemberRemoved));
+        let role: Option<String> = tx
+            .query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![token.for_pubkey], |row| row.get(0))
+            .optional()?;
+        let Some(role) = role else { return Ok(Err(RedeemRefusal::MemberRemoved)) };
+        if !role.parse::<Role>().is_ok_and(|role| role.can_sign()) {
+            return Ok(Err(RedeemRefusal::MemberCannotSign));
         }
         let perms = grant(&token.perms, requested_perms);
         if perms.is_empty() {
@@ -634,7 +698,9 @@ impl Database {
         Ok(Ok(connection))
     }
 
-    /// The client's active connection, only while its member is still in the vault.
+    /// The client's active connection, only while its member is still in the vault and may sign:
+    /// an administrator or a signer, not a viewer (#77). A viewer's connections are revoked when
+    /// they become one; this refuses them even if one was missed, as for a removed member.
     pub fn active_nip46_connection(&self, client_pubkey: &str) -> anyhow::Result<Option<Nip46Connection>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let connection = conn
@@ -642,8 +708,9 @@ impl Database {
                 &format!(
                     "SELECT {} FROM nip46_connections c
                      WHERE c.client_pubkey = ?1 AND c.revoked_at IS NULL
-                       AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey)",
-                    CONNECTION_COLUMNS.split(", ").map(|c| format!("c.{}", c)).collect::<Vec<_>>().join(", ")
+                       AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey {})",
+                    CONNECTION_COLUMNS.split(", ").map(|c| format!("c.{}", c)).collect::<Vec<_>>().join(", "),
+                    MEMBER_CAN_SIGN
                 ),
                 params![client_pubkey],
                 connection_from_row,
@@ -687,12 +754,15 @@ impl Database {
         Ok(rows)
     }
 
-    /// Active connections whose member is still in the vault.
+    /// Active connections whose member is still in the vault and may sign (#77).
     pub fn active_nip46_connection_count(&self) -> anyhow::Result<usize> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let count: i64 = conn.query_row(
-            "SELECT count(*) FROM nip46_connections c WHERE c.revoked_at IS NULL
-               AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey)",
+            &format!(
+                "SELECT count(*) FROM nip46_connections c WHERE c.revoked_at IS NULL
+                   AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey {})",
+                MEMBER_CAN_SIGN
+            ),
             [],
             |row| row.get(0),
         )?;

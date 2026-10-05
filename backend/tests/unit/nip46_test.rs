@@ -25,7 +25,7 @@ fn setup() -> Setup {
     let db = Database::new(&path).unwrap();
     let bunker = Keys::generate();
     let member = Keys::generate();
-    db.add_team_member("Member", &member.public_key().to_hex(), Role::User).unwrap();
+    db.add_team_member("Member", &member.public_key().to_hex(), Role::Signer).unwrap();
     let handler = handler_for(&db, &bunker);
     Setup { _dir: dir, path, db, bunker, member, handler }
 }

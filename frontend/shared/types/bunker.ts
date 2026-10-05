@@ -37,7 +37,10 @@ export interface VersionResponse {
   version: string
 }
 
-/** GET /api/bunker/logs — one successful signature. The backend logs no failures. */
+/**
+ * GET /api/bunker/logs — one successful signature. The backend logs no failures. Also
+ * GET /api/bunker/logs/mine (#77): the caller's own, for the signer dashboard.
+ */
 export interface LogEntry {
   id: string
   event_id: string
@@ -66,13 +69,25 @@ export interface ConfigResponse {
   nsec_file: string | null
 }
 
-/** The three roles (#24). Stored and sent lowercase. */
-export type Role = 'administrator' | 'user' | 'signer'
+/**
+ * The three roles (#77, which replaced #24's administrator, user and signer). Stored and sent
+ * lowercase, shown as Admin, Signer and Viewer. Admin is a superset; a viewer reads the team and
+ * members' profiles and never holds a NIP-46 connection.
+ */
+export type Role = 'administrator' | 'signer' | 'viewer'
+
+/** Every role, in order of access. */
+export const ROLES: readonly Role[] = ['administrator', 'signer', 'viewer']
 
 export const ROLE_LABELS: Record<Role, string> = {
-  administrator: 'Administrator',
-  user: 'User',
-  signer: 'Signer'
+  administrator: 'Admin',
+  signer: 'Signer',
+  viewer: 'Viewer'
+}
+
+/** Whether a member with this role may hold NIP-46 connections (#77); backend `Role::can_sign`. */
+export function canSign(role: string): boolean {
+  return role === 'administrator' || role === 'signer'
 }
 
 /** GET /api/bunker/team, GET /api/bunker/team/by-pubkey/:pubkey */
@@ -118,7 +133,7 @@ export interface Nip46Connection {
   connected_at: string
   last_used_at: string | null
   revoked_at: string | null
-  /** `logout`, `revoked`, `replaced` or `member_removed`. */
+  /** `logout`, `revoked`, `replaced`, `member_removed` or `role_changed` (#77). */
   revoked_reason: string | null
   /** Who revoked it (hex), when someone did (#31). */
   revoked_by: string | null

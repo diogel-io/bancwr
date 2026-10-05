@@ -43,21 +43,21 @@ async function connectApp(uri: string): Promise<BunkerSigner> {
   return signer
 }
 
-async function asUser(browser: Browser): Promise<Page> {
+async function asSigner(browser: Browser): Promise<Page> {
   const context = await browser.newContext({ baseURL: baseUrl() })
   const page = await context.newPage()
-  const login = await signInAs(process.env.E2E_USER_NSEC!, baseUrl(), contextPost(page.request))
+  const login = await signInAs(process.env.E2E_SIGNER_NSEC!, baseUrl(), contextPost(page.request))
   expect(login.status).toBe(200)
   return page
 }
 
 const note = () => ({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'from a connected app' })
 
-test('an administrator connects an app for a user, who sees it and revokes it', async ({ page, browser }) => {
+test('an administrator connects an app for a signer, who sees it and revokes it', async ({ page, browser }) => {
   await page.goto('/connections')
   await expect(page.getByTestId('connections-explainer')).toContainText('not your own')
 
-  const uri = await issueOnPage(page, 'e2e user', 'e2e app for the user')
+  const uri = await issueOnPage(page, 'e2e signer', 'e2e app for the signer')
   expect(uri).toMatch(/^bunker:\/\/[0-9a-f]{64}\?relay=.+&secret=[0-9a-f]{64}$/)
   // Shown once: gone after Done.
   await expect(page.getByTestId('issued-uri')).toHaveCount(0)
@@ -67,18 +67,18 @@ test('an administrator connects an app for a user, who sees it and revokes it', 
   expect(signed.pubkey).toBe(new URL(uri).hostname)
   expect(await refusal(app.signEvent({ ...note(), kind: 0, content: '{}' }))).toContain('Forbidden')
 
-  // Another app, for the administrator, which the user must not see.
+  // Another app, for the administrator, which the signer must not see.
   // The seeded administrator is listed as "Administrator (bootstrap) (you)".
   const own = await connectApp(await issueOnPage(page, /\(you\)/, 'e2e app for the admin'))
 
   await page.reload()
   const rows = page.getByTestId('connections-list').locator('li')
   await expect(rows).toHaveCount(2)
-  await expect(page.getByTestId('connections-list')).toContainText('for e2e user')
+  await expect(page.getByTestId('connections-list')).toContainText('for e2e signer')
   await expect(page.getByTestId('connections-list')).toContainText('last signed')
 
-  // The user sees only theirs, and revokes it.
-  const user = await asUser(browser)
+  // The signer sees only theirs, and revokes it.
+  const user = await asSigner(browser)
   await user.goto('/connections')
   await expect(user.getByTestId('issue-token')).toHaveCount(0)
   const mine = user.getByTestId('connections-list').locator('li')
@@ -96,8 +96,8 @@ test('an administrator connects an app for a user, who sees it and revokes it', 
   await user.context().close()
 })
 
-test.describe('signer', () => {
-  test.use({ role: 'signer' })
+test.describe('viewer', () => {
+  test.use({ role: 'viewer' })
 
   test('cannot open connected apps', async ({ page }) => {
     const response = await page.goto('/connections')

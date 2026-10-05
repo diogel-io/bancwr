@@ -2,16 +2,18 @@ import { describe, it, expect } from 'vitest'
 import type { Role } from '#shared/types/bunker'
 import { canOpen, isForbidden, pageTitle } from '~/utils/access'
 
-// The whole matrix from #26, so a change to who may open what is a deliberate edit here.
+// The whole matrix from #77 (which replaced #26's), so a change to who may open what is a
+// deliberate edit here. Admin is a superset of the other two.
 const MATRIX: [string, Record<Role, boolean>][] = [
-  ['/', { administrator: true, user: true, signer: true }],
-  ['/config', { administrator: true, user: false, signer: false }],
-  ['/team', { administrator: true, user: false, signer: false }],
-  ['/logs', { administrator: true, user: false, signer: false }],
-  ['/profile', { administrator: true, user: true, signer: true }],
-  ['/connections', { administrator: true, user: true, signer: false }],
-  ['/follows', { administrator: true, user: true, signer: false }],
-  ['/relays', { administrator: true, user: true, signer: false }]
+  ['/', { administrator: true, signer: true, viewer: true }],
+  ['/config', { administrator: true, signer: false, viewer: false }],
+  ['/logs', { administrator: true, signer: false, viewer: false }],
+  ['/team', { administrator: true, signer: false, viewer: true }],
+  [`/team/${'b'.repeat(64)}`, { administrator: true, signer: false, viewer: true }],
+  ['/profile', { administrator: true, signer: true, viewer: false }],
+  ['/follows', { administrator: true, signer: true, viewer: false }],
+  ['/relays', { administrator: true, signer: true, viewer: false }],
+  ['/connections', { administrator: true, signer: true, viewer: false }]
 ]
 
 describe('access matrix', () => {
@@ -26,7 +28,15 @@ describe('access matrix', () => {
   it('ignores a trailing slash, query or fragment', () => {
     expect(canOpen('signer', '/config/')).toBe(false)
     expect(canOpen('signer', '/config?tab=1')).toBe(false)
-    expect(canOpen('user', '/logs#top')).toBe(false)
+    expect(canOpen('viewer', '/logs#top')).toBe(false)
+    expect(canOpen('signer', `/team/${'b'.repeat(64)}/`)).toBe(false)
+  })
+
+  it('matches a member\'s profile by one path segment only', () => {
+    expect(canOpen('viewer', '/team/npub1abc')).toBe(true)
+    expect(canOpen('signer', '/team/npub1abc')).toBe(false)
+    // Deeper paths are not a member's profile: left to Nuxt's 404.
+    expect(canOpen('signer', '/team/npub1abc/more')).toBe(true)
   })
 
   it('leaves unknown paths open, so Nuxt\'s 404 still applies', () => {
@@ -35,6 +45,7 @@ describe('access matrix', () => {
 
   it('names pages for the permission-denied message', () => {
     expect(pageTitle('/config')).toBe('Config')
+    expect(pageTitle('/team/npub1abc')).toBe('a team member\'s profile')
     expect(pageTitle('/nowhere')).toBe('/nowhere')
   })
 

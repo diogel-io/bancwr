@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The signed-in member's follow list (#32), for administrators and users (#26). Read from and
+// The signed-in member's follow list (#32), for administrators and signers (#26, #77). Read from and
 // published to their relays, signed by their own signer; the bunker is not involved. Changes are
 // staged and published together with Save changes.
 import { npubEncode } from 'nostr-tools/nip19'

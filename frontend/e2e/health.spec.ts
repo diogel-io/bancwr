@@ -9,15 +9,15 @@ import { test, expect, type Role } from './fixtures'
 const indicator = (page: Page) => page.getByTestId('bunker-health')
 const detail = (page: Page) => page.getByTestId('bunker-health-detail')
 
-// Administrators open every page; the others are refused three of them, and the permission-denied
+// Administrators open every page; the others are refused some (#77), and the permission-denied
 // page carries the same header.
 const PAGES: Record<Role, string[]> = {
   administrator: ['/', '/config', '/team', '/logs'],
-  user: ['/', '/config'],
-  signer: ['/', '/logs']
+  signer: ['/', '/config'],
+  viewer: ['/', '/team', '/logs']
 }
 
-for (const role of ['administrator', 'user', 'signer'] as Role[]) {
+for (const role of ['administrator', 'signer', 'viewer'] as Role[]) {
   test.describe(role, () => {
     test.use({ role })
 

@@ -50,19 +50,28 @@ The browser never calls the bunker: it calls the frontend's Nitro server, which 
 | `x-bancwr-signature` | lowercase hex HMAC-SHA256 of `v1\n<timestamp>\n<METHOD>\n<path?query>\n<identity>` under `BANCWR_PROXY_SECRET` |
 
 The frontend holds the same secret as `NUXT_PROXY_SECRET`. The bunker then looks the pubkey up in
-the vault on every request:
+the vault on every request.
 
-| Route | administrator | user | signer | `service` |
+#### Access by role (#77)
+
+The roles are `administrator`, `signer` and `viewer` (shown as Admin, Signer and Viewer).
+Administrator is a superset; a viewer reads the team and never holds a NIP-46 connection. The
+matrix lives in one place, `Access` in `src/proxy_auth.rs`, and `src/server.rs` puts each route in
+its group:
+
+| Route | administrator | signer | viewer | `service` |
 |-------|:---:|:---:|:---:|:---:|
 | `GET /health` | open | open | open | open |
 | `GET /api/bunker/status` | yes | yes | yes | yes |
 | `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | | |
-| `GET`, `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
+| `GET /api/bunker/logs/mine` | own | own | | |
+| `GET /api/bunker/team` | yes | | yes | |
+| `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
+| `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | yes | yes |
 | `GET`, `PUT /api/bunker/relays` | yes | | | |
-| `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | | yes |
 | `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
-| `GET /api/bunker/connections` | all | own | own | |
-| `DELETE /api/bunker/connections/:id` | any | own | own | |
+| `GET /api/bunker/connections` | all | own | | |
+| `DELETE /api/bunker/connections/:id` | any | own | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -115,7 +124,8 @@ bunker starts, and the nsec is never returned.
 Returns an array of team members.
 
 `POST /api/bunker/team`
-Adds a new team member. Valid roles are `administrator`, `user` and `signer`. The pubkey may be an
+Adds a new team member. Valid roles are `administrator`, `signer` and `viewer` (#77); older names,
+such as `user`, are refused with 400. The pubkey may be an
 npub or hex; it is stored as hex, and a key already registered, in either form, gets 409. The
 bunker's own key cannot be registered.
 
@@ -123,6 +133,17 @@ bunker's own key cannot be registered.
 
 `GET /api/bunker/team/by-pubkey/:pubkey` returns one member by npub or hex, or 404
 `{"error":"not_registered"}`.
+
+There is no endpoint to change a member's role: remove them and add them again. Wherever a role does
+change (today only the `BANCWR_ADMIN_PUBKEY` bootstrap, which promotes), `Database::change_member_role`
+applies the rule that a member who becomes a viewer loses their NIP-46 connections (`role_changed`)
+and unused tokens (#77).
+
+### Your own signatures (#77)
+`GET /api/bunker/logs/mine` (administrators and signers) returns the caller's own 20 most recent
+signatures, newest first, in the same shape as `GET /api/bunker/logs`: those made through a
+connection attributed to the caller (`member_pubkey`), never another member's. An administrator sees
+only their own here; everyone's is on `GET /api/bunker/logs`. The signer dashboard shows them.
 
 Example:
 ```bash
@@ -272,7 +293,9 @@ POST /api/bunker/connections/tokens
 ```
 
 - `for_pubkey` is the vault member the connection is attributed to (the administrator when
-  omitted). It must be a member; removing the member later ends their tokens and connections.
+  omitted). It must be a member who can sign, an administrator or a signer: a viewer gets
+  `400 {"error":"member_cannot_sign"}` (#77). Removing the member later ends their tokens and
+  connections.
 - `kinds` are the event kinds the app may sign. Nothing else is ever signed: there is no
   "everything" grant. If the app asks for permissions in `connect`, it gets those of them the
   token allows, and is refused if that leaves nothing.
@@ -282,12 +305,14 @@ POST /api/bunker/connections/tokens
 
 Every app signs as **the bunker's key**: "for a member" is attribution, not a separate key.
 Connections are stored, so they survive a restart. `GET /api/bunker/connections` lists them (an
-administrator sees all; anyone else only those for their key), with the app's self-reported name,
+administrator sees all; a signer only those for their key), with the app's self-reported name,
 URL and image marked unverified (`metadata_verified: false`): NIP-46 lets an app name itself, and
 that is never used to decide anything. A connection ends when the app sends `logout`, an
 administrator (any) or the member it was made for (their own) revokes it
 (`DELETE /api/bunker/connections/:id`; another member's is a 404, and `revoked_by` records who),
-or its member is removed.
+or its member is removed (`member_removed`) or becomes a viewer (`role_changed`, #77). A request
+from a connection whose member is now a viewer is refused as a removed member's is, and a token
+issued for one does not connect.
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`. The NIP-04 and NIP-44 encryption methods are not supported.

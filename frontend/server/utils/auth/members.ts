@@ -1,10 +1,9 @@
 // What sign-in asks the bunker, as the `service` identity (#25): its own pubkey, and who a key is.
 import type { H3Event } from 'h3'
 import { decode } from 'nostr-tools/nip19'
+import { ROLES } from '#shared/types/bunker'
 import type { BunkerStatus, Role, TeamMember } from '#shared/types/bunker'
 import { bunkerServiceFetch } from '../bunker-service'
-
-const ROLES: Role[] = ['administrator', 'user', 'signer']
 
 /** The bunker's own pubkey, hex. It may never sign in (ADR rule 10). */
 export async function bunkerPubkey(event: H3Event): Promise<string> {

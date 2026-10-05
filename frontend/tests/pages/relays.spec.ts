@@ -48,7 +48,7 @@ async function addRelay(component: Mounted, value: string) {
 describe('Relays page', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
-    signInAs('user')
+    signInAs('signer')
     relays = new FakeRelays()
     holder.io = relays
     holder.signer = signer

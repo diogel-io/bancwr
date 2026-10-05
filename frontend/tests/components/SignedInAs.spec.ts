@@ -20,7 +20,7 @@ describe('SignedInAs (#70)', () => {
 
   it('names the signed-in key, with its npub', async () => {
     found.value = { name: 'Alice', createdAt: 1 }
-    signInAs('user')
+    signInAs('signer')
     const component = await mountSuspended(SignedInAs)
     await flushPromises()
     expect(component.find('[data-testid="signed-in-as"]').text()).toContain('Signed in as Alice')
@@ -29,7 +29,7 @@ describe('SignedInAs (#70)', () => {
 
   it('falls back to a short npub without a profile', async () => {
     found.value = undefined
-    signInAs('user')
+    signInAs('signer')
     const component = await mountSuspended(SignedInAs)
     await flushPromises()
     expect(component.find('[data-testid="signed-in-as"]').text()).toContain('Signed in as npub1a')

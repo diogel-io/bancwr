@@ -37,8 +37,34 @@ describe('TeamMemberList', () => {
     // The npub, not the stored hex, and the role's label, not its value (#24).
     expect(component.text()).toContain('npub1alice')
     expect(component.text()).not.toContain('a'.repeat(64))
-    expect(component.text()).toContain('Administrator')
+    expect(component.text()).toContain('Admin')
     expect(component.text()).toContain('Signer')
+  })
+
+  it('shows the role names of #77', async () => {
+    const viewer: TeamMember = { id: 'e1f2a3b4-5c6d-4e7f-8091-a2b3c4d5e6f7', name: 'Vera', pubkey: 'c'.repeat(64), npub: 'npub1vera', role: 'viewer' }
+    const component = await mountSuspended(TeamMemberList, { props: { data: [...mockTeam, viewer] } })
+    const roles = component.findAll('tbody tr').map(row => row.findAll('td')[2]!.text())
+    expect(roles).toEqual(['Admin', 'Signer', 'Viewer'])
+  })
+
+  it('links each member to their read-only profile, by npub (#77)', async () => {
+    const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam } })
+    const link = component.get('a[aria-label="View Bob\'s profile"]')
+    expect(link.attributes('href')).toBe('/team/npub1bob')
+    expect(link.text()).toBe('Bob')
+  })
+
+  it('read-only: lists names, npubs and roles, with no remove control (#77)', async () => {
+    const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam, readOnly: true } })
+
+    expect(component.text()).toContain('Alice')
+    expect(component.text()).toContain('npub1bob')
+    expect(component.text()).toContain('Signer')
+    expect(component.find('button[aria-label="Remove Bob"]').exists()).toBe(false)
+    expect(component.text()).not.toContain('Actions')
+    // Still a way to each member's profile.
+    expect(component.get('a[aria-label="View Bob\'s profile"]').attributes('href')).toBe('/team/npub1bob')
   })
 
   it('shows a row from before #24 as stored', async () => {

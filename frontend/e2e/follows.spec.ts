@@ -33,7 +33,7 @@ async function addFollow(page: Page, value: string) {
 }
 
 anonymousTest('a member edits their follows, and everything they did not change survives', async ({ page }) => {
-  const nsec = process.env.E2E_USER_NSEC!
+  const nsec = process.env.E2E_SIGNER_NSEC!
   const me = getPublicKey(keyOf(nsec))
   const alice = generateSecretKey()
   const [bob, carol, dave] = [someone(), someone(), someone()]
@@ -78,8 +78,8 @@ test('a follow list held only by an indexer is found (#62)', async ({ page }) =>
   await expect(page.getByTestId('follows-not-found')).toHaveCount(0)
 })
 
-test.describe('signer', () => {
-  test.use({ role: 'signer' })
+test.describe('viewer', () => {
+  test.use({ role: 'viewer' })
 
   test('cannot open the follow list', async ({ page }) => {
     const response = await page.goto('/follows')

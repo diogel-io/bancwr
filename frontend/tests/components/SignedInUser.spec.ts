@@ -38,8 +38,8 @@ describe('SignedInUser', () => {
   it('shows the signed-in key and role, and signs out', async () => {
     const component = await mountFooter()
     expect(component.find('[data-testid="user-name"]').text()).toBe(`${npub.slice(0, 12)}…${npub.slice(-4)}`)
-    expect(component.text()).toContain('Administrator')
-    expect(component.find('[role="group"]').attributes('aria-label')).toBe(`Signed in as ${npub}, Administrator`)
+    expect(component.text()).toContain('Admin')
+    expect(component.find('[role="group"]').attributes('aria-label')).toBe(`Signed in as ${npub}, Admin`)
     await component.find('button[aria-label="Sign out"]').trigger('click')
     expect(signOut).toHaveBeenCalled()
   })
@@ -58,7 +58,7 @@ describe('SignedInUser', () => {
     const name = component.find('[data-testid="user-name"]')
     expect(name.text()).toBe('Alice')
     expect(name.attributes('title')).toBe(npub)
-    expect(component.find('[role="group"]').attributes('aria-label')).toBe(`Signed in as ${npub}, Administrator`)
+    expect(component.find('[role="group"]').attributes('aria-label')).toBe(`Signed in as ${npub}, Admin`)
   })
 
   it('shows the user icon, and no image, without a picture (#72)', async () => {
@@ -86,10 +86,10 @@ describe('SignedInUser', () => {
   it('collapsed: shows the avatar on its own, and still signs out with the identity in its name', async () => {
     found.value = { name: 'Alice', picture: 'https://img.example/alice.png', createdAt: 1 }
     const component = await mountFooter(true)
-    expect(component.text()).not.toContain('Administrator')
+    expect(component.text()).not.toContain('Admin')
     expect(component.find('img').attributes('src')).toBe('https://img.example/alice.png')
     const signOutButton = component.find('button')
-    expect(signOutButton.attributes('aria-label')).toBe(`Sign out. Signed in as ${npub}, Administrator`)
+    expect(signOutButton.attributes('aria-label')).toBe(`Sign out. Signed in as ${npub}, Admin`)
     await signOutButton.trigger('click')
     expect(signOut).toHaveBeenCalled()
   })
