@@ -1,0 +1,96 @@
+# Changelog
+
+## 0.1.0 (2026-10-17)
+
+
+### Features
+
+* authenticate and role-gate the bunker API ([b892ae2](https://github.com/diogel-io/bancwr/commit/b892ae26cb3d6cdf3259fe9e31c55cb6f43e44dd))
+* authenticate and role-gate the bunker API ([d4c866c](https://github.com/diogel-io/bancwr/commit/d4c866cdb9cb856b568a198d22044dbd84684db7)), closes [#25](https://github.com/diogel-io/bancwr/issues/25)
+* **frontend:** add Vite dependency optimization configuration ([96ea651](https://github.com/diogel-io/bancwr/commit/96ea651e321b0bb7b2c9a73883b5c42f45b2fa44))
+* **frontend:** apply Diogel corporate styles and logo ([f40efc2](https://github.com/diogel-io/bancwr/commit/f40efc21a0f48cbb1e291a186dca626ba03d61e4))
+* **frontend:** edit your own Nostr profile, signed by your own signer ([fecef76](https://github.com/diogel-io/bancwr/commit/fecef768ef266e1bfc3ae6a0b03d5dd022373773))
+* **frontend:** edit your own Nostr profile, signed by your own signer ([19cb901](https://github.com/diogel-io/bancwr/commit/19cb9017f2340cf985efac3f9161ae0eb7b05d49)), closes [#30](https://github.com/diogel-io/bancwr/issues/30)
+* **frontend:** manage your own follow list, without losing a follow ([793749d](https://github.com/diogel-io/bancwr/commit/793749d9e5a9a0c6a63dd74e4e6ee41767de0be4))
+* **frontend:** manage your own follow list, without losing a follow ([de642be](https://github.com/diogel-io/bancwr/commit/de642be4502358bbe3c1276f25ec049899976a08)), closes [#32](https://github.com/diogel-io/bancwr/issues/32)
+* **frontend:** manage your own relay list, with the follow list's guards ([a3beb1d](https://github.com/diogel-io/bancwr/commit/a3beb1d9e0280d06d8b87f12a36a38d59b3e73ea))
+* **frontend:** manage your own relay list, with the follow list's guards ([9a9fd18](https://github.com/diogel-io/bancwr/commit/9a9fd189aace70316c9895ddfd86a8861b2b2e26)), closes [#33](https://github.com/diogel-io/bancwr/issues/33)
+* **frontend:** move the shell to the Nuxt UI dashboard layout ([76aac30](https://github.com/diogel-io/bancwr/commit/76aac30936bc681c6c063369be622e9a0842ea47))
+* **frontend:** move to the Nuxt UI dashboard layout ([abbeee7](https://github.com/diogel-io/bancwr/commit/abbeee7de5fd8611cd7b23ebc77df71d6363d15c))
+* **frontend:** replace the placeholder logo with the Diogel mark ([2297440](https://github.com/diogel-io/bancwr/commit/22974401ecdfeab3333c13795bb5c8d7d962641c))
+* **frontend:** ship the Diogel mark as the favicon ([5e6e4bd](https://github.com/diogel-io/bancwr/commit/5e6e4bd5a0a7f8d8b869b3e98f17dacf1b0dee7b))
+* **frontend:** ship the Diogel mark as the favicon ([a340685](https://github.com/diogel-io/bancwr/commit/a34068555d4602a54a1303c7a6d3594764f44148))
+* **frontend:** show bunker health in a shared navbar on every page ([c03d733](https://github.com/diogel-io/bancwr/commit/c03d7335de963299ad79ac2e93355f3033608333))
+* **frontend:** show bunker health in a shared navbar on every page ([38fde17](https://github.com/diogel-io/bancwr/commit/38fde1735a5ea73396a6f5a3b80ef838132a7e5d)), closes [#28](https://github.com/diogel-io/bancwr/issues/28)
+* **frontend:** show each role only the pages it may open ([ec6742c](https://github.com/diogel-io/bancwr/commit/ec6742c32670b0f5e5de91c71d6a7d9763fd7c96))
+* **frontend:** show each role only the pages it may open ([0c5c340](https://github.com/diogel-io/bancwr/commit/0c5c340ee338612a3eb1c24603d859f0309bb163))
+* **frontend:** show the bunker metrics on the dashboard ([1fa3be8](https://github.com/diogel-io/bancwr/commit/1fa3be8ad29b8c39437030ebab2dd18b5934f0c5))
+* **frontend:** show the signed-in key's avatar and name in the sidebar footer ([8a0b483](https://github.com/diogel-io/bancwr/commit/8a0b48317f3fee0523a8c40d231939913949352f))
+* **frontend:** show the signed-in key's avatar and name in the sidebar footer ([872e5fe](https://github.com/diogel-io/bancwr/commit/872e5fe8815a223152a4258a8b36395bb5af520b)), closes [#72](https://github.com/diogel-io/bancwr/issues/72)
+* **frontend:** theme the UI with the Diogel palette ([1118a0d](https://github.com/diogel-io/bancwr/commit/1118a0dbef04e4d08d90c5fbdb82d9252d71d68a))
+* let administrators choose the bunker's relays in the console ([233f4dd](https://github.com/diogel-io/bancwr/commit/233f4ddde9b1b1aa2309c7f70e5bb50bab71ea02))
+* let administrators choose the bunker's relays in the console ([6df5b20](https://github.com/diogel-io/bancwr/commit/6df5b208ae5d06c7ebea727b4a34a32a67e4ca6b)), closes [#78](https://github.com/diogel-io/bancwr/issues/78)
+* make the vault key registry the access-control record ([d0de9b2](https://github.com/diogel-io/bancwr/commit/d0de9b292de362d571a15012ae53d65a14342527))
+* make the vault key registry the access-control record ([e2ec3f1](https://github.com/diogel-io/bancwr/commit/e2ec3f18b4f88109e8a6356a434d08fe6b974783)), closes [#24](https://github.com/diogel-io/bancwr/issues/24)
+* replace the roles with admin, signer and viewer ([1237c01](https://github.com/diogel-io/bancwr/commit/1237c0111326d04834da3cf84b49f765e23d8a3c))
+* replace the roles with admin, signer and viewer ([be04c6f](https://github.com/diogel-io/bancwr/commit/be04c6fd90a42fb6f5492a7ebcaa04e64c94eb4d)), closes [#77](https://github.com/diogel-io/bancwr/issues/77)
+* report real bunker health, including a degraded state ([e5e74bd](https://github.com/diogel-io/bancwr/commit/e5e74bd81bae47890fb992353a624994e0b90a64))
+* report real bunker health, including a degraded state ([4e9ba8e](https://github.com/diogel-io/bancwr/commit/4e9ba8eafaeb50d75d0b7b358571e74dd48ff751)), closes [#27](https://github.com/diogel-io/bancwr/issues/27)
+* report the running Bancwr version ([c41e7d5](https://github.com/diogel-io/bancwr/commit/c41e7d51813ca7396779a855a1a42e992ea0bff1))
+* report the running Bancwr version ([71e5439](https://github.com/diogel-io/bancwr/commit/71e5439393e31fbb3285505064b0079ad52171dc)), closes [#35](https://github.com/diogel-io/bancwr/issues/35)
+* say how the first administrator is set when a bunker has none ([87e57d1](https://github.com/diogel-io/bancwr/commit/87e57d17d3629c0d421205b8af60a4e79dd96a7e))
+* say how the first administrator is set when a bunker has none ([d26548e](https://github.com/diogel-io/bancwr/commit/d26548e42b8d15cfc0c3a606f6734842da6c7ed3)), closes [#74](https://github.com/diogel-io/bancwr/issues/74)
+* show the apps connected for you, and let you revoke them ([b42522e](https://github.com/diogel-io/bancwr/commit/b42522e36f88e612cd9cf3da81aa018d99296b62))
+* show the apps connected for you, and let you revoke them ([0c1c124](https://github.com/diogel-io/bancwr/commit/0c1c124dae58c0e5a7516cc0121be7ae5bf359cf)), closes [#31](https://github.com/diogel-io/bancwr/issues/31)
+* sign in to the administration UI with NIP-07 or NIP-46 ([181447f](https://github.com/diogel-io/bancwr/commit/181447fcc6dec46a1d64b282c913c1d9f71eee86))
+* sign in to the administration UI with NIP-07 or NIP-46 ([7b156ef](https://github.com/diogel-io/bancwr/commit/7b156efa2dff2e8c0cc7c9a4db50327c927977a1)), closes [#11](https://github.com/diogel-io/bancwr/issues/11)
+
+
+### Bug Fixes
+
+* add build deps to chef stage for sccache install ([f84b26c](https://github.com/diogel-io/bancwr/commit/f84b26cb1c3b49fc8777837e3719028c9de2c9d8))
+* add missing build deps to chef stage ([96e724d](https://github.com/diogel-io/bancwr/commit/96e724da26f51e039be3d36028d20ca9d65c4a33))
+* **backend:** indent numbered doc-comment continuations for clippy ([6ce7b70](https://github.com/diogel-io/bancwr/commit/6ce7b70d27841935e84dd7b8b2c9bab35f9d5c8b))
+* **backend:** indent numbered doc-comment continuations for clippy ([188b663](https://github.com/diogel-io/bancwr/commit/188b6632862abe385e12c6af6ee357962fc40b11))
+* close the NIP-46 signer to issued tokens, and make it interoperate ([4703451](https://github.com/diogel-io/bancwr/commit/4703451a69e905d3196d6b2bd4afdf14c629cc2d))
+* close the NIP-46 signer to issued tokens, and make it interoperate ([e14fac5](https://github.com/diogel-io/bancwr/commit/e14fac5b46ca8bf5270e0466eed9f49b61a88204)), closes [#53](https://github.com/diogel-io/bancwr/issues/53) [#52](https://github.com/diogel-io/bancwr/issues/52)
+* **deps:** bump vue to 3.5.42 for GHSA-g2v6-rqmx-r4w6 ([7e4a6fa](https://github.com/diogel-io/bancwr/commit/7e4a6facac8926c9e8d3a4980d2a9fe9007eafc5))
+* **frontend:** confirm the signer's key before signing in ([b89c7a3](https://github.com/diogel-io/bancwr/commit/b89c7a3cebcc3758866b3ac1441cac43a3ca6d92))
+* **frontend:** confirm the signer's key before signing in ([c9fa360](https://github.com/diogel-io/bancwr/commit/c9fa360e4e18aebeb01f52fc1296bbe70e877818)), closes [#70](https://github.com/diogel-io/bancwr/issues/70)
+* **frontend:** find profiles held only by indexer relays, and never create one blindly ([de71957](https://github.com/diogel-io/bancwr/commit/de71957dd1d5d9d3a0d68e571b4fc652c63b1ae6))
+* **frontend:** find profiles held only by indexer relays, and never create one blindly ([05d79c3](https://github.com/diogel-io/bancwr/commit/05d79c3220cd4edbf0be59a1a523b377c60b618c)), closes [#62](https://github.com/diogel-io/bancwr/issues/62)
+* **frontend:** give the team and issue-token fields explicit ids ([f25ec8d](https://github.com/diogel-io/bancwr/commit/f25ec8df8c2cf9d2e86deb64845855bfe582f9cb))
+* **frontend:** make lint and typecheck pass, and gate them in CI ([0e19255](https://github.com/diogel-io/bancwr/commit/0e19255d4986077bcf9269dffefbdf762ec9d611))
+* **frontend:** make lint and typecheck pass, and gate them in CI ([8711d80](https://github.com/diogel-io/bancwr/commit/8711d8031eb053a1a2d64994969d799eb5c586d1)), closes [#37](https://github.com/diogel-io/bancwr/issues/37)
+* **frontend:** tell no third-party host which Bancwr is calling ([f319bc2](https://github.com/diogel-io/bancwr/commit/f319bc28f0a08dea0b421b6b37d2c96eb98e35b5))
+* **frontend:** tell no third-party host which Bancwr is calling ([18aa614](https://github.com/diogel-io/bancwr/commit/18aa614190ea1d0e36c8d8ac1dd4baf028323a2b)), closes [#75](https://github.com/diogel-io/bancwr/issues/75)
+* **frontend:** use a rel value the link types accept ([da9dde0](https://github.com/diogel-io/bancwr/commit/da9dde0371eb262f4f5c141a6d7e3ee4bb69d3ea))
+* give the proxy the variable it reads, and stop it calling itself ([cc0040e](https://github.com/diogel-io/bancwr/commit/cc0040eb4d6a2b7947ed937069e472687f70d0ac))
+* give the proxy the variable it reads, and stop it calling itself ([26d9632](https://github.com/diogel-io/bancwr/commit/26d9632efa9dda4e849baae4d03327e1fbc0dbe5)), closes [#20](https://github.com/diogel-io/bancwr/issues/20)
+* make :latest exist and point image references at diogel-io ([0c35297](https://github.com/diogel-io/bancwr/commit/0c35297402c02a5f6dcff91d0ba4575d8e046407))
+* make removing a team member work ([da567f7](https://github.com/diogel-io/bancwr/commit/da567f7ec7758d6aabefbb5b6d7750546c95c6ce))
+* make removing a team member work ([fd27e6c](https://github.com/diogel-io/bancwr/commit/fd27e6c285bf5fbc0053492738cfdc59dae90394)), closes [#43](https://github.com/diogel-io/bancwr/issues/43)
+* make the Config page read-only and stop storing keys in SQLite ([b600b21](https://github.com/diogel-io/bancwr/commit/b600b21f71b8e66f5c3fe029fdffbb089a7c7dd5))
+* make the Config page read-only and stop storing keys in SQLite ([7fe3949](https://github.com/diogel-io/bancwr/commit/7fe39493b8dc1e8ac884929851bde6ff491e58d8)), closes [#42](https://github.com/diogel-io/bancwr/issues/42)
+* name the member a signature was for in the signing log ([bb156f8](https://github.com/diogel-io/bancwr/commit/bb156f82a2536836a9d0082f1c9bcfeaedb9f836))
+* name the member a signature was for in the signing log ([495a85b](https://github.com/diogel-io/bancwr/commit/495a85b2d10d5983f34311d22085f60b9339f608))
+* pass the NIP-46 settings through compose.yaml ([2d7d2d2](https://github.com/diogel-io/bancwr/commit/2d7d2d241647dc0545b803f95a57bc86df9964a3))
+* pass the NIP-46 settings through compose.yaml ([0e3337b](https://github.com/diogel-io/bancwr/commit/0e3337b3fdac200c41d51e237ed1148cd1322151)), closes [#83](https://github.com/diogel-io/bancwr/issues/83)
+* point repository links at diogel-io/bancwr ([e2200e1](https://github.com/diogel-io/bancwr/commit/e2200e15a54f93f2a38998c5f2df175aae3d8bcc))
+* point repository links at diogel-io/bancwr ([172c5af](https://github.com/diogel-io/bancwr/commit/172c5af6c0c66d3e518eb12d0da76b80ab61427c))
+* rebuild both images on distroless and gate releases on a vulnerability scan ([c38f8c0](https://github.com/diogel-io/bancwr/commit/c38f8c048b07727837ff74211ffe42826b0b0e0b))
+* rebuild both images on distroless and gate releases on a vulnerability scan ([7c68872](https://github.com/diogel-io/bancwr/commit/7c68872cabc89a1a50da2b6376f984c9aaea8514)), closes [#16](https://github.com/diogel-io/bancwr/issues/16)
+* replace unpushable image scan with filesystem scan in CI Trivy step ([e666e88](https://github.com/diogel-io/bancwr/commit/e666e881a65041889c3ed59ec5c83f5001b09936))
+* revert to simpler cargo-chef setup with proper caching ([5488658](https://github.com/diogel-io/bancwr/commit/548865824b6dd596aaa83fce4c8f8b403f7a5ae9))
+* simplify cache configuration for GitHub Actions ([733c6b2](https://github.com/diogel-io/bancwr/commit/733c6b2016788a66ddfb6bb8eb2469ed3889966e))
+
+
+### Performance Improvements
+
+* optimize Docker build for faster CI ([a6cd5c7](https://github.com/diogel-io/bancwr/commit/a6cd5c78067bdd094a2baa9c83290e87280bd3f2))
+* use pre-built DuckDB library instead of compiling from source ([fb0360d](https://github.com/diogel-io/bancwr/commit/fb0360d5776f262b7ca8a13d5b8c7fb867aa3b9f))
+
+
+### Continuous Integration
+
+* cut releases from a release-please release PR ([de27a50](https://github.com/diogel-io/bancwr/commit/de27a5029610f49828135bb1ac9df86ba3556012))
