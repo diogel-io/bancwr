@@ -76,18 +76,21 @@ const addMember = async () => {
           <div class="space-y-4">
             <UFormField label="Name">
               <UInput
+                id="team-member-name"
                 v-model="state.name"
                 placeholder="Alice"
               />
             </UFormField>
             <UFormField label="Pubkey">
               <UInput
+                id="team-member-pubkey"
                 v-model="state.pubkey"
                 placeholder="npub1… or hex"
               />
             </UFormField>
             <UFormField label="Role">
               <USelect
+                id="team-member-role"
                 v-model="state.role"
                 :items="roles"
               />

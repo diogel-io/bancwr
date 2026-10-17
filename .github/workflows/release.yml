@@ -1,0 +1,85 @@
+name: Release
+
+# The release PR and the tag (docs/releasing.md). release-please keeps one release PR,
+# "chore(release): <version>", open against master: it sets the version from the Conventional
+# Commits merged since the last tag, writes CHANGELOG.md and bumps compose.yaml. Merging that PR is
+# the release: this workflow then creates the v<version> tag and the GitHub release, closes the
+# version's milestone, and starts Release Backend and Release Frontend for the tag.
+on:
+  push:
+    branches: [master]
+
+# One release run at a time, queued rather than cancelled, so two quick merges to master cannot
+# race each other into duplicate tags or releases.
+concurrency:
+  group: bancwr-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: master
+
+  # A tag pushed with the workflow GITHUB_TOKEN does not start `on: push: tags` workflows (GitHub
+  # blocks it to prevent loops), so the image releases are started here by workflow_dispatch,
+  # which GitHub does allow. Each builds, tests and scans the tag before publishing, exactly as
+  # for a tag pushed by hand.
+  publish-images:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Start Release Backend and Release Frontend for the tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          for workflow in release-backend.yml release-frontend.yml; do
+            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH" -f ref="$TAG"
+            echo "Started $workflow for $TAG"
+          done
+
+  # The milestone named after the version (for example 0.1.0) is the release's scope. It is done
+  # once the release exists. A missing milestone is not an error: not every release has one.
+  close-milestone:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close the version's milestone
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          number="$(gh api "repos/$GITHUB_REPOSITORY/milestones?state=open&per_page=100" \
+            --jq ".[] | select(.title == \"$VERSION\") | .number")"
+          if [ -z "$number" ]; then
+            echo "::notice::No open milestone named $VERSION; nothing to close."
+            exit 0
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/milestones/$number" -f state=closed --silent
+          echo "Closed milestone $VERSION (#$number)"

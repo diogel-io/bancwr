@@ -93,7 +93,7 @@ jobs:
           sed 's/^/  /' tags.txt
           { echo 'list<<EOF'; cat tags.txt; echo 'EOF'; } >> "$GITHUB_OUTPUT"
 
-      # The release checklist bumps compose.yaml before tagging (docs/releasing.md); a tag whose
+      # The release PR bumps compose.yaml with the version (docs/releasing.md); a tag whose
       # compose.yaml names another version is published anyway, with a warning to fix it.
       - name: Check compose.yaml names this release
         if: inputs.kind == 'release'
@@ -103,7 +103,7 @@ jobs:
         run: |
           version="${TAG#v}"
           if ! grep -qF "bancwr-diogel-${COMPONENT}:${version}" compose.yaml; then
-            echo "::warning file=compose.yaml::compose.yaml does not pin bancwr-diogel-${COMPONENT}:${version}. Bump it (docs/releasing.md, Cutting a release)."
+            echo "::warning file=compose.yaml::compose.yaml does not pin bancwr-diogel-${COMPONENT}:${version}. Check its x-release-please-version markers (docs/releasing.md)."
           fi
 
       - uses: docker/setup-buildx-action@v3
