@@ -143,6 +143,7 @@ function done() {
         help="The member this app is connected for. It signs as the bunker's key."
       >
         <USelect
+          id="issue-token-for"
           v-model="forPubkey"
           :items="memberItems"
           class="w-full"
@@ -153,6 +154,7 @@ function done() {
         help="To recognise it later, e.g. Damus on Gary's phone."
       >
         <UInput
+          id="issue-token-label"
           v-model="label"
           class="w-full"
           maxlength="100"
@@ -164,6 +166,7 @@ function done() {
       >
         <div class="space-y-2">
           <USelect
+            id="issue-token-kinds"
             v-model="preset"
             :items="presetItems"
             class="w-full"
@@ -179,6 +182,7 @@ function done() {
       </UFormField>
       <UFormField label="Valid for">
         <USelect
+          id="issue-token-expiry"
           v-model="hours"
           :items="EXPIRY"
           class="w-full"
