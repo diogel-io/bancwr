@@ -2,9 +2,17 @@
 
 ## Version authority
 
-`GitVersion.yml` is the only source of the Bancwr version. GitVersion computes it from that file
-and the repository's `v*` tags, using the GitHub Flow preset: one protected branch (`master`),
-short-lived branches, no `develop`.
+A release's version is set by its **release PR**. [release-please](https://github.com/googleapis/release-please)
+(`.github/workflows/release.yml`, `release-please-config.json`, `.release-please-manifest.json`)
+reads the Conventional Commits merged to `master` since the last tag, works out the next version,
+and keeps one pull request, `chore(release): <version>`, open with that version. Merging it creates
+the `v<version>` tag. This is the same process as Porwr's, and the Diogel release-process standard
+(`40-engineering/standards/release-process.md` in diogel-io/workspace) describes it for every
+product.
+
+GitVersion (`GitVersion.yml`) versions trunk builds only: the `:edge` images and their `<semVer>`
+tag, computed from the latest `v*` tag with the GitHub Flow preset (one protected branch,
+`master`, short-lived branches, no `develop`).
 
 Backend and frontend are released together under one version and one tag namespace,
 `v<major>.<minor>.<patch>`. There is no per-image versioning.
@@ -43,9 +51,13 @@ both call it.
 
 | Where | Example `semVer` |
 | --- | --- |
-| `master`, before any release | `0.1.0-49` (next version, then commits since the last tag) |
+| `master`, before any release | `0.1.0-49` (`next-version`, then commits since the last tag) |
 | The `v0.1.0` tag | `0.1.0` |
 | `master`, after `v0.1.0` | `0.1.1-1` |
+
+GitVersion always counts on from the last tag's patch, so a trunk build can read `0.1.1-3` while the
+open release PR says `0.2.0`. The release PR is the one that counts; trunk versions only order
+`:edge` builds.
 
 Images are tagged with `semVer`, not `fullSemVer`. `fullSemVer` can carry `+` build metadata,
 and image tags cannot contain `+`.
@@ -103,37 +115,69 @@ branch's label, such as `0.1.0-my-branch.1`. Runs on `master` itself are not aff
 
 ## Cutting a release
 
-1. Check that every issue in the release's milestone is closed or moved to a later milestone.
-2. Pin `compose.yaml` to the new version, for both images, in a pull request of its own, and merge
-   it. The tagged commit's `compose.yaml` then names its own release, so a checkout of the tag runs
-   it. The tag run warns (it does not fail) when they differ.
-3. Update your local `master` and confirm the version GitVersion will produce:
+Releases are cut by merging the release PR. Nobody pushes a tag by hand.
 
-   ```bash
-   git switch master
-   git pull --ff-only
-   podman run --rm -v "$PWD:/repo:Z" docker.io/gittools/gitversion:6.8.2 /repo /showvariable MajorMinorPatch
-   ```
+### Scope: the milestone
 
-4. Create and push an annotated tag from your own account:
+Each planned release has a GitHub milestone named after its version without the `v`, for example
+`0.1.0`. Issues are put in the milestone when they are deliberately scoped into that release, and
+every pull request that delivers one is put in the same milestone. The release PR is put in it too,
+so the milestone lists the release's scope, the changes that delivered it, and the PR that ships
+it. Create the next milestone only when there is work to put in it. The release workflow closes the
+milestone when the release is created.
 
-   ```bash
-   git tag -a v0.1.0 -m "Bancwr 0.1.0"
-   git push origin v0.1.0
-   ```
+### The release PR
 
-5. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
+On every push to `master`, release-please opens or updates `chore(release): <version>` from the
+branch `release-please--branches--master--components--bancwr`, labelled `autorelease: pending`. It:
+
+- sets the version from the commits since the last tag (see [Choosing the next version](#choosing-the-next-version));
+- writes the new section of `CHANGELOG.md` from the `feat`, `fix`, `perf` and `revert` commits;
+- bumps both images in `compose.yaml`, on the lines marked `# x-release-please-version`, so the
+  tagged commit's `compose.yaml` names its own release.
+
+A merge with no `feat`, `fix`, `perf`, `revert` or breaking commit (for example `docs` or `ci`
+alone) leaves the release PR as it is, or opens none.
+
+The release PR is opened with the workflow `GITHUB_TOKEN`, so GitHub does not run CI on it. Close
+and reopen it, or push an empty commit to its branch, to get the checks.
+
+### Releasing
+
+1. Check that every issue in the version's milestone is closed or moved to a later milestone.
+2. Review the release PR: the version, the `CHANGELOG.md` section and the `compose.yaml` bump. If a
+   commit is in the wrong section (a breaking change without `!`, say), fix the commit message
+   rather than editing the generated PR: see [Fixing the release notes](#fixing-the-release-notes).
+3. Merge the release PR. `.github/workflows/release.yml` then:
+   - creates the `v<version>` tag on the merge commit and the GitHub release, with the changelog
+     section as its notes, and relabels the PR `autorelease: tagged`;
+   - starts **Release Backend** and **Release Frontend** for the tag (by `workflow_dispatch`,
+     because a tag created with the workflow token does not start `on: push: tags` workflows);
+   - closes the milestone named after the version.
+4. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
    images carry `0.1.0`, `0.1` and `latest` in GHCR, and that `latest` and `0.1.0` have the same
    digest. Each runs the full test suite first (see [The test gate](#the-test-gate)); if a test
-   fails, nothing is published and the job graph shows `test` failed before `release`.
-6. Create the GitHub release from the tag with generated notes. `.github/release.yml` groups them
-   by pull request label.
+   fails, nothing is published and the job graph shows `test` failed before `release`. Fix the
+   cause, then run the release by hand for the tag:
 
    ```bash
-   gh release create v0.1.0 --generate-notes --verify-tag
+   gh workflow run "Release Backend" -R diogel-io/bancwr -f ref=v0.1.0
+   gh workflow run "Release Frontend" -R diogel-io/bancwr -f ref=v0.1.0
    ```
 
-7. Close the milestone.
+A tag pushed by hand still starts both image releases, as before, but it bypasses the release PR,
+the changelog and the version bump. Use it only to recover from a broken release run.
+
+### Fixing the release notes
+
+release-please reads commit messages, not PR titles. To correct one after it has merged, edit the
+merged PR's body to add an override block, and the next run regenerates the release PR from it:
+
+```text
+BEGIN_COMMIT_OVERRIDE
+feat!: replace the roles with admin, signer and viewer
+END_COMMIT_OVERRIDE
+```
 
 ### The vulnerability gate
 
@@ -196,25 +240,23 @@ A workflow shown as `disabled_inactivity` is re-enabled with
   only published for a commit or tag whose tests pass. CI does not run on `v*` tags, so for a
   release tag this is the only gate.
 
-### Push the tag yourself
+### Who releases
 
-Release tagging is deliberately manual
-([#38](https://github.com/diogel-io/bancwr/issues/38)): a person is accountable for every release
-of a component that holds signing keys. Do not add a workflow that creates `v*` tags.
-
-It would not work with the default credential anyway. A tag pushed with the workflow
-`GITHUB_TOKEN` does not start `on: push: tags` workflows, because GitHub blocks it to prevent
-workflow loops, so a workflow that created the tag would publish nothing.
+Merging the release PR is the release. #38 asked for a person to be accountable for each release of
+a component that holds signing keys: that person is whoever approves and merges the release PR. It
+is reviewed like any other change, and nothing is tagged or published until it is merged.
 
 ### Choosing the next version
 
-GitVersion increments the patch after each tag. To make the next release a minor or major
-version, raise `next-version` in `GitVersion.yml` in a normal pull request, or add
-`+semver: minor` or `+semver: major` to a commit message.
+release-please chooses the version from the commit types since the last tag. While the major
+version is 0 (`bump-minor-pre-major`):
 
-## Milestones
+| Commit | Next version |
+| --- | --- |
+| `fix:` | patch, `0.1.0` to `0.1.1` |
+| `feat:` | minor, `0.1.0` to `0.2.0` |
+| `feat!:` or a `BREAKING CHANGE:` footer | minor as well while the major is 0 |
 
-Each planned release has a GitHub milestone named after its version without the `v`, for example
-`0.1.0`. Issues are added to a milestone when they are deliberately scoped into that release.
-Create the next milestone only when there is work to put in it, and close a milestone when its
-tag is published.
+To force a version, such as `1.0.0`, merge a commit whose message has a `Release-As: 1.0.0` footer.
+The manifest starts at `0.0.0` and the commit that set up release-please carries
+`Release-As: 0.1.0`, so the first release is `0.1.0`.

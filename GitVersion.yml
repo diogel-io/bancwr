@@ -1,5 +1,6 @@
-# The single version authority for Bancwr. Backend and frontend are released together under one
-# v<major>.<minor>.<patch> tag; Cargo.toml and package.json are not release inputs.
+# Versions trunk builds only (:edge and the <semVer> image tag), from the repository's v* tags.
+# Release versions come from release-please: the release PR sets the version and merging it
+# creates the v<major>.<minor>.<patch> tag. Cargo.toml and package.json are not release inputs.
 # See docs/releasing.md.
 workflow: GitHubFlow/v1
 next-version: 0.1.0
