@@ -3,6 +3,7 @@ name = "bunker"
 # Not the release version. GitVersion.yml is the version authority; see docs/releasing.md.
 version = "0.0.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
