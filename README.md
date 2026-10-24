@@ -228,3 +228,7 @@ The role values changed from `administrator`, `user` and `signer` to `administra
 The log names every member whose role changed and every connection revoked. A script that adds
 members through `POST /api/bunker/team` must send `signer` where it sent `user`: `user` is now
 refused with `400`.
+
+## Licence
+
+Bancwr is released under the [MIT License](LICENSE).
