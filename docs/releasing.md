@@ -166,6 +166,10 @@ and reopen it, or push an empty commit to its branch, to get the checks.
    gh workflow run "Release Backend" -R diogel-io/bancwr -f ref=v0.1.0
    gh workflow run "Release Frontend" -R diogel-io/bancwr -f ref=v0.1.0
    ```
+5. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
+   images are published, open a `docs:` PR that removes the README's "Bancwr has not been released
+   yet" paragraph, the "from the first release on" and "(from v0.1.0 on)" qualifiers, and the
+   pre-release `compose.override.yaml` note under **Running the Environment** (#90).
 
 A tag pushed by hand still starts both image releases, as before, but it bypasses the release PR,
 the changelog and the version bump. Use it only to recover from a broken release run.

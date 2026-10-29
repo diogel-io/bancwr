@@ -92,6 +92,7 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    fails to pull them. Until `v0.1.0`, run trunk instead with a local `compose.override.yaml`
    beside `compose.yaml`, which compose reads automatically. Leave `compose.yaml` itself as it is:
    each release PR bumps its pins.
+
    ```yaml
    services:
      bunker:
@@ -99,6 +100,9 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
      frontend:
        image: ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    ```
+
+   Once `v0.1.0` is released, delete `compose.override.yaml` and run `podman compose up -d` again.
+   While the override is there, compose keeps running the unreleased `edge` images.
 
 The frontend reaches the bunker over the compose network at `http://bunker:3000`, set as
 `NUXT_API_BASE` on the frontend service in `compose.yaml`. If you run the frontend image outside
