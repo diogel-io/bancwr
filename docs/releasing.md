@@ -71,7 +71,9 @@ podman run --rm -v "$PWD:/repo:Z" docker.io/gittools/gitversion:6.8.2 /repo /sho
 ## Image tags
 
 `:latest` is the newest reviewed release, and trunk is `:edge` (#15). Before #15 every push to
-`master` wrote `:latest`, so a self-hoster following it ran whatever merged last.
+`master` wrote `:latest`, so a self-hoster following it ran whatever merged last. The last of those
+images (`0.1.0-99`) stayed in GHCR as `:latest` after #15 until it was deleted under #90. Before
+the first release, neither package should have a `latest` tag at all.
 
 | Tag | Written on | Points at |
 | --- | --- | --- |
