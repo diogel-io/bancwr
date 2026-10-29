@@ -39,6 +39,9 @@ version control. Do not commit database files; use explicit seed fixtures instea
 
 ### Authentication and roles
 
+This boundary, and the others Bancwr relies on, are described in the
+[threat model](../docs/threat-model.md) (B3, T6).
+
 The browser never calls the bunker: it calls the frontend's Nitro server, which proxies
 `/api/bunker/*` and attaches the caller's identity. When `BANCWR_PROXY_SECRET` is set, every
 `/api/bunker/*` request must carry:

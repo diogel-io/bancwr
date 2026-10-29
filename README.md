@@ -255,6 +255,14 @@ The log names every member whose role changed and every connection revoked. A sc
 members through `POST /api/bunker/team` must send `signer` where it sent `user`: `user` is now
 refused with `400`.
 
+## Security
+
+To report a vulnerability, use GitHub private vulnerability reporting on the repository's
+[Security tab](https://github.com/diogel-io/bancwr/security), or email support@threenine.co.uk with
+"Bancwr security" in the subject. Do not open a public issue. [SECURITY.md](SECURITY.md) has the
+details. What Bancwr protects, its trust boundaries and its known limits are in the
+[threat model](docs/threat-model.md).
+
 ## Licence
 
 Bancwr is released under the [MIT License](LICENSE).
