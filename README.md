@@ -101,7 +101,8 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
        image: ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    ```
 
-   Once `v0.1.0` is released, delete `compose.override.yaml` and run `podman compose up -d` again.
+   Once both `0.1.0` images are published to GHCR (`podman pull` of each succeeds), delete
+   `compose.override.yaml` and run `podman compose up -d` again.
    While the override is there, compose keeps running the unreleased `edge` images.
 
 The frontend reaches the bunker over the compose network at `http://bunker:3000`, set as
