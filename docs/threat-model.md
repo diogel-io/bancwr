@@ -43,7 +43,7 @@ the READMEs. Nothing here was penetration-tested.
 
 | ID | Asset | Where it lives | Why it matters |
 |----|-------|----------------|----------------|
-| A1 | The bunker's private key | `BUNKER_NSEC`, or the file `BUNKER_NSEC_FILE` names, read at start (`backend/src/config.rs`). Held in bunker memory (`backend/src/signer.rs`). Not encrypted at rest | Whoever has it is that Nostr identity, permanently: Nostr has no key rotation or revocation |
+| A1 | The bunker's private key | `BUNKER_NSEC`, which is what `compose.yaml` passes; outside compose the bunker can read it instead from the file `BUNKER_NSEC_FILE` names. Read at start (`backend/src/config.rs`). Held in bunker memory (`backend/src/signer.rs`). Not encrypted at rest | Whoever has it is that Nostr identity, permanently: Nostr has no key rotation or revocation |
 | A2 | The ability to make the bunker sign | The NIP-46 handler (`backend/src/nip46.rs`) | An attacker does not need A1 if they can get events signed with it |
 | A3 | The proxy secret | `BANCWR_PROXY_SECRET` on the bunker, `NUXT_PROXY_SECRET` on the frontend, the same value | With it, anyone who reaches the bunker can call its API as any identity |
 | A4 | The session-sealing password | `NUXT_SESSION_PASSWORD` on the frontend | Seals the session cookie |
@@ -95,7 +95,7 @@ the compose network. The frontend is published on `127.0.0.1:3001` only, for the
 | T8 | Have the bunker sign anything for anyone | B3, B4 | X4, X6 | There is no `POST /sign` route. NIP-46 needs a connection token an administrator issued: single-use, 1 hour to 7 days, for a member who can sign, and limited to the kinds it names. There is no "everything" grant. The token secret is shown once and stored as a hash. A connection may sign only the kinds granted, and only while its member may sign (`nip46.rs`, `backend/src/connections_api.rs`; #53) |
 | T9 | Read or tamper with NIP-46 traffic | B4 | X5 | Requests and responses are encrypted end to end between app and bunker (NIP-44, or NIP-04 for older clients) and signed (`relay.rs`). Relays must be `wss://` except on this machine (`bunker_relays.rs`). The client answers relay NIP-42 AUTH challenges (`relay.rs`). A relay can still drop or delay traffic |
 | T10 | Pass an app off as something it is not | B4 | X4 | An app's name, URL and image are marked unverified (`metadata_verified: false`) and never used to decide anything (`nip46.rs`) |
-| T11 | Read or change the key, secrets or database on the host | B6 | X8 | Not prevented: see section 5. Containers run as UID 65532 on distroless images with no shell (#16). `BUNKER_NSEC_FILE` keeps the key out of the environment |
+| T11 | Read or change the key, secrets or database on the host | B6 | X8 | Not prevented: see section 5. Containers run as UID 65532 on distroless images with no shell (#16). `BUNKER_NSEC_FILE` keeps the key out of the environment, for deployments that set it instead of `compose.yaml`'s `BUNKER_NSEC` |
 | T12 | Ship a vulnerable or tampered image | B6 | X9 | Release images are built from a tag, pass the test suite, and are gated on fixable critical and high Trivy findings before anything is published. Published images are scanned weekly (`docs/releasing.md`, `.github/workflows/release-image.yml`, `trivy-security.yml`). Images are not yet signed (section 5) |
 | T13 | Lock everyone out | B2, B3 | X3 | The last administrator cannot be removed. `BANCWR_ADMIN_PUBKEY` seeds an administrator when none exists, and never re-adds or demotes anyone afterwards (`backend/src/main.rs`, `backend/src/db.rs`) |
 
@@ -142,7 +142,8 @@ No open findings are recorded here; see [`SECURITY.md`](../SECURITY.md) for how 
 | T6 proxy signature (the same vectors in both languages) | `frontend/tests/server/auth/proxy-signature.spec.ts`, `backend/tests/unit/proxy_auth_test.rs`, `backend/tests/integration/auth_test.rs` |
 | T4, T5 roles and the access matrix | `backend/tests/integration/team_api_test.rs`, `auth_test.rs`, `frontend/e2e/roles.spec.ts` |
 | T8, T10 connection tokens and connections | `backend/tests/integration/nip46_connections_test.rs`, `backend/tests/unit/nip46_test.rs`, `frontend/e2e/connections.spec.ts` |
-| T9 relays and kind 24133 | `backend/tests/unit/relay_test.rs`, `backend/tests/integration/relays_api_test.rs` |
+| T9 kind 24133 requests and responses | `backend/tests/integration/nip46_connections_test.rs` |
+| T9 `wss://` required except on this machine | `backend/tests/integration/relays_api_test.rs` |
 | T12 release gates | `.github/scripts/test-release-scripts.sh`, and the release workflows themselves |
 | T13 the no-administrator warning | `frontend/tests/server/auth/members.spec.ts`, `backend/tests/unit/health_test.rs` |
 | T7 CORS, T11 host | No dedicated test |
