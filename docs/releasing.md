@@ -71,7 +71,9 @@ podman run --rm -v "$PWD:/repo:Z" docker.io/gittools/gitversion:6.8.2 /repo /sho
 ## Image tags
 
 `:latest` is the newest reviewed release, and trunk is `:edge` (#15). Before #15 every push to
-`master` wrote `:latest`, so a self-hoster following it ran whatever merged last.
+`master` wrote `:latest`, so a self-hoster following it ran whatever merged last. The last of those
+images (`0.1.0-99`) stayed in GHCR as `:latest` after #15 until it was deleted under #90. Before
+the first release, neither package should have a `latest` tag at all.
 
 | Tag | Written on | Points at |
 | --- | --- | --- |
@@ -164,6 +166,11 @@ and reopen it, or push an empty commit to its branch, to get the checks.
    gh workflow run "Release Backend" -R diogel-io/bancwr -f ref=v0.1.0
    gh workflow run "Release Frontend" -R diogel-io/bancwr -f ref=v0.1.0
    ```
+
+5. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
+   images are published, open a `docs:` PR that removes the README's "Bancwr has not been released
+   yet" paragraph, the "from the first release on" and "(from v0.1.0 on)" qualifiers, and the
+   pre-release `compose.override.yaml` note under **Running the Environment** (#90).
 
 A tag pushed by hand still starts both image releases, as before, but it bypasses the release PR,
 the changelog and the version bump. Use it only to recover from a broken release run.

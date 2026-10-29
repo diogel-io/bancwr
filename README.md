@@ -11,27 +11,36 @@
 Images are published to GitHub Container Registry (GHCR). Backend and frontend share one version
 and are released together.
 
+**Bancwr has not been released yet.** There are no `v*` tags or
+[GitHub releases](https://github.com/diogel-io/bancwr/releases), so `latest`, `<version>` and
+`<major>.<minor>` are not published until the first release, `v0.1.0`. Until then only trunk builds
+exist: `edge`, `master`, `sha-<short>` and `<semVer>`. The releases page is the record of what has
+been released.
+
 | Tag | Points at |
 |-----|-----------|
-| `latest` | The newest release. What `compose.yaml` follows, pinned to its version. |
-| `<version>`, such as `0.1.0` | That release. Rebuilt weekly on fresh base images, so the digest can change; the code does not. |
-| `<major>.<minor>`, such as `0.1` | The newest patch of that release line. |
+| `latest` | The newest release, from the first release on. What `compose.yaml` follows, pinned to its version. |
+| `<version>`, such as `0.1.0` | That release, from the first release on. Rebuilt weekly on fresh base images, so the digest can change; the code does not. |
+| `<major>.<minor>`, such as `0.1` | The newest patch of that release line, from the first release on. |
 | `edge` | Trunk: the latest `master` commit, not a reviewed release. |
 | `master` | The same image as `edge`. |
 | `sha-<short>` | One specific commit. |
-| `<semVer>` | The GitVersion version of a trunk build, such as `0.1.1-3`. |
+| `<semVer>` | The GitVersion version of a trunk build, such as `0.1.0-127`. |
 
 `compose.yaml` pins an exact version, so upgrading is a deliberate change to that file. Use
 `edge` only to try what has merged but not been released.
+
+The images are named `bancwr-diogel-backend` and `bancwr-diogel-frontend`. The names stay as they
+are: renaming them would break every existing pull and `compose.yaml`.
 
 Versions, tags, and the release process are described in [docs/releasing.md](docs/releasing.md).
 
 ### Backend
 ```bash
-# The newest release
+# The newest release (from v0.1.0 on)
 podman pull ghcr.io/diogel-io/bancwr-diogel-backend:latest
 
-# A specific release
+# A specific release (from v0.1.0 on)
 podman pull ghcr.io/diogel-io/bancwr-diogel-backend:0.1.0
 
 # Trunk
@@ -40,10 +49,10 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-backend:edge
 
 ### Frontend
 ```bash
-# The newest release
+# The newest release (from v0.1.0 on)
 podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:latest
 
-# A specific release
+# A specific release (from v0.1.0 on)
 podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:0.1.0
 
 # Trunk
@@ -78,6 +87,23 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    ```bash
    podman compose up -d
    ```
+
+   Before the first release, the `0.1.0` images that `compose.yaml` pins do not exist yet, so this
+   fails to pull them. Until `v0.1.0`, run trunk instead with a local `compose.override.yaml`
+   beside `compose.yaml`, which compose reads automatically. Leave `compose.yaml` itself as it is:
+   each release PR bumps its pins.
+
+   ```yaml
+   services:
+     bunker:
+       image: ghcr.io/diogel-io/bancwr-diogel-backend:edge
+     frontend:
+       image: ghcr.io/diogel-io/bancwr-diogel-frontend:edge
+   ```
+
+   Once both `0.1.0` images are published to GHCR (`podman pull` of each succeeds), delete
+   `compose.override.yaml` and run `podman compose up -d` again.
+   While the override is there, compose keeps running the unreleased `edge` images.
 
 The frontend reaches the bunker over the compose network at `http://bunker:3000`, set as
 `NUXT_API_BASE` on the frontend service in `compose.yaml`. If you run the frontend image outside
