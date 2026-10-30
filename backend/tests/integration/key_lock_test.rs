@@ -4,7 +4,7 @@
 // tampered key file. Ends with a healthy start that signs a NIP-46 request with the imported key.
 use bunker::health::{Check, CheckStatus, Overall, LOCKED_RELAYS};
 use bunker::key_store::{KeyStoreError, PLAIN_KEY_NOT_IMPORTED, PLAIN_KEY_STILL_SET};
-use bunker::proxy_auth::{proxy_signature, IDENTITY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
+use bunker::proxy_auth::{proxy_signature, Signed, IDENTITY_HEADER, NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use nostr_connect::prelude::*;
 use nostr_relay_builder::MockRelay;
 use serde_json::{json, Value};
@@ -106,13 +106,29 @@ impl Running {
     }
 
     fn signed(&self, method: reqwest::Method, path: &str, identity: &str) -> reqwest::RequestBuilder {
+        self.signed_body(method, path, identity, Vec::new())
+    }
+
+    /// A signed request with a JSON body: the signature covers the body's exact bytes.
+    fn signed_json(&self, method: reqwest::Method, path: &str, identity: &str, body: &Value) -> reqwest::RequestBuilder {
+        let bytes = serde_json::to_vec(body).unwrap();
+        self.signed_body(method, path, identity, bytes).header("content-type", "application/json")
+    }
+
+    fn signed_body(&self, method: reqwest::Method, path: &str, identity: &str, body: Vec<u8>) -> reqwest::RequestBuilder {
         let timestamp = chrono::Utc::now().timestamp();
-        let signature = proxy_signature(SECRET.as_bytes(), timestamp, method.as_str(), path, identity);
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let signature = proxy_signature(
+            SECRET.as_bytes(),
+            &Signed { timestamp, nonce: &nonce, method: method.as_str(), path, identity, body: &body },
+        );
         self.client
             .request(method, self.url(path))
             .header(IDENTITY_HEADER, identity)
             .header(TIMESTAMP_HEADER, timestamp.to_string())
+            .header(NONCE_HEADER, nonce)
             .header(SIGNATURE_HEADER, signature)
+            .body(body)
     }
 
     async fn health(&self) -> (u16, Value) {
@@ -158,7 +174,7 @@ impl Running {
 
         // Nothing else answers, and no connection token can be issued.
         let admin = self.admin.clone();
-        let res = self.signed(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin).json(&json!({ "label": "x", "kinds": [1] })).send().await.unwrap();
+        let res = self.signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin, &json!({ "label": "x", "kinds": [1] })).send().await.unwrap();
         assert_eq!(res.status(), 503);
         assert_eq!(self.signed(reqwest::Method::GET, "/api/bunker/config", &admin).send().await.unwrap().status(), 503);
     }
@@ -238,8 +254,7 @@ async fn a_0_1_0_deployment_migrates_and_signs_with_the_encrypted_key() {
 
     tokio::time::sleep(Duration::from_millis(500)).await; // let the relay client subscribe
     let res = running
-        .signed(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin)
-        .json(&json!({ "label": "Migration test", "kinds": [1] }))
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin, &json!({ "label": "Migration test", "kinds": [1] }))
         .send()
         .await
         .unwrap();

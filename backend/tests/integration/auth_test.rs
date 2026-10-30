@@ -63,7 +63,7 @@ fn all_routes(app: &common::TestApp) -> Vec<(Method, String)> {
 
 /// A signed request for `route` as `identity`, with a valid body, so an allowed write is not
 /// refused for its payload before the guard's decision can be seen.
-fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> reqwest::RequestBuilder {
+fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> common::ProxyRequest {
     let request = app.signed(route.method.parse().unwrap(), &path_of(app, route), identity);
     match (route.method, route.path) {
         ("POST", "/api/bunker/team") => request.json(&member_body()),
@@ -111,15 +111,9 @@ async fn a_signature_under_another_secret_or_for_another_request_is_401() {
     assert_eq!(body(wrong_secret.send().await.unwrap()).await["reason"], "bad_signature");
 
     // Signed for GET /api/bunker/status, sent to /api/bunker/team.
-    let signature = bunker::proxy_auth::proxy_signature(common::SECRET.as_bytes(), now, "GET", "/api/bunker/status", &admin);
-    let moved = app
-        .unsigned(Method::GET, "/api/bunker/team")
-        .header(bunker::proxy_auth::IDENTITY_HEADER, &admin)
-        .header(bunker::proxy_auth::TIMESTAMP_HEADER, now.to_string())
-        .header(bunker::proxy_auth::SIGNATURE_HEADER, signature)
-        .send()
-        .await
-        .unwrap();
+    let mut moved = app.signed(Method::GET, "/api/bunker/status", &admin).build();
+    *moved.url_mut() = format!("{}/api/bunker/team", app.address).parse().unwrap();
+    let moved = app.client.execute(moved).await.unwrap();
     assert_eq!(moved.status(), StatusCode::UNAUTHORIZED);
 
     let stale = app.signed_with(Method::GET, "/api/bunker/team", &admin, common::SECRET, now - 31);
@@ -287,4 +281,54 @@ async fn there_are_no_cors_headers() {
         .await
         .unwrap();
     assert!(res.headers().get("access-control-allow-origin").is_none());
+}
+
+#[tokio::test]
+async fn a_signed_request_is_accepted_once() {
+    let app = common::spawn(true).await;
+    let admin = app.admin.public_key().to_hex();
+
+    let read = app.signed(Method::GET, "/api/bunker/team", &admin).build();
+    assert_eq!(app.client.execute(read.try_clone().unwrap()).await.unwrap().status(), StatusCode::OK);
+    let again = app.client.execute(read).await.unwrap();
+    assert_eq!(again.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body(again).await["reason"], "replayed");
+
+    // A write sent twice acts once.
+    let before = app.db.get_team_members().unwrap().len();
+    let add = app.signed(Method::POST, "/api/bunker/team", &admin).json(&member_body()).build();
+    assert_eq!(app.client.execute(add.try_clone().unwrap()).await.unwrap().status(), StatusCode::OK);
+    let again = app.client.execute(add).await.unwrap();
+    assert_eq!(body(again).await["reason"], "replayed");
+    assert_eq!(app.db.get_team_members().unwrap().len(), before + 1);
+
+    // Each request the proxy signs has a fresh nonce, so identical requests in a row both pass.
+    for _ in 0..2 {
+        assert_eq!(app.signed(Method::GET, "/api/bunker/team", &admin).send().await.unwrap().status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn a_signature_does_not_carry_over_to_another_body() {
+    let app = common::spawn(true).await;
+    let admin = app.admin.public_key().to_hex();
+    let intended = member_body();
+    let substituted = serde_json::json!({ "name": "Intruder", "pubkey": Keys::generate().public_key().to_bech32().unwrap(), "role": "administrator" });
+
+    let mut add = app.signed(Method::POST, "/api/bunker/team", &admin).json(&intended).build();
+    *add.body_mut() = Some(serde_json::to_vec(&substituted).unwrap().into());
+    let res = app.client.execute(add).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body(res).await["reason"], "bad_signature");
+    assert_eq!(app.db.get_team_members().unwrap().len(), 1, "only the administrator");
+}
+
+#[tokio::test]
+async fn a_body_over_the_limit_is_413() {
+    let app = common::spawn(true).await;
+    let admin = app.admin.public_key().to_hex();
+    let huge = vec![b' '; bunker::proxy_auth::MAX_BODY_BYTES + 1];
+    let res = app.signed(Method::POST, "/api/bunker/team", &admin).body(huge).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(body(res).await["error"], "payload_too_large");
 }

@@ -4,12 +4,13 @@
 
 use bunker::config::Config;
 use bunker::db::Database;
-use bunker::proxy_auth::{proxy_signature, IDENTITY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
+use bunker::proxy_auth::{proxy_signature, Signed, IDENTITY_HEADER, NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use bunker::registry::Role;
 use bunker::server::create_router;
 use bunker::signer::Signer;
 use bunker::state::AppState;
 use nostr::prelude::*;
+use reqwest::header::HeaderValue;
 use reqwest::{Method, RequestBuilder};
 use tokio::net::TcpListener;
 
@@ -81,31 +82,110 @@ pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<Stri
     TestApp { address, client: reqwest::Client::new(), db, bunker, admin, enforced, state }
 }
 
+/// A request to the app, signed like the proxy when it carries an identity. The signature is made
+/// when the request is built, so it covers the body set with `json` or `body`.
+pub struct ProxyRequest {
+    client: reqwest::Client,
+    builder: RequestBuilder,
+    signing: Option<Signing>,
+}
+
+struct Signing {
+    secret: String,
+    timestamp: i64,
+    nonce: String,
+    path: String,
+    identity: String,
+}
+
+impl ProxyRequest {
+    pub fn json<T: serde::Serialize + ?Sized>(mut self, json: &T) -> Self {
+        self.builder = self.builder.json(json);
+        self
+    }
+
+    pub fn body(mut self, body: impl Into<reqwest::Body>) -> Self {
+        self.builder = self.builder.body(body);
+        self
+    }
+
+    pub fn header(mut self, name: &str, value: impl AsRef<str>) -> Self {
+        self.builder = self.builder.header(name, value.as_ref());
+        self
+    }
+
+    /// Signs with this nonce instead of a fresh one.
+    pub fn nonce(mut self, nonce: &str) -> Self {
+        if let Some(signing) = self.signing.as_mut() {
+            signing.nonce = nonce.to_string();
+        }
+        self
+    }
+
+    /// The finished request, signed over its body. Clone it to send the same request twice.
+    pub fn build(self) -> reqwest::Request {
+        let mut request = self.builder.build().expect("a valid request");
+        if let Some(signing) = self.signing {
+            let body = request.body().and_then(|b| b.as_bytes()).unwrap_or_default().to_vec();
+            let signature = proxy_signature(
+                signing.secret.as_bytes(),
+                &Signed {
+                    timestamp: signing.timestamp,
+                    nonce: &signing.nonce,
+                    method: request.method().as_str(),
+                    path: &signing.path,
+                    identity: &signing.identity,
+                    body: &body,
+                },
+            );
+            let headers = request.headers_mut();
+            headers.insert(IDENTITY_HEADER, HeaderValue::from_str(&signing.identity).expect("a header value"));
+            headers.insert(TIMESTAMP_HEADER, HeaderValue::from(signing.timestamp));
+            headers.insert(NONCE_HEADER, HeaderValue::from_str(&signing.nonce).expect("a header value"));
+            headers.insert(SIGNATURE_HEADER, HeaderValue::from_str(&signature).expect("a header value"));
+        }
+        request
+    }
+
+    pub async fn send(self) -> reqwest::Result<reqwest::Response> {
+        let client = self.client.clone();
+        client.execute(self.build()).await
+    }
+}
+
+/// A fresh nonce in the proxy's format: 32 lowercase hex characters.
+pub fn nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 impl TestApp {
     /// A request as the administrator: signed when enforced, plain when open.
-    pub fn request(&self, method: Method, path: &str) -> RequestBuilder {
+    pub fn request(&self, method: Method, path: &str) -> ProxyRequest {
         if self.enforced {
             self.signed(method, path, &self.admin.public_key().to_hex())
         } else {
-            self.unsigned(method, path)
+            ProxyRequest { client: self.client.clone(), builder: self.unsigned(method, path), signing: None }
         }
     }
 
-    pub fn get(&self, path: &str) -> RequestBuilder {
+    pub fn get(&self, path: &str) -> ProxyRequest {
         self.request(Method::GET, path)
     }
 
     /// A request carrying `identity` (a hex pubkey, or `service`), signed like the proxy.
-    pub fn signed(&self, method: Method, path: &str, identity: &str) -> RequestBuilder {
+    pub fn signed(&self, method: Method, path: &str, identity: &str) -> ProxyRequest {
         self.signed_with(method, path, identity, SECRET, chrono::Utc::now().timestamp())
     }
 
-    pub fn signed_with(&self, method: Method, path: &str, identity: &str, secret: &str, timestamp: i64) -> RequestBuilder {
-        let signature = proxy_signature(secret.as_bytes(), timestamp, method.as_str(), path, identity);
-        self.unsigned(method, path)
-            .header(IDENTITY_HEADER, identity)
-            .header(TIMESTAMP_HEADER, timestamp.to_string())
-            .header(SIGNATURE_HEADER, signature)
+    pub fn signed_with(&self, method: Method, path: &str, identity: &str, secret: &str, timestamp: i64) -> ProxyRequest {
+        let signing = Signing {
+            secret: secret.to_string(),
+            timestamp,
+            nonce: nonce(),
+            path: path.to_string(),
+            identity: identity.to_string(),
+        };
+        ProxyRequest { client: self.client.clone(), builder: self.unsigned(method, path), signing: Some(signing) }
     }
 
     pub fn unsigned(&self, method: Method, path: &str) -> RequestBuilder {

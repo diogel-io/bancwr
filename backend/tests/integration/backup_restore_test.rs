@@ -3,7 +3,7 @@
 // same key with the same members and roles, every connection and unused token is revoked, the old
 // app cannot sign, and a new token connects. Every refusal writes nothing.
 use bunker::backup::{BackupError, RESTORED_REASON};
-use bunker::proxy_auth::{proxy_signature, IDENTITY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
+use bunker::proxy_auth::{proxy_signature, Signed, IDENTITY_HEADER, NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use nostr_connect::prelude::*;
 use nostr_relay_builder::MockRelay;
 use serde_json::{json, Value};
@@ -131,13 +131,29 @@ impl Running {
     }
 
     fn signed(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.signed_body(method, path, Vec::new())
+    }
+
+    /// A signed request with a JSON body: the signature covers the body's exact bytes.
+    fn signed_json(&self, method: reqwest::Method, path: &str, body: &Value) -> reqwest::RequestBuilder {
+        let bytes = serde_json::to_vec(body).unwrap();
+        self.signed_body(method, path, bytes).header("content-type", "application/json")
+    }
+
+    fn signed_body(&self, method: reqwest::Method, path: &str, body: Vec<u8>) -> reqwest::RequestBuilder {
         let timestamp = chrono::Utc::now().timestamp();
-        let signature = proxy_signature(SECRET.as_bytes(), timestamp, method.as_str(), path, &self.admin);
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let signature = proxy_signature(
+            SECRET.as_bytes(),
+            &Signed { timestamp, nonce: &nonce, method: method.as_str(), path, identity: &self.admin, body: &body },
+        );
         self.client
             .request(method, self.url(path))
             .header(IDENTITY_HEADER, &self.admin)
             .header(TIMESTAMP_HEADER, timestamp.to_string())
+            .header(NONCE_HEADER, nonce)
             .header(SIGNATURE_HEADER, signature)
+            .body(body)
     }
 
     async fn get(&self, path: &str) -> Value {
@@ -147,7 +163,7 @@ impl Running {
     }
 
     async fn issue_token(&self) -> Value {
-        let res = self.signed(reqwest::Method::POST, "/api/bunker/connections/tokens").json(&json!({ "label": "App", "kinds": [1] })).send().await.unwrap();
+        let res = self.signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &json!({ "label": "App", "kinds": [1] })).send().await.unwrap();
         assert_eq!(res.status(), 200);
         res.json().await.unwrap()
     }
@@ -191,8 +207,7 @@ async fn a_backup_of_a_running_bunker_restores_to_a_working_bunker_on_a_clean_ho
     let running = Running::start(&original, &env).await;
     for (name, role) in [("Sam", "signer"), ("Vic", "viewer")] {
         let res = running
-            .signed(reqwest::Method::POST, "/api/bunker/team")
-            .json(&json!({ "name": name, "pubkey": Keys::generate().public_key().to_hex(), "role": role }))
+            .signed_json(reqwest::Method::POST, "/api/bunker/team", &json!({ "name": name, "pubkey": Keys::generate().public_key().to_hex(), "role": role }))
             .send()
             .await
             .unwrap();
@@ -383,8 +398,7 @@ async fn a_second_identity_added_at_the_command_line_signs_as_itself_and_survive
 
     // An administrator issues a connection for Brand B, and it signs as Brand B.
     let res = running
-        .signed(reqwest::Method::POST, "/api/bunker/connections/tokens")
-        .json(&json!({ "label": "Brand B app", "kinds": [1], "identity": brand.public_key().to_hex() }))
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &json!({ "label": "Brand B app", "kinds": [1], "identity": brand.public_key().to_hex() }))
         .send()
         .await
         .unwrap();
@@ -411,8 +425,7 @@ async fn a_second_identity_added_at_the_command_line_signs_as_itself_and_survive
     let identities = running.get("/api/bunker/identities").await;
     assert_eq!(identities[1]["pubkey"], brand.public_key().to_hex());
     let res = running
-        .signed(reqwest::Method::POST, "/api/bunker/connections/tokens")
-        .json(&json!({ "label": "After the restore", "kinds": [1], "identity": brand.public_key().to_hex() }))
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &json!({ "label": "After the restore", "kinds": [1], "identity": brand.public_key().to_hex() }))
         .send()
         .await
         .unwrap();

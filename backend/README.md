@@ -84,10 +84,13 @@ The browser never calls the bunker: it calls the frontend's Nitro server, which 
 |--------|-------|
 | `x-bancwr-identity` | the signed-in user's pubkey, lowercase hex, or `service` (the frontend acting for itself during sign-in) |
 | `x-bancwr-timestamp` | Unix time, within 30 s of the bunker's clock |
-| `x-bancwr-signature` | lowercase hex HMAC-SHA256 of `v1\n<timestamp>\n<METHOD>\n<path?query>\n<identity>` under `BANCWR_PROXY_SECRET` |
+| `x-bancwr-nonce` | 32 lowercase hex characters, new for every request |
+| `x-bancwr-signature` | lowercase hex HMAC-SHA256 of `v2\n<timestamp>\n<nonce>\n<METHOD>\n<path?query>\n<identity>\n<body-sha256>` under `BANCWR_PROXY_SECRET`, where `<body-sha256>` is the lowercase hex SHA-256 of the body's exact bytes (of nothing, for no body) |
 
-The frontend holds the same secret as `NUXT_PROXY_SECRET`. The bunker then looks the pubkey up in
-the vault on every request.
+The frontend holds the same secret as `NUXT_PROXY_SECRET`. The bunker accepts each nonce once, so a
+signed request cannot be sent again, or with another body; a reused nonce is 401 with reason
+`replayed`, and a body over 2 MiB is 413. The bunker then looks the pubkey up in the vault on every
+request.
 
 #### Access by role (#77)
 

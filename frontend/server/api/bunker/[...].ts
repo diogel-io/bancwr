@@ -40,9 +40,10 @@ export default defineEventHandler(async (event) => {
   const target = `${pathname}${search}`
   const url = `${backendUrl}${target}`
 
-  // Forward the request
+  // Forward the request. The body goes on as the exact string that arrived, never parsed and
+  // re-serialised: the signature covers its hash, and the bunker hashes what it receives.
   const method = getMethod(event)
-  const body = method !== 'GET' ? await readBody(event) : undefined
+  const body = method !== 'GET' ? (await readRawBody(event, 'utf8')) ?? '' : ''
 
   // A download (#96) is streamed through rather than parsed, keeping only its content type and
   // file name. A refusal is JSON, forwarded as any other error is.
@@ -62,11 +63,11 @@ export default defineEventHandler(async (event) => {
   try {
     return await $fetch(url, {
       method,
-      body,
+      body: body || undefined,
       headers: {
         'Content-Type': 'application/json',
         // Built here from the session, never copied from the browser's request.
-        ...proxyHeaders(config.proxySecret, pubkey, method, target),
+        ...proxyHeaders(config.proxySecret, pubkey, method, target, body),
       },
     })
   } catch (error: any) {
