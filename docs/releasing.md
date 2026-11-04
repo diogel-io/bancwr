@@ -147,16 +147,27 @@ and reopen it, or push an empty commit to its branch, to get the checks.
 ### Releasing
 
 1. Check that every issue in the version's milestone is closed or moved to a later milestone.
-2. Review the release PR: the version, the `CHANGELOG.md` section and the `compose.yaml` bump. If a
+2. Finish the release's security review, as the Diogel release process requires. Every release
+   reviews what changed since the last tag against [the threat model](threat-model.md). The first
+   release and every minor release (`x.Y.0`) also re-read every control in its section 4 against
+   the release PR's head commit, which is the code that ships, and record the line that enforces
+   each one, what it covers and what it does not, and the test that holds it. The review is
+   recorded privately, naming the head commit it read. A weakness it finds is reported and fixed as
+   [SECURITY.md](../SECURITY.md) describes, and the release waits for the fix.
+   If the release PR's head changes after the review, for example to fix what it found, review the
+   difference before merging and record the new head. The release PR's **Security review** section
+   says only that the review is complete, at which head commit, and its outcome; the details stay in
+   the private record.
+3. Review the release PR: the version, the `CHANGELOG.md` section and the `compose.yaml` bump. If a
    commit is in the wrong section (a breaking change without `!`, say), fix the commit message
    rather than editing the generated PR: see [Fixing the release notes](#fixing-the-release-notes).
-3. Merge the release PR. `.github/workflows/release.yml` then:
+4. Merge the release PR. `.github/workflows/release.yml` then:
    - creates the `v<version>` tag on the merge commit and the GitHub release, with the changelog
      section as its notes, and relabels the PR `autorelease: tagged`;
    - starts **Release Backend** and **Release Frontend** for the tag (by `workflow_dispatch`,
      because a tag created with the workflow token does not start `on: push: tags` workflows);
    - closes the milestone named after the version.
-4. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
+5. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
    images carry `0.1.0`, `0.1` and `latest` in GHCR, and that `latest` and `0.1.0` have the same
    digest. Each runs the full test suite first (see [The test gate](#the-test-gate)); if a test
    fails, nothing is published and the job graph shows `test` failed before `release`. Fix the
@@ -167,7 +178,12 @@ and reopen it, or push an empty commit to its branch, to get the checks.
    gh workflow run "Release Frontend" -R diogel-io/bancwr -f ref=v0.1.0
    ```
 
-5. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
+6. After a release whose review walked every control, open a `docs:` PR that moves the threat
+   model's `Baseline:` to the `v<version>` tag. The baseline moves only when the whole document has
+   been re-checked, so that review also re-reads the assets, boundaries, adversaries, known limits,
+   findings and verification hooks against the same head, and the `docs:` PR carries any row it
+   corrected.
+7. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
    images are published, open a `docs:` PR that removes the README's "Bancwr has not been released
    yet" paragraph, the "from the first release on" and "(from v0.1.0 on)" qualifiers, and the
    pre-release `compose.override.yaml` note under **Running the Environment** (#90).
