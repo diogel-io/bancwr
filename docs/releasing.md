@@ -150,10 +150,14 @@ and reopen it, or push an empty commit to its branch, to get the checks.
 2. Finish the release's security review, as the Diogel release process requires. Every release
    reviews what changed since the last tag against [the threat model](threat-model.md). The first
    release and every minor release (`x.Y.0`) also re-read every control in its section 4 against
-   the release PR's head commit, which is the code that ships, recording the line that enforces
+   the release PR's head commit, which is the code that ships, and record the line that enforces
    each one, what it covers and what it does not, and the test that holds it. The review is
    recorded privately, naming the head commit it read. A weakness it finds is reported and fixed as
    [SECURITY.md](../SECURITY.md) describes, and the release waits for the fix.
+   If the release PR's head changes after the review, for example to fix what it found, review the
+   difference before merging and record the new head. The release PR's **Security review** section
+   says only that the review is complete, at which head commit, and its outcome; the details stay in
+   the private record.
 3. Review the release PR: the version, the `CHANGELOG.md` section and the `compose.yaml` bump. If a
    commit is in the wrong section (a breaking change without `!`, say), fix the commit message
    rather than editing the generated PR: see [Fixing the release notes](#fixing-the-release-notes).
