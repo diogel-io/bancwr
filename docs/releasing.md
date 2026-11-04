@@ -150,9 +150,9 @@ and reopen it, or push an empty commit to its branch, to get the checks.
 2. Finish the release's security review, as the Diogel release process requires. Every release
    reviews what changed since the last tag against [the threat model](threat-model.md). The first
    release and every minor release (`x.Y.0`) also re-read every control in its section 4 against
-   the code at the release commit, recording the line that enforces each one, what it covers and
-   what it does not, and the test that holds it. Then the threat model's baseline moves to that
-   commit. The review is recorded privately. A weakness it finds is reported and fixed as
+   the release PR's head commit, which is the code that ships, recording the line that enforces
+   each one, what it covers and what it does not, and the test that holds it. The review is
+   recorded privately, naming the head commit it read. A weakness it finds is reported and fixed as
    [SECURITY.md](../SECURITY.md) describes, and the release waits for the fix.
 3. Review the release PR: the version, the `CHANGELOG.md` section and the `compose.yaml` bump. If a
    commit is in the wrong section (a breaking change without `!`, say), fix the commit message
@@ -174,7 +174,9 @@ and reopen it, or push an empty commit to its branch, to get the checks.
    gh workflow run "Release Frontend" -R diogel-io/bancwr -f ref=v0.1.0
    ```
 
-6. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
+6. After a release whose review walked every control, open a `docs:` PR that moves the threat
+   model's `Baseline:` to the `v<version>` tag.
+7. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
    images are published, open a `docs:` PR that removes the README's "Bancwr has not been released
    yet" paragraph, the "from the first release on" and "(from v0.1.0 on)" qualifiers, and the
    pre-release `compose.override.yaml` note under **Running the Environment** (#90).

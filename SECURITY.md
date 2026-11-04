@@ -97,6 +97,8 @@ A change to any of these needs the security review:
 - `compose.yaml`, `.env.example`, `backend/Dockerfile` and `frontend/Dockerfile`
 - `backend/Cargo.toml`, `backend/Cargo.lock`, `frontend/package.json`, `frontend/pnpm-lock.yaml`,
   `.trivyignore` and `.github/workflows/*`
+- `SECURITY.md`, `docs/threat-model.md` and `docs/releasing.md`, which define the controls, this
+  review, and the release gates
 - anything else that touches the bunker's key, a secret, signing, or who may call what
 
 ### Checklist
