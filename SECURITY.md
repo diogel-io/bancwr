@@ -162,6 +162,10 @@ A change to any of these needs the security review:
    linked from the pull request, and the decision comes first.
 3. Agents apply the same checklist: the Diogel workspace's `review-pr` and `diogel-code-review`
    skills check it for any Bancwr pull request that touches a sensitive path.
+4. A release pull request is the exception: its **Security review** section records only that the
+   release's security review is complete, at which head commit, and its outcome, as
+   [docs/releasing.md](docs/releasing.md#releasing) describes. The checklist evidence for a release
+   is in that private review.
 
 Each release also has a security review before its release PR merges; see
 [docs/releasing.md](docs/releasing.md#releasing).
