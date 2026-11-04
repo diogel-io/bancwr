@@ -179,7 +179,10 @@ and reopen it, or push an empty commit to its branch, to get the checks.
    ```
 
 6. After a release whose review walked every control, open a `docs:` PR that moves the threat
-   model's `Baseline:` to the `v<version>` tag.
+   model's `Baseline:` to the `v<version>` tag. The baseline moves only when the whole document has
+   been re-checked, so that review also re-reads the assets, boundaries, adversaries, known limits,
+   findings and verification hooks against the same head, and the `docs:` PR carries any row it
+   corrected.
 7. **First release only (`v0.1.0`).** release-please does not touch `README.md`, so once the
    images are published, open a `docs:` PR that removes the README's "Bancwr has not been released
    yet" paragraph, the "from the first release on" and "(from v0.1.0 on)" qualifiers, and the
