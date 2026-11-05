@@ -5,6 +5,7 @@ import { useNip07 } from '~/composables/useNip07'
 
 type Nip07 = ReturnType<typeof useNip07>
 
+/** Mounts a bare component that calls useNip07, returning the wrapper and what the composable gave it. */
 function mountWithNip07() {
   let nip07!: Nip07
   const component = mount(defineComponent({
