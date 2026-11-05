@@ -42,6 +42,7 @@ export function nip07Extension(): Nip07Extension | undefined {
   return extension()
 }
 
+/** window.nostr, or undefined when there is no window (server side, or after a test DOM is torn down). */
 function extension(): Nip07Extension | undefined {
   if (typeof window === 'undefined') return undefined
   return (window as unknown as { nostr?: Nip07Extension }).nostr
