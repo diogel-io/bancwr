@@ -14,11 +14,24 @@ export interface Nip07Extension extends NostrSigner {
 export function useNip07() {
   const available = ref<boolean | undefined>(undefined)
 
+  // Stop polling on unmount, so a pending check never runs after the page (or a test's DOM) is gone.
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let wake: (() => void) | undefined
+  onUnmounted(() => {
+    stopped = true
+    clearTimeout(timer)
+    wake?.()
+  })
+
   onMounted(async () => {
-    for (let i = 0; i < 10 && !extension(); i++) {
-      await new Promise(resolve => setTimeout(resolve, 100))
+    for (let i = 0; i < 10 && !stopped && !extension(); i++) {
+      await new Promise<void>((resolve) => {
+        wake = resolve
+        timer = setTimeout(resolve, 100)
+      })
     }
-    available.value = !!extension()
+    if (!stopped) available.value = !!extension()
   })
 
   return { available, signer: (): Nip07Extension | undefined => extension() }
@@ -29,6 +42,8 @@ export function nip07Extension(): Nip07Extension | undefined {
   return extension()
 }
 
+/** window.nostr, or undefined when there is no window (server side, or after a test DOM is torn down). */
 function extension(): Nip07Extension | undefined {
+  if (typeof window === 'undefined') return undefined
   return (window as unknown as { nostr?: Nip07Extension }).nostr
 }
