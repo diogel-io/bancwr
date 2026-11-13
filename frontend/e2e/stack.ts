@@ -2,7 +2,9 @@
 // through the frontend proxy. Shared by global-setup.ts, global-teardown.ts and the
 // `test:e2e:stack` script, which leaves the stack running for manual or Playwright MCP use.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // With the extension: stack-cli.ts runs this file directly under Node.
@@ -50,10 +52,45 @@ export function compose(args: string[], options: { capture?: boolean } = {}): st
   return output ?? ''
 }
 
-/** Brings the stack up. E2E_BUILD=0 reuses images already tagged bancwr-*:e2e, as CI does. */
+/**
+ * The run's throwaway key storage (#94): a data directory and a root credential, at a path fixed by
+ * the port so `test:e2e:stack:down` finds them from another process. Sets E2E_DATA_DIR and
+ * E2E_ROOT_KEY_FILE, which compose.e2e.yaml needs even to stop the stack.
+ */
+export function keyStorage(): { dir: string, data: string, rootKey: string } {
+  const dir = join(tmpdir(), `bancwr-e2e-${process.env.E2E_PORT || DEFAULT_PORT}`)
+  const paths = { dir, data: join(dir, 'data'), rootKey: join(dir, 'root_key') }
+  process.env.E2E_DATA_DIR = paths.data
+  process.env.E2E_ROOT_KEY_FILE = paths.rootKey
+  return paths
+}
+
+/** A fresh, empty key storage: a world-writable data directory and a random root credential. */
+function prepareKeyStorage(): void {
+  const { dir, data, rootKey } = keyStorage()
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(data, { recursive: true })
+  // The bunker runs as UID 65532 (#16), which differs from this user under Docker and Podman.
+  chmodSync(data, 0o777)
+  // Throwaway, and readable by the container's user. A deployment's is 0400, owned by UID 65532.
+  writeFileSync(rootKey, `${randomBytes(32).toString('hex')}\n`, { mode: 0o644 })
+}
+
+/**
+ * Brings the stack up. E2E_BUILD=0 reuses images already tagged bancwr-*:e2e, as CI does.
+ * BUNKER_NSEC reaches only `bunker import-key`, through the environment; the running bunker never
+ * sees it, and would stay locked if it did (#94).
+ */
 export function up(): void {
-  const build = process.env.E2E_BUILD === '0' ? ['--no-build'] : ['--build']
-  compose(['up', '--detach', ...build])
+  if (!process.env.BUNKER_NSEC) {
+    throw new Error('BUNKER_NSEC must be set; global-setup.ts generates one')
+  }
+  prepareKeyStorage()
+  if (process.env.E2E_BUILD !== '0') {
+    compose(['build'])
+  }
+  compose(['run', '--rm', '--no-deps', '-e', 'BUNKER_NSEC', 'bunker', 'import-key'])
+  compose(['up', '--detach', '--no-build'])
 }
 
 /** Saves the containers' logs beside the test results, then removes the stack and its volumes. */
@@ -67,7 +104,9 @@ export function down(): void {
     console.error('Could not save the e2e stack logs:', error)
   }
 
+  keyStorage()
   compose(['down', '--volumes', '--remove-orphans'])
+  rmSync(keyStorage().dir, { recursive: true, force: true })
 }
 
 /**

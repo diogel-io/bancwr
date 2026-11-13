@@ -1,6 +1,10 @@
 # The stack the end-to-end suite runs against: the real bunker behind the real frontend proxy.
-# global-setup.ts starts it with a throwaway BUNKER_NSEC and tears it down afterwards; see the
+# global-setup.ts starts it with a throwaway key and tears it down afterwards; see the
 # "End-to-end tests" section of ../README.md. It is not a deployment example: use ../../compose.yaml.
+#
+# The key is encrypted at rest, as in a deployment (#94). stack.ts creates a throwaway root
+# credential and data directory, runs `bunker import-key` once with BUNKER_NSEC passed through the
+# environment only (`run -e BUNKER_NSEC`), and then starts the stack without it.
 name: bancwr-e2e
 
 services:
@@ -8,9 +12,7 @@ services:
     image: bancwr-backend:e2e
     build: ../../backend
     environment:
-      # Required, with no default, so a run can never fall back to a known key. It is only ever
-      # passed through the environment, never written to a file.
-      - BUNKER_NSEC=${BUNKER_NSEC:?BUNKER_NSEC must be set; global-setup.ts generates one}
+      - BANCWR_ROOT_KEY_FILE=/run/secrets/bancwr_root_key
       - BUNKER_PORT=3000
       - RUST_LOG=info
       - DATABASE_PATH=/data/bancwr.db
@@ -27,11 +29,13 @@ services:
       - NIP46_RELAYS=ws://e2e-host:${E2E_RELAY_PORT:-7777}
     extra_hosts:
       - "e2e-host:host-gateway"
-    # Every run starts with an empty database and leaves nothing on disk.
-    tmpfs:
-      # The bunker runs as UID 65532 (#16). mode=1777 lets it write here under both Docker and
-      # Podman (Podman rejects uid=).
-      - /data:mode=1777
+    # A throwaway directory per run, removed by stack.ts afterwards: `import-key` writes the key file
+    # here and the bunker reads it, so it cannot be a tmpfs. The bunker runs as UID 65532 (#16);
+    # stack.ts makes the directory world-writable so that works under both Docker and Podman.
+    volumes:
+      - ${E2E_DATA_DIR:?stack.ts sets E2E_DATA_DIR}:/data:Z
+    secrets:
+      - bancwr_root_key
     # No published port: the browser reaches the bunker only through the frontend proxy, which is
     # the path under test.
 
@@ -56,3 +60,7 @@ services:
       - "${E2E_PORT:-3100}:3000"
     depends_on:
       - bunker
+
+secrets:
+  bancwr_root_key:
+    file: ${E2E_ROOT_KEY_FILE:?stack.ts sets E2E_ROOT_KEY_FILE}

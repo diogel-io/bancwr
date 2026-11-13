@@ -1,11 +1,11 @@
 import { test, expect } from './fixtures'
 
-test('shows the bunker public key and where the signing key comes from', async ({ page, bunkerNpub }) => {
+test('shows the bunker public key, and that the signing key is encrypted at rest (#94)', async ({ page, bunkerNpub }) => {
   test.skip(!bunkerNpub, 'The bunker key is unknown: set BUNKER_NSEC when using E2E_BASE_URL.')
 
   await page.goto('/config')
   await expect(page.getByRole('definition').filter({ hasText: 'npub1' })).toHaveText(bunkerNpub)
-  await expect(page.getByText('Environment variable: BUNKER_NSEC')).toBeVisible()
+  await expect(page.getByTestId('key-storage')).toHaveText('Encrypted at rest')
 })
 
 test('is read-only (#42)', async ({ page }) => {

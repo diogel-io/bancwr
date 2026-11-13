@@ -36,7 +36,7 @@ if (command === 'up') {
   process.stdout.write('Stop it with: pnpm test:e2e:stack:down\n')
 } else if (command === 'down') {
   // compose interpolates the whole file, even to stop it; these values are never used.
-  for (const name of ['BUNKER_NSEC', 'E2E_ADMIN_NPUB', 'E2E_PROXY_SECRET', 'E2E_SESSION_PASSWORD']) {
+  for (const name of ['E2E_ADMIN_NPUB', 'E2E_PROXY_SECRET', 'E2E_SESSION_PASSWORD']) {
     process.env[name] ??= 'unused'
   }
   down()
