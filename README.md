@@ -77,7 +77,7 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    NIP-46 is on by default (`NIP46_ENABLED`; set it to `false` to turn it off). After you sign in,
    choose the bunker's relays under **Config**, **Bunker relays**, or set `NIP46_RELAYS` to fix them
    in `.env` instead (see [Connecting apps](#connecting-apps-nip-46)).
-3. Create the root credential and import the bunker's key, once. The key is encrypted at rest and
+3. Create the root credential and the backup passphrase, and import the bunker's key, once. The key is encrypted at rest and
    is never set in `.env`: follow [A new installation](docs/operating.md#a-new-installation). Until
    it is imported the bunker runs locked, signs nothing, and its health check says why. Upgrading
    from 0.1.0, follow [Migrating from 0.1.0](docs/operating.md#migrating-from-010) instead.
@@ -204,13 +204,14 @@ A new installation needs the same step before the first start.
 
 ### The key and backups
 
-The bunker's key is encrypted at rest (#94), and Bancwr has no built-in backup yet.
-[docs/operating.md](docs/operating.md) explains how to:
+The bunker's key is encrypted at rest (#94). `bunker backup` writes an encrypted archive of the
+database and the key file while the bunker runs, and `bunker restore` puts one back on a clean host
+and revokes every connected app (#95). [docs/operating.md](docs/operating.md) explains how to:
 
 - create the root credential and import the key, or migrate a 0.1.0 bunker's plain key;
 - what the bunker does when it cannot unlock its key, and where it says why;
-- back up the database, with the bunker stopped or running;
-- restore it, and what a restore loses and brings back.
+- take backups, by hand or daily with a systemd timer or cron;
+- restore one, and what a restore keeps and revokes.
 
 ### Roles
 
@@ -274,8 +275,9 @@ lists them all, with what each one means.
 
 - The bunker's key is encrypted at rest, but whoever controls the host can read both the key file
   and the root credential, or the bunker's memory, and so the key.
-- There is no built-in backup or restore. Back up by hand as
-  [docs/operating.md](docs/operating.md) describes; #95 adds an encrypted backup.
+- A restore brings back members removed and roles lowered since the backup. It revokes every
+  connected app and unused token, but the team needs checking by hand
+  ([docs/operating.md](docs/operating.md#what-a-restore-keeps-and-what-it-revokes)).
 - Sessions live in the frontend's memory, so restarting the frontend signs everyone out, and only
   one frontend instance is supported (#100).
 

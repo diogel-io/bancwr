@@ -1,8 +1,8 @@
 # Operating Bancwr: the key and the database
 
 This page is for whoever runs a Bancwr bunker. It covers the bunker's key, which is encrypted at
-rest from 0.2.0 (#94), moving a 0.1.0 bunker to it, and backing up and restoring the database.
-Bancwr has no built-in backup yet (#95).
+rest from 0.2.0 (#94), moving a 0.1.0 bunker to it, and backing up and restoring the bunker with
+`bunker backup` and `bunker restore` (#95).
 
 Commands are given for rootless Podman and for Docker. They assume the `compose.yaml` layout from
 the [README](../README.md#running-the-environment): the bunker's data in `./data` and its secrets
@@ -46,12 +46,19 @@ fix the cause and restart the bunker.
 
 ### A new installation
 
-1. Create the root credential, without it passing through your shell history:
+1. Create the root credential and the backup passphrase, without either passing through your
+   shell history:
 
    ```bash
    mkdir -m 700 secrets
    (umask 077; openssl rand -hex 32 > secrets/bancwr_root_key)
+   (umask 077; openssl rand -base64 24 > secrets/bancwr_backup_key)
    ```
+
+   The backup passphrase encrypts backups (see [Backing up the bunker](#backing-up-the-bunker)).
+   Compose mounts both files, so both must exist before any `podman compose` command. Copy the
+   passphrase somewhere safe now, as [Keep copies somewhere else](#keep-copies-somewhere-else)
+   says: without it, no backup can be restored.
 
 2. Put the bunker's key, as an nsec or in hex, in a file for the import. A trailing newline is fine.
 
@@ -65,8 +72,8 @@ fix the cause and restart the bunker.
 3. Hand both to the bunker's user, read-only:
 
    ```bash
-   chmod 400 secrets/bancwr_root_key secrets/bunker_nsec
-   mkdir -p data
+   chmod 400 secrets/bancwr_root_key secrets/bancwr_backup_key secrets/bunker_nsec
+   mkdir -p -m 700 data
 
    # Rootless Podman
    podman unshare chown -R 65532:65532 secrets data
@@ -136,11 +143,12 @@ the plain key is removed. Until then it runs locked and says so.
    Paste the value of `BUNKER_NSEC` from `.env`, save and close. If you already used a secret file,
    it is `secrets/bunker_nsec` already.
 
-3. Create the root credential, and hand both files to the bunker's user, as steps 1 and 3 of
-   [A new installation](#a-new-installation) show.
+3. Create the root credential and the backup passphrase, and hand the files to the bunker's user,
+   as steps 1 and 3 of [A new installation](#a-new-installation) show.
 
 4. Update `compose.yaml` to the 0.2.0 version. It no longer passes `BUNKER_NSEC`, and it mounts
-   `./secrets/bancwr_root_key` as the `bancwr_root_key` secret. If you have a `compose.override.yaml`
+   `./secrets/bancwr_root_key` and `./secrets/bancwr_backup_key` as the `bancwr_root_key` and
+   `bancwr_backup_key` secrets. If you have a `compose.override.yaml`
    from the 0.1.0 secret-file steps, remove its `BUNKER_NSEC_FILE` line and its `bunker_nsec`
    secret.
 
@@ -179,31 +187,199 @@ Keep the root credential too, somewhere other than the backups of `./data`. With
 `bunker-key.enc` cannot be decrypted, and a restored bunker stays locked unless you import the
 plain key again.
 
-## Backing up the database
+Keep the backup passphrase as well, apart from both the root credential and the backups. Without
+it, a backup cannot be opened.
 
-The bunker's database is SQLite, at `./data/bancwr.db`. It holds:
+## Backing up the bunker
 
-- the team: members and their roles;
-- connection tokens (only a hash of each secret) and connected apps;
+`bunker backup` writes one encrypted archive while the bunker keeps running. It holds:
+
+- a consistent snapshot of the database, `./data/bancwr.db`: the team and their roles, connection
+  tokens (only a hash of each secret) and connected apps, the signing log, and the bunker relays
+  chosen under **Config**;
+- the encrypted key file, `./data/bunker-key.enc`, exactly as it is on disk.
+
+It does not hold the root credential, the backup passphrase, the proxy secret or anyone's session.
+The archive is encrypted with XChaCha20-Poly1305 under a key derived with scrypt from the backup
+passphrase in `./secrets/bancwr_backup_key`. Inside it, the bunker's key is still encrypted under
+the root credential, so an archive and its passphrase together are not the key.
+
+To recover a bunker you need three things, and each should be kept apart from the others:
+
+1. an archive;
+2. the backup passphrase, `./secrets/bancwr_backup_key`;
+3. the root credential, `./secrets/bancwr_root_key`.
+
+The database names every member and every connected app, so keep archives as private as the host.
+
+### Take a backup
+
+```bash
+mkdir -p -m 700 backups
+(umask 077; podman exec bancwr-bunker bunker backup > "backups/bancwr-$(date +%F).bcwr")
+```
+
+With Docker, use `docker exec`. The archive goes to standard output and a short summary to the
+terminal: the bunker's npub, and how many members, connections and signing log entries it holds.
+If the command fails, it exits non-zero and says why, and the file it was redirected to is empty or
+incomplete: delete it.
+
+The snapshot is taken with SQLite's `VACUUM INTO`, which briefly writes a plain copy of the database
+beside it in `./data`, readable only by the bunker's user, and deletes it afterwards. That copy
+never holds the key.
+
+Bancwr does not copy archives anywhere. Copy them off the host yourself, to somewhere the backup
+passphrase is not.
+
+### Scheduled backups
+
+A small script, a systemd timer to run it daily, and a 30-day retention. Adjust the directory to
+where your `compose.yaml` lives. Save this as `bancwr-backup.sh` beside `compose.yaml` and make it
+executable (`chmod 700 bancwr-backup.sh`):
+
+```sh
+#!/bin/sh
+set -eu
+umask 077
+cd "$(dirname "$0")"
+mkdir -p backups
+name="backups/bancwr-$(date +%F-%H%M).bcwr"
+podman exec bancwr-bunker bunker backup > "$name.part"
+mv "$name.part" "$name"
+find backups -name 'bancwr-*.bcwr' -mtime +30 -delete
+```
+
+With Docker, use `docker exec`. The archive only gets its final name once the backup succeeds, so a
+failed run leaves a `.part` file and never an archive that looks complete.
+
+With rootless Podman, run it as a systemd user timer. `~/.config/systemd/user/bancwr-backup.service`:
+
+```ini
+[Unit]
+Description=Back up the Bancwr bunker
+
+[Service]
+Type=oneshot
+ExecStart=%h/bancwr/bancwr-backup.sh
+```
+
+`~/.config/systemd/user/bancwr-backup.timer`:
+
+```ini
+[Unit]
+Description=Back up the Bancwr bunker daily
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now bancwr-backup.timer
+loginctl enable-linger "$USER"
+```
+
+`enable-linger` keeps the timer running while you are logged out. With Docker, put the same two
+units in `/etc/systemd/system/` and use `systemctl` without `--user`. Check the last run with
+`systemctl --user status bancwr-backup.service`.
+
+Or with cron (`crontab -e`):
+
+```text
+15 3 * * * $HOME/bancwr/bancwr-backup.sh
+```
+
+Restore from one of these archives now and then, on a spare directory, to check you can: see the
+next section.
+
+## Restoring the bunker
+
+`bunker restore` reads an archive from standard input. Before it writes anything it checks that:
+
+- the backup passphrase decrypts the archive, which also proves the archive was not altered;
+- the database in it passes SQLite's integrity check, and is not from a newer Bancwr;
+- the key file in it matches the archive's public key;
+- the root credential decrypts that key, so the restored bunker will unlock;
+- the data directory holds no database and no key file.
+
+If any check fails it exits non-zero, says why, and writes nothing. If they all pass, it writes the
+database and key file, then revokes every connected app and every unused connection token. Members,
+their roles, the signing log and the bunker relays come back as they were in the archive.
+
+### On a clean host
+
+1. Put `compose.yaml` and `.env` in place, as for a new installation, and restore the two secrets
+   from where you kept them: `secrets/bancwr_root_key` and `secrets/bancwr_backup_key`. Give them,
+   and an empty `./data`, to the bunker's user as step 3 of
+   [A new installation](#a-new-installation) shows. There is no plain key to import.
+
+2. Restore:
+
+   ```bash
+   podman compose run --rm --no-deps -T bunker restore < backups/bancwr-2026-11-13.bcwr
+   ```
+
+   With Docker, use `docker compose`. It prints the bunker's npub, how many members are back, and
+   how many connections and tokens it revoked. Check the npub is the bunker's.
+
+3. Start the bunker and check it:
+
+   ```bash
+   podman compose up -d
+   podman exec bancwr-bunker bunker healthcheck
+   ```
+
+### Replacing a bunker's data
+
+A restore never writes over existing data. To roll a bunker back, stop it and move its data aside
+first, then restore into a new, empty `./data`:
+
+```bash
+podman compose stop bunker
+mv data data.before-restore
+mkdir -m 700 data
+
+# Rootless Podman
+podman unshare chown 65532:65532 data
+
+# Docker
+sudo chown 65532:65532 data
+```
+
+Then follow steps 2 and 3 above. Once you are sure the restore is good, delete `data.before-restore`.
+
+### What a restore keeps, and what it revokes
+
+Kept, as at the backup:
+
+- members and their roles;
 - the signing log;
-- the bunker relays chosen under **Config**.
+- the bunker relays.
 
-It does not hold the bunker's key, or anyone's session: sessions live in the frontend's memory.
-The key is in its own file in the same directory, `./data/bunker-key.enc`, encrypted, so a copy of
-the whole directory carries it as ciphertext only. The root credential is in `./secrets`, which is
-never part of these backups.
+Revoked:
 
-The database runs in WAL mode. While the bunker is running, recent changes are in
-`bancwr.db-wal`, not `bancwr.db`, and on a quiet bunker `bancwr.db` can be almost empty. Never copy
-`bancwr.db` on its own from a running bunker. Use one of the two ways below.
+- every connected app, shown under **Connections** as ended because the bunker was restored from a
+  backup. Each app needs a new connection token to connect again;
+- every connection token not yet used.
 
-The database names every member and every connected app, so keep backups as private as the host.
-Set `./data` to `0700` too, as the restore below does.
+Lost: anything since the backup, such as members added, roles changed and signatures made.
 
-### With the bunker stopped
+Members removed and roles lowered since the backup come back. Before you leave the bunker running,
+sign in as an administrator and, under **Team**, remove anyone who should no longer be there and
+correct any roles.
 
-The simplest copy, and the only one that needs nothing beyond compose. NIP-46 apps cannot sign
-while the bunker is stopped.
+Sessions are not in the database, so a restore does not sign anyone out. Restarting the frontend
+does, as it always does. The role of everyone already signed in is read from the restored database
+on their next request.
+
+## A manual copy
+
+`bunker backup` is the supported way. If you cannot use it, copy `./data` with the bunker stopped.
+NIP-46 apps cannot sign meanwhile.
 
 ```bash
 podman compose stop bunker
@@ -213,119 +389,15 @@ podman unshare cp -a data/. "backups/$(date +%F)/"
 podman compose start bunker
 ```
 
-With Docker, use `docker compose` and `sudo cp -a` instead. When the bunker stops cleanly it folds
-the WAL back into `bancwr.db`, so normally that is the only file there. Copying the whole directory
-also takes any `-wal` and `-shm` file left by a crash, which belong with it.
+With Docker, use `docker compose` and `sudo cp -a` instead. Never copy `bancwr.db` on its own from a
+running bunker: it runs in WAL mode, and recent changes are in `bancwr.db-wal`.
 
-### With the bunker running
-
-SQLite's own `.backup` command makes one consistent file while the bunker keeps signing. The images
-have no shell or `sqlite3`, so run it on the host, which needs the `sqlite3` command-line tool
-installed.
-
-```bash
-mkdir -p -m 700 backups
-
-# Rootless Podman
-podman unshare sqlite3 data/bancwr.db ".backup 'backups/bancwr-$(date +%F).db'"
-
-# Docker
-sudo sqlite3 data/bancwr.db ".backup 'backups/bancwr-$(date +%F).db'"
-```
-
-Use this only while the bunker is running. Run against a stopped bunker's database as root, it can
-leave `-wal` and `-shm` files owned by root, which the bunker then cannot open. When the bunker is
-stopped, copy the file as above instead.
-
-### Check the copy
-
-```bash
-sqlite3 backups/bancwr-2026-11-13.db "PRAGMA integrity_check"
-```
-
-It prints `ok`. Run it on the copy, never on `./data`. Use `podman unshare` or `sudo` in front if
-your user cannot read the copy.
+A manual copy is not encrypted apart from the key file, and restoring it is just copying it back.
+That brings back every connection and token as it was, including those revoked since. After
+restoring a manual copy, revoke under **Connections** every app and token you had shut out.
 
 ### Backups from before #42
 
 Builds of the bunker before #42 could store the nsec in plain text in the database's `config`
 table. Current builds delete it at start, but a backup made before that still contains it. Treat
 such a backup as a copy of the key, or delete it.
-
-## Restoring the database
-
-1. Stop the bunker, and move the current data aside rather than deleting it:
-
-   ```bash
-   podman compose stop bunker
-   mv data data.before-restore
-   ```
-
-2. Put the backup in a new `./data`, on its own. With a copy made while the bunker was stopped,
-   copy every file in it; with a `.backup` file, copy only that, renamed to `bancwr.db`. Leave out
-   any `-wal` or `-shm` file from the old data: they belong to the database you moved aside.
-
-   A `.backup` file holds only the database, so copy the encrypted key back from the data you moved
-   aside. Without it the bunker starts locked and says there is no encrypted key file.
-
-   ```bash
-   mkdir -m 700 data
-   cp backups/bancwr-2026-11-13.db data/bancwr.db
-   chmod 600 data/bancwr.db
-   cp -p data.before-restore/bunker-key.enc data/
-
-   # Rootless Podman
-   podman unshare chown -R 65532:65532 data
-
-   # Docker
-   sudo chown -R 65532:65532 data
-   ```
-
-   With Docker, a backup made with `sudo` belongs to root: use `sudo` for the `cp` and `chmod` too.
-   With rootless Podman, `data.before-restore` belongs to the bunker's user: use `podman unshare cp`
-   for the key file.
-
-3. Start the bunker and check it:
-
-   ```bash
-   podman compose start bunker
-   podman exec bancwr-bunker bunker healthcheck
-   ```
-
-4. Before you leave the bunker running, check the team and the connections, as the next section
-   explains.
-
-Once you are sure the restore is good, delete `data.before-restore`.
-
-### What a restore loses, and what it brings back
-
-A restore puts the database back exactly as it was at the backup. Everything since is undone, in
-both directions.
-
-Lost:
-
-- members added and roles changed since the backup;
-- connection tokens issued since the backup, and apps connected since: each app needs a new token;
-- signing log entries since the backup;
-- changes to the bunker relays since the backup.
-
-Brought back:
-
-- members removed since the backup, with their roles;
-- connections revoked since the backup, including those ended when their member was removed or
-  made a viewer;
-- connection tokens used or revoked since the backup, which can be used again until they expire.
-
-That means a restore can give access back to people and apps you had shut out. Before you leave the
-bunker running after a restore, sign in as an administrator and:
-
-1. Under **Team**, remove anyone who should no longer be there, and correct any roles.
-2. Under **Connections**, revoke every connected app you had revoked before, and every token under
-   **Unused tokens** that you did not mean to leave open.
-
-Sessions are not in the database, so a restore does not sign anyone out. Restarting the frontend
-does, as it always does. The role of everyone already signed in is read from the restored
-database on their next request.
-
-0.2.0 replaces all of this with an encrypted backup of the database and key, and a restore that
-revokes connections for you (#95).
