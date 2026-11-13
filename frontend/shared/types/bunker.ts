@@ -63,10 +63,11 @@ export interface Metrics {
   total_signatures: number
 }
 
-/** GET /api/bunker/config — read-only; the nsec is never returned. */
+/** GET /api/bunker/config — read-only; the key is never returned, nor where it is stored. */
 export interface ConfigResponse {
   pubkey: string
-  nsec_file: string | null
+  /** How the signing key is stored: always `encrypted` since #94. */
+  key_storage: 'encrypted'
 }
 
 /**

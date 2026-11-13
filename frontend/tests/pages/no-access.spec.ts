@@ -35,7 +35,7 @@ describe('No-access page', () => {
     const guidance = component.find('[data-testid="no-administrator"]').text()
     expect(guidance).toContain('no administrator yet')
     expect(guidance).toContain('BANCWR_ADMIN_PUBKEY')
-    expect(guidance).toContain('BUNKER_NSEC')
+    expect(guidance).toContain('The bunker\'s own key can never be the administrator')
     expect(component.text()).not.toContain('Contact the vault')
     expect(component.find('[data-testid="presented-npub"]').text()).toBe('npub1presentedkey')
   })

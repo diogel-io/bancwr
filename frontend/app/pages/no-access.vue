@@ -30,7 +30,7 @@ async function copy() {
         becomes the first administrator. Then sign in again.
       </p>
       <p>
-        The bunker's own key (<code>BUNKER_NSEC</code>) can never be the administrator.
+        The bunker's own key can never be the administrator: it signs for others, so it never signs in.
       </p>
     </div>
     <p
