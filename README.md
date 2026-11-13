@@ -66,7 +66,8 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    cp .env.example .env
    ```
 2. Edit `.env` and set:
-   - `BUNKER_NSEC`, the bunker's key;
+   - `BUNKER_NSEC`, the bunker's key, or leave it empty and give the key as a secret file instead
+     (see [The key and backups](#the-key-and-backups));
    - `BANCWR_ADMIN_PUBKEY`, your own npub (see [The first administrator](#the-first-administrator));
    - `BANCWR_PROXY_SECRET` and `NUXT_SESSION_PASSWORD`, each from `openssl rand -hex 32`;
    - `NUXT_SITE_ORIGIN`, the `https://` address you will open Bancwr on (see [HTTPS](#https)).
@@ -200,6 +201,16 @@ sudo chown -R 65532:65532 ./data
 
 A new installation needs the same step before the first start.
 
+### The key and backups
+
+The bunker's key is not encrypted at rest, and Bancwr has no built-in backup yet. Until 0.2.0,
+[docs/operating.md](docs/operating.md) explains how to:
+
+- keep the key in a compose secret file, with `BUNKER_NSEC_FILE`, instead of `BUNKER_NSEC` in
+  `.env`;
+- back up the database, with the bunker stopped or running;
+- restore it, and what a restore loses and brings back.
+
 ### Roles
 
 Only keys registered with the bunker can use it, each with one of three roles (#77), stored as
@@ -254,6 +265,18 @@ The role values changed from `administrator`, `user` and `signer` to `administra
 The log names every member whose role changed and every connection revoked. A script that adds
 members through `POST /api/bunker/team` must send `signer` where it sent `user`: `user` is now
 refused with `400`.
+
+## Known limits
+
+These are true of 0.1.0. The [threat model](docs/threat-model.md#5-known-limits-and-accepted-risks)
+lists them all, with what each one means.
+
+- The bunker's key is not encrypted at rest: it is plain text in `.env` or in its secret file.
+  Encryption is #94.
+- There is no built-in backup or restore. Back up by hand as
+  [docs/operating.md](docs/operating.md) describes; #95 adds an encrypted backup.
+- Sessions live in the frontend's memory, so restarting the frontend signs everyone out, and only
+  one frontend instance is supported (#100).
 
 ## Security
 

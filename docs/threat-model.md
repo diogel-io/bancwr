@@ -43,7 +43,7 @@ the READMEs. Nothing here was penetration-tested.
 
 | ID | Asset | Where it lives | Why it matters |
 |----|-------|----------------|----------------|
-| A1 | The bunker's private key | `BUNKER_NSEC`, which is what `compose.yaml` passes; outside compose the bunker can read it instead from the file `BUNKER_NSEC_FILE` names. Read at start (`backend/src/config.rs`). Held in bunker memory (`backend/src/signer.rs`). Not encrypted at rest | Whoever has it is that Nostr identity, permanently: Nostr has no key rotation or revocation |
+| A1 | The bunker's private key | `BUNKER_NSEC`, which is what `compose.yaml` passes, or the file `BUNKER_NSEC_FILE` names, which wins when both are set. Under compose it can be a secret file mounted read-only from the host (`docs/operating.md`). Read at start (`backend/src/config.rs`). Held in bunker memory (`backend/src/signer.rs`). Not encrypted at rest | Whoever has it is that Nostr identity, permanently: Nostr has no key rotation or revocation |
 | A2 | The ability to make the bunker sign | The NIP-46 handler (`backend/src/nip46.rs`) | An attacker does not need A1 if they can get events signed with it |
 | A3 | The proxy secret | `BANCWR_PROXY_SECRET` on the bunker, `NUXT_PROXY_SECRET` on the frontend, the same value | With it, anyone who reaches the bunker can call its API as any identity |
 | A4 | The session-sealing password | `NUXT_SESSION_PASSWORD` on the frontend | Seals the session cookie |
@@ -95,7 +95,7 @@ the compose network. The frontend is published on `127.0.0.1:3001` only, for the
 | T8 | Have the bunker sign anything for anyone | B3, B4 | X4, X6 | There is no `POST /sign` route. NIP-46 needs a connection token an administrator issued: single-use, 1 hour to 7 days, for a member who can sign, and limited to the kinds it names. There is no "everything" grant. The token secret is shown once and stored as a hash. A connection may sign only the kinds granted, and only while its member may sign (`nip46.rs`, `backend/src/connections_api.rs`; #53) |
 | T9 | Read or tamper with NIP-46 traffic | B4 | X5 | Requests and responses are encrypted end to end between app and bunker (NIP-44, or NIP-04 for older clients) and signed (`relay.rs`). Relays saved in the console must be `wss://` except on this machine (`bunker_relays.rs`, `validate`); `NIP46_RELAYS` is used as given, without that check (section 5). The client answers relay NIP-42 AUTH challenges (`relay.rs`). A relay can still drop or delay traffic |
 | T10 | Pass an app off as something it is not | B4 | X4 | An app's name, URL and image are marked unverified (`metadata_verified: false`) and never used to decide anything (`nip46.rs`) |
-| T11 | Read or change the key, secrets or database on the host | B6 | X8 | Not prevented: see section 5. Containers run as UID 65532 on distroless images with no shell (#16). `BUNKER_NSEC_FILE` keeps the key out of the environment, for deployments that set it instead of `compose.yaml`'s `BUNKER_NSEC` |
+| T11 | Read or change the key, secrets or database on the host | B6 | X8 | Not prevented: see section 5. Containers run as UID 65532 on distroless images with no shell (#16). `BUNKER_NSEC_FILE` keeps the key out of the environment. `compose.yaml` still passes `BUNKER_NSEC`; `docs/operating.md` shows how to give a compose secret file instead, owned by UID 65532 with mode `0400` |
 | T12 | Ship a vulnerable or tampered image | B6 | X9 | Release images are built from a tag, pass the test suite, and are gated on fixable critical and high Trivy findings before anything is published. Published images are scanned weekly (`docs/releasing.md`, `.github/workflows/release-image.yml`, `trivy-security.yml`). Images are not yet signed (section 5) |
 | T13 | Lock everyone out | B2, B3 | X3 | The last administrator cannot be removed. `BANCWR_ADMIN_PUBKEY` seeds an administrator when none exists, and never re-adds or demotes anyone afterwards (`backend/src/main.rs`, `backend/src/db.rs`) |
 
@@ -105,13 +105,13 @@ These are true of Bancwr today. Each names what would change it.
 
 | Limit | Consequence | Changes with |
 |-------|-------------|--------------|
-| The bunker key (A1) is plain text in the environment or a file, not encrypted at rest | Anyone with host access (X8), or a copy of the file or a backup, has the key | #93 (guidance), #94 (encryption) |
+| The bunker key (A1) is plain text in the environment or a file, not encrypted at rest | Anyone with host access (X8), or a copy of the file or a backup, has the key | #94 (encryption). Until then, `docs/operating.md` (#93) covers a secret file and its permissions |
 | Every app signs as the one bunker key | "For a member" is attribution in the signing log, not a separate identity. One bunker is one Nostr identity | #103 |
 | Sessions and challenges live in frontend memory | A frontend restart signs everyone out. Only one frontend instance is supported | #100 |
 | No rate limit on signing | A connected app can sign its granted kinds as fast as it asks | #101 |
 | No human approval per event | A connection signs any event of a granted kind without asking anyone | #102 |
 | A connection outlives its token | The token's 1 hour to 7 days bounds when it can be used to connect, not how long the connection lasts. A connection ends on `logout`, revocation, or its member's removal or demotion | #98 |
-| No backup or restore, and no log export or retention | Losing `./data` loses the registry, connections and log. The log grows without limit | #93 (manual backup guidance), #95, #96 |
+| No backup or restore, and no log export or retention | Losing `./data` loses the registry, connections and log. The log grows without limit. Restoring a manual backup brings back members, connections and tokens removed or revoked since it was made | #95, #96. Until then, `docs/operating.md` (#93) covers a manual backup and restore |
 | No NIP-44 or NIP-04 encrypt and decrypt over NIP-46 | Apps that need them cannot use Bancwr for direct messages. A functional limit, not a weakness | #97 |
 | App metadata is self-reported | An app can name itself anything; Bancwr shows it as unverified | Not planned |
 | The member's signer decides which key signs in | Some extensions keep using the key first connected to a site (README, "Signing in"; #70) | Not planned |
