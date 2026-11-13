@@ -22,12 +22,10 @@ async fn test_health_check_handler() {
     let signer = Signer::new(keys.secret_key().clone());
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 3000,
         db_path: ":memory:".to_string(),
         relay_urls: vec![],
         nip46_enabled: false,
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -61,12 +59,10 @@ async fn test_status_handler() {
     // A configured bunker has an administrator; without one the report is degraded (#74).
     db.add_team_member("Admin", &Keys::generate().public_key().to_hex(), bunker::registry::Role::Administrator).unwrap();
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 3000,
         db_path: ":memory:".to_string(),
         relay_urls: vec![],
         nip46_enabled: false,
-        nsec_file: None,
         version: "1.2.3-test".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -108,12 +104,10 @@ async fn test_get_logs_handler() {
     db.log_signing_event("event_id_1", "pubkey_1", None, None, 1, Utc::now()).unwrap();
     
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 3000,
         db_path: ":memory:".to_string(),
         relay_urls: vec![],
         nip46_enabled: false,
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -149,12 +143,10 @@ async fn test_get_config_handler() {
     let signer = Signer::new(keys.secret_key().clone());
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 3000,
         db_path: ":memory:".to_string(),
         relay_urls: vec![],
         nip46_enabled: false,
-        nsec_file: Some("/tmp/nsec".to_string()),
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -178,5 +170,5 @@ async fn test_get_config_handler() {
     let config_res: bunker::server::ConfigResponse = serde_json::from_slice(&body_bytes).unwrap();
     
     assert_eq!(config_res.pubkey, expected_pubkey);
-    assert_eq!(config_res.nsec_file, Some("/tmp/nsec".to_string()));
+    assert_eq!(config_res.key_storage, "encrypted", "the key is encrypted at rest (#94), and no path is given");
 }

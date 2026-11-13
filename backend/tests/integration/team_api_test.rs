@@ -26,12 +26,10 @@ async fn setup_app_with_bunker_key() -> (String, reqwest::Client, String) {
     
     let db = Database::new(":memory:").expect("Failed to create in-memory database");
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 0,
         db_path: ":memory:".to_string(),
         relay_urls: vec![],
         nip46_enabled: false,
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,

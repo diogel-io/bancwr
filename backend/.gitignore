@@ -10,3 +10,7 @@
 *.sqlite-shm
 *.sqlite-wal
 
+
+# The bunker key at rest and its root credential (#94): never committed.
+/secrets/
+bunker-key.enc

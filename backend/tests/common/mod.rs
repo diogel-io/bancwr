@@ -45,12 +45,10 @@ pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> Te
         .expect("register the administrator");
 
     let config = Config {
-        secret_key: bunker.secret_key().clone(),
         port: 0,
         db_path: ":memory:".to_string(),
         relay_urls: nip46_relays.clone().unwrap_or_default(),
         nip46_enabled: nip46_relays.is_some(),
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: enforced.then(|| SECRET.to_string()),

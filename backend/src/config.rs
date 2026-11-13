@@ -1,16 +1,8 @@
 use std::env;
-use std::fs;
-use nostr::prelude::*;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("BUNKER_NSEC or BUNKER_NSEC_FILE must be set")]
-    MissingNsec,
-    #[error("Could not read nsec from file: {0}")]
-    FileReadError(#[from] std::io::Error),
-    #[error("Invalid nsec: {0}")]
-    InvalidNsec(String),
     #[error("BANCWR_PROXY_SECRET must be at least 32 characters; generate one with `openssl rand -hex 32`")]
     ProxySecretTooShort,
     #[error("BANCWR_PROXY_SECRET must be set, to the same value as the frontend's NUXT_PROXY_SECRET; generate one with `openssl rand -hex 32`")]
@@ -34,9 +26,10 @@ pub fn version_or_default(value: Option<String>) -> String {
         .unwrap_or_else(|| DEFAULT_VERSION.to_string())
 }
 
+/// The bunker's settings. The signing key is not one of them: it is encrypted at rest and unlocked
+/// by `key_store` (#94).
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub secret_key: SecretKey,
     pub port: u16,
     pub db_path: String,
     /// NIP46_RELAYS, as given. When non-empty it overrides the relays saved in the console, which
@@ -44,10 +37,9 @@ pub struct Config {
     /// never this field alone.
     pub relay_urls: Vec<String>,
     pub nip46_enabled: bool,      // Enable NIP-46 protocol
-    pub nsec_file: Option<String>,
     pub version: String,          // BANCWR_VERSION, reported by /api/bunker/status (#35)
     /// BANCWR_ADMIN_PUBKEY as canonical hex: the first administrator, seeded when there is none
-    /// (#24). Never the bunker's own key.
+    /// (#24). Never the bunker's own key: `check_admin_pubkey` once the key's public key is known.
     pub admin_pubkey: Option<String>,
     /// BANCWR_PROXY_SECRET: shared with the frontend (NUXT_PROXY_SECRET) to sign the caller's
     /// identity on /api/bunker/* (#25). Required to start (#11, `require_proxy_secret`); optional
@@ -58,22 +50,6 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         let db_path = env::var("DATABASE_PATH").unwrap_or_else(|_| "./data/bancwr.db".to_string());
-
-        let mut nsec_file = None;
-        let nsec_str = if let Ok(path) = env::var("BUNKER_NSEC_FILE") {
-            nsec_file = Some(path.clone());
-            fs::read_to_string(path)
-                .map(|s| s.trim().to_string())
-                .map_err(ConfigError::FileReadError)?
-        } else if let Ok(nsec) = env::var("BUNKER_NSEC") {
-            nsec
-        } else {
-            return Err(ConfigError::MissingNsec);
-        };
-
-        let secret_key = SecretKey::from_bech32(&nsec_str)
-            .or_else(|_| SecretKey::parse(&nsec_str))
-            .map_err(|e| ConfigError::InvalidNsec(e.to_string()))?;
 
         let port = env::var("BUNKER_PORT")
             .ok()
@@ -96,9 +72,6 @@ impl Config {
         let admin_pubkey = match env::var("BANCWR_ADMIN_PUBKEY") {
             Ok(value) if !value.trim().is_empty() => {
                 let hex = crate::registry::canonical_pubkey(&value).map_err(|_| ConfigError::InvalidAdminPubkey)?;
-                if hex == Keys::new(secret_key.clone()).public_key().to_hex() {
-                    return Err(ConfigError::AdminPubkeyIsBunkerKey);
-                }
                 Some(hex)
             }
             _ => None,
@@ -116,12 +89,10 @@ impl Config {
         };
 
         Ok(Config {
-            secret_key,
             port,
             db_path,
             relay_urls,
             nip46_enabled,
-            nsec_file,
             version,
             admin_pubkey,
             proxy_secret,
@@ -136,6 +107,16 @@ impl Config {
         match self.proxy_secret {
             Some(_) => Ok(()),
             None => Err(ConfigError::MissingProxySecret),
+        }
+    }
+
+    /// BANCWR_ADMIN_PUBKEY is never the bunker's own key (#24): that key signs for others, so it
+    /// never signs in. Checked at start against the decrypted key, or, while the bunker is locked,
+    /// the public key its key file records.
+    pub fn check_admin_pubkey(&self, bunker_pubkey_hex: &str) -> Result<(), ConfigError> {
+        match &self.admin_pubkey {
+            Some(admin) if admin == bunker_pubkey_hex => Err(ConfigError::AdminPubkeyIsBunkerKey),
+            _ => Ok(()),
         }
     }
 }

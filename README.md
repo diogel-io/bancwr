@@ -66,25 +66,26 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
    cp .env.example .env
    ```
 2. Edit `.env` and set:
-   - `BUNKER_NSEC`, the bunker's key, or leave it empty and give the key as a secret file instead
-     (see [The key and backups](#the-key-and-backups));
    - `BANCWR_ADMIN_PUBKEY`, your own npub (see [The first administrator](#the-first-administrator));
    - `BANCWR_PROXY_SECRET` and `NUXT_SESSION_PASSWORD`, each from `openssl rand -hex 32`;
    - `NUXT_SITE_ORIGIN`, the `https://` address you will open Bancwr on (see [HTTPS](#https)).
 
    `podman compose` refuses to start without `BANCWR_PROXY_SECRET`, `NUXT_SESSION_PASSWORD` or
-   `NUXT_SITE_ORIGIN`. Without `BUNKER_NSEC` compose starts, but the bunker exits at once and says
-   why. `BANCWR_ADMIN_PUBKEY` is optional: without it, the first key to sign in is told how to
+   `NUXT_SITE_ORIGIN`. `BANCWR_ADMIN_PUBKEY` is optional: without it, the first key to sign in is told how to
    become the first administrator.
 
    NIP-46 is on by default (`NIP46_ENABLED`; set it to `false` to turn it off). After you sign in,
    choose the bunker's relays under **Config**, **Bunker relays**, or set `NIP46_RELAYS` to fix them
    in `.env` instead (see [Connecting apps](#connecting-apps-nip-46)).
-3. (Optional) Ensure the Podman socket is running (required for `podman compose`):
+3. Create the root credential and import the bunker's key, once. The key is encrypted at rest and
+   is never set in `.env`: follow [A new installation](docs/operating.md#a-new-installation). Until
+   it is imported the bunker runs locked, signs nothing, and its health check says why. Upgrading
+   from 0.1.0, follow [Migrating from 0.1.0](docs/operating.md#migrating-from-010) instead.
+4. (Optional) Ensure the Podman socket is running (required for `podman compose`):
    ```bash
    systemctl --user enable --now podman.socket
    ```
-4. Start the environment:
+5. Start the environment:
    ```bash
    podman compose up -d
    ```
@@ -203,11 +204,11 @@ A new installation needs the same step before the first start.
 
 ### The key and backups
 
-The bunker's key is not encrypted at rest, and Bancwr has no built-in backup yet. Until 0.2.0,
+The bunker's key is encrypted at rest (#94), and Bancwr has no built-in backup yet.
 [docs/operating.md](docs/operating.md) explains how to:
 
-- keep the key in a compose secret file, with `BUNKER_NSEC_FILE`, instead of `BUNKER_NSEC` in
-  `.env`;
+- create the root credential and import the key, or migrate a 0.1.0 bunker's plain key;
+- what the bunker does when it cannot unlock its key, and where it says why;
 - back up the database, with the bunker stopped or running;
 - restore it, and what a restore loses and brings back.
 
@@ -242,7 +243,7 @@ to the npub the page shows, restart the bunker, and sign in again.
 
 #### Why not the bunker's key?
 
-The bunker's own key (`BUNKER_NSEC`) can never sign in or be registered, as an administrator or
+The bunker's own key can never sign in or be registered, as an administrator or
 anything else. The bunker signs for other people over NIP-46, so anyone it signs for could get it
 to sign a Bancwr login and act as that key. Signing in with it would also mean putting the server's
 signing key into a browser extension. The rule is rule 10 of the sign-in decision record.
@@ -268,11 +269,11 @@ refused with `400`.
 
 ## Known limits
 
-These are true of 0.1.0. The [threat model](docs/threat-model.md#5-known-limits-and-accepted-risks)
+These are true of the code on `master`. The [threat model](docs/threat-model.md#5-known-limits-and-accepted-risks)
 lists them all, with what each one means.
 
-- The bunker's key is not encrypted at rest: it is plain text in `.env` or in its secret file.
-  Encryption is #94.
+- The bunker's key is encrypted at rest, but whoever controls the host can read both the key file
+  and the root credential, or the bunker's memory, and so the key.
 - There is no built-in backup or restore. Back up by hand as
   [docs/operating.md](docs/operating.md) describes; #95 adds an encrypted backup.
 - Sessions live in the frontend's memory, so restarting the frontend signs everyone out, and only

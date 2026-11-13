@@ -43,7 +43,7 @@ the READMEs. Nothing here was penetration-tested.
 
 | ID | Asset | Where it lives | Why it matters |
 |----|-------|----------------|----------------|
-| A1 | The bunker's private key | `BUNKER_NSEC`, which is what `compose.yaml` passes, or the file `BUNKER_NSEC_FILE` names, which wins when both are set. Under compose it can be a secret file mounted read-only from the host (`docs/operating.md`). Read at start (`backend/src/config.rs`). Held in bunker memory (`backend/src/signer.rs`). Not encrypted at rest | Whoever has it is that Nostr identity, permanently: Nostr has no key rotation or revocation |
+| A1 | The bunker's private key | At rest, only as XChaCha20-Poly1305 ciphertext under A10 in `bunker-key.enc` beside the database (`./data` under compose), written once by `bunker import-key` from `BUNKER_NSEC_FILE` or `BUNKER_NSEC`, which the operator then removes (`backend/src/key_store.rs`, `docs/operating.md`; #94). Decrypted at start into bunker memory (`backend/src/signer.rs`) | Whoever has it is that Nostr identity, permanently: Nostr has no key rotation or revocation |
 | A2 | The ability to make the bunker sign | The NIP-46 handler (`backend/src/nip46.rs`) | An attacker does not need A1 if they can get events signed with it |
 | A3 | The proxy secret | `BANCWR_PROXY_SECRET` on the bunker, `NUXT_PROXY_SECRET` on the frontend, the same value | With it, anyone who reaches the bunker can call its API as any identity |
 | A4 | The session-sealing password | `NUXT_SESSION_PASSWORD` on the frontend | Seals the session cookie |
@@ -52,6 +52,7 @@ the READMEs. Nothing here was penetration-tested.
 | A7 | Connection tokens and connections | SQLite. Tokens are stored as a SHA-256 hash only (`nip46.rs`, `hash_secret`) | A connection may sign the kinds it was granted |
 | A8 | The signing log and configuration | SQLite: the audit log of signatures, the bunker relays | Accountability, and where NIP-46 traffic goes |
 | A9 | The first-administrator setting | `BANCWR_ADMIN_PUBKEY` | Seeds the first administrator when there is none |
+| A10 | The root credential | 32 random bytes as hex, in the file `BANCWR_ROOT_KEY_FILE` names: under compose the `bancwr_root_key` secret from `./secrets`, read-only, owned by UID 65532 with mode `0400`. Read from a file only, never the environment. Zeroed in memory when dropped (`backend/src/key_store.rs`; #94) | With A1's ciphertext it is A1. Without it, a copy of `./data` or a backup holds no usable key |
 
 ## 2. Trust boundaries
 
@@ -62,7 +63,7 @@ the READMEs. Nothing here was penetration-tested.
 | B3 | Nitro proxy ↔ bunker API | Every `/api/bunker/*` call, signed with A3 | `frontend/server/api/bunker/[...].ts`, `frontend/server/utils/auth/proxy-signature.ts`, `backend/src/proxy_auth.rs` |
 | B4 | Bunker ↔ relays ↔ NIP-46 apps | NIP-46 requests and responses, kind 24133 | `backend/src/relay.rs`, `backend/src/nip46.rs`, `backend/src/bunker_relays.rs` |
 | B5 | A member's own signer ↔ the browser | The sign-in event only (NIP-07 extension or NIP-46 remote signer) | The member's signer; Bancwr never sees the member's key |
-| B6 | Containers ↔ host and operator | Environment, files, `./data`, images pulled from GHCR | The host; non-root distroless images (#16) |
+| B6 | Containers ↔ host and operator | Environment, files, `./data` (with A1's ciphertext), `./secrets` (A10), images pulled from GHCR | The host; non-root distroless images (#16) |
 
 The bunker's port is not published by `compose.yaml`: only the frontend container reaches it, over
 the compose network. The frontend is published on `127.0.0.1:3001` only, for the reverse proxy.
@@ -95,7 +96,8 @@ the compose network. The frontend is published on `127.0.0.1:3001` only, for the
 | T8 | Have the bunker sign anything for anyone | B3, B4 | X4, X6 | There is no `POST /sign` route. NIP-46 needs a connection token an administrator issued: single-use, 1 hour to 7 days, for a member who can sign, and limited to the kinds it names. There is no "everything" grant. The token secret is shown once and stored as a hash. A connection may sign only the kinds granted, and only while its member may sign (`nip46.rs`, `backend/src/connections_api.rs`; #53) |
 | T9 | Read or tamper with NIP-46 traffic | B4 | X5 | Requests and responses are encrypted end to end between app and bunker (NIP-44, or NIP-04 for older clients) and signed (`relay.rs`). Relays saved in the console must be `wss://` except on this machine (`bunker_relays.rs`, `validate`); `NIP46_RELAYS` is used as given, without that check (section 5). The client answers relay NIP-42 AUTH challenges (`relay.rs`). A relay can still drop or delay traffic |
 | T10 | Pass an app off as something it is not | B4 | X4 | An app's name, URL and image are marked unverified (`metadata_verified: false`) and never used to decide anything (`nip46.rs`) |
-| T11 | Read or change the key, secrets or database on the host | B6 | X8 | Not prevented: see section 5. Containers run as UID 65532 on distroless images with no shell (#16). `BUNKER_NSEC_FILE` keeps the key out of the environment. `compose.yaml` still passes `BUNKER_NSEC`; `docs/operating.md` shows how to give a compose secret file instead, owned by UID 65532 with mode `0400` |
+| T11 | Read or change the key, secrets or database on the host | B6 | X8 | Not prevented for whoever controls the host: see section 5. A1 is on disk only as ciphertext under A10, so a copy of `./data`, a database backup or `.env` alone does not yield it; A10 is a separate secret file, kept out of those backups (`backend/src/key_store.rs`, `docs/operating.md`; #94). The key file is written `0600`, never replaced by an import, and authenticated with its public key as associated data, so an altered file fails to decrypt (T14). The bunker never runs from a plain key: while `BUNKER_NSEC` or `BUNKER_NSEC_FILE` is set it stays locked, so the operator must remove the plain copy (`backend/src/main.rs`). Containers run as UID 65532 on distroless images with no shell (#16) |
+| T14 | Make the bunker sign with a key it should not have, or keep signing after its key storage is broken or altered | B6 | X8 | Fails closed. With A10 missing, unreadable or malformed, the key file missing, unreadable, malformed or altered, the wrong A10, a decrypted key that does not derive the recorded public key, or a plain key still configured, the bunker starts locked: it holds no key, NIP-46 does not start, and every route but `/health`, the status and the sign-in member lookup answers 503. `/health` answers 503 with fixed wording that names no path and no key material, which `bunker healthcheck` prints, and the status's `signer` check fails with it (`backend/src/key_store.rs`, `backend/src/main.rs`, `backend/src/server.rs`, `backend/src/health.rs`, `backend/src/healthcheck.rs`; #94) |
 | T12 | Ship a vulnerable or tampered image | B6 | X9 | Release images are built from a tag, pass the test suite, and are gated on fixable critical and high Trivy findings before anything is published. Published images are scanned weekly (`docs/releasing.md`, `.github/workflows/release-image.yml`, `trivy-security.yml`). Images are not yet signed (section 5) |
 | T13 | Lock everyone out | B2, B3 | X3 | The last administrator cannot be removed. `BANCWR_ADMIN_PUBKEY` seeds an administrator when none exists, and never re-adds or demotes anyone afterwards (`backend/src/main.rs`, `backend/src/db.rs`) |
 
@@ -105,7 +107,9 @@ These are true of Bancwr today. Each names what would change it.
 
 | Limit | Consequence | Changes with |
 |-------|-------------|--------------|
-| The bunker key (A1) is plain text in the environment or a file, not encrypted at rest | Anyone with host access (X8), or a copy of the file or a backup, has the key | #94 (encryption). Until then, `docs/operating.md` (#93) covers a secret file and its permissions |
+| The bunker key (A1) and the root credential (A10) are both on the host | Anyone who controls the host (X8) can read both files, and so the key. Encryption at rest (#94) protects copies of `./data` and its backups, not a compromised host | Not planned in 0.2.0: KMS or HSM support would change it |
+| A1 stays in bunker memory without being fully erased | `nostr` 0.39 `Keys` caches a `secp256k1` keypair that is not erased on drop. The decrypted bytes, A10 and each `SecretKey` are erased (`backend/src/signer.rs`) | Not planned |
+| A key that was plain text before 0.2.0 may have been copied | Importing it does not undo a copy already in a backup of `.env` or of the host, and Nostr cannot rotate a key | Not planned: `docs/operating.md` says so in the migration |
 | Every app signs as the one bunker key | "For a member" is attribution in the signing log, not a separate identity. One bunker is one Nostr identity | #103 |
 | Sessions and challenges live in frontend memory | A frontend restart signs everyone out. Only one frontend instance is supported | #100 |
 | No rate limit on signing | A connected app can sign its granted kinds as fast as it asks | #101 |
@@ -117,7 +121,7 @@ These are true of Bancwr today. Each names what would change it.
 | The member's signer decides which key signs in | Some extensions keep using the key first connected to a site (README, "Signing in"; #70) | Not planned |
 | `NIP46_RELAYS` is not checked for `wss://` | An operator who sets it can point the bunker at a remote `ws://` relay. NIP-46 content stays encrypted end to end, but anyone on the path can see who talks to the bunker and when | Not planned: the console's relay setting enforces it |
 | TLS is the operator's reverse proxy | Bancwr refuses plain HTTP outside localhost but cannot check the proxy's configuration | Not planned |
-| The host is trusted | Whoever controls the host's environment and files controls A1, A3, A4 and A9, and so the bunker | Partly #94 |
+| The host is trusted | Whoever controls the host's environment and files controls A1 (through A10), A3, A4 and A9, and so the bunker | Not planned |
 | Images are not signed and have no SBOM or checksums | A pulled image cannot yet be verified against the release | #104 |
 | No independent security review | This document is the maintainers' own analysis | diogel-io/workspace#175 |
 
@@ -148,4 +152,6 @@ No open findings are recorded here; see [`SECURITY.md`](../SECURITY.md) for how 
 | T9 `wss://` required for console-saved relays, except on this machine | `backend/tests/integration/relays_api_test.rs`. `NIP46_RELAYS` is not covered |
 | T12 release gates | `.github/scripts/test-release-scripts.sh`, and the release workflows themselves |
 | T13 the no-administrator warning | `frontend/tests/server/auth/members.spec.ts`, `backend/tests/unit/health_test.rs` |
+| T11, T14 encryption, decryption, a wrong A10, tampered and malformed key files, never replacing a key file, its mode | `backend/tests/unit/key_store_test.rs` |
+| T14 the locked bunker, the plain key refusal and a 0.1.0 migration, through the binary | `backend/tests/integration/key_lock_test.rs`, `backend/tests/unit/health_test.rs`, `backend/tests/unit/healthcheck_test.rs` |
 | T7 CORS, T11 host | No dedicated test |

@@ -8,6 +8,12 @@ pub enum SignerError {
     SigningError(String),
 }
 
+/// Signs with the bunker's key, once `key_store` has decrypted it (#94).
+///
+/// What is zeroed: the decrypted bytes and the root credential (`Zeroizing`), and every `SecretKey`
+/// when dropped (`nostr` erases it). What is not: `nostr` 0.39 `Keys` also caches a `secp256k1`
+/// `Keypair` that is not erased on drop, so a copy of the key stays in memory for the life of the
+/// process. That is a limit, recorded in `docs/threat-model.md`, not a control.
 #[derive(Debug, Clone)]
 pub struct Signer {
     keys: Keys,
@@ -18,10 +24,6 @@ impl Signer {
         Self {
             keys: Keys::new(secret_key),
         }
-    }
-
-    pub fn update_keys(&mut self, secret_key: SecretKey) {
-        self.keys = Keys::new(secret_key);
     }
 
     pub async fn sign_event(&self, unsigned_event: UnsignedEvent) -> Result<Event, SignerError> {

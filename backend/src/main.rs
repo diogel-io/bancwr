@@ -1,10 +1,12 @@
 use bunker::bunker_relays::{self, EffectiveRelays, RelaySource};
 use bunker::config::Config;
 use bunker::db::{Database, SeedOutcome};
+use bunker::key_store::{self, Unlock};
 use bunker::relay::RelayClient;
-use bunker::server::{create_router, shutdown_signal};
+use bunker::server::{create_locked_router, create_router, shutdown_signal, LockedState};
 use bunker::state::AppState;
 use bunker::signer::Signer;
+use nostr::prelude::*;
 use std::net::SocketAddr;
 use tracing::{error, info, warn};
 
@@ -20,7 +22,40 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // `bunker import-key`: encrypts the plain key once (#94). Needs no runtime and starts nothing.
+    if std::env::args().nth(1).as_deref() == Some("import-key") {
+        std::process::exit(import_key());
+    }
     serve()
+}
+
+/// Encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC) under BANCWR_ROOT_KEY_FILE into the key file. Never
+/// replaces an existing key file, and never prints the key. Returns the exit code.
+fn import_key() -> i32 {
+    let _ = dotenvy::dotenv();
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./data/bancwr.db".to_string());
+    let path = key_store::key_path(&db_path);
+    let result = key_store::RootKey::from_env().and_then(|root| {
+        let secret_key = key_store::read_plain_key()?;
+        key_store::import(&root, &secret_key, &path)
+    });
+    match result {
+        Ok(public_key) => {
+            println!("Imported the bunker's key, encrypted at rest.");
+            println!("Public key: {}", public_key.to_bech32().unwrap_or_default());
+            println!(
+                "Next: remove BUNKER_NSEC_FILE and BUNKER_NSEC from the bunker's configuration, delete \
+                 every plain copy of the key (the secret file, .env, editor backups), and restart. \
+                 The bunker will not sign while either is still set."
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("Could not import the key: {}", e.reason());
+            eprintln!("Detail: {}", e);
+            1
+        }
+    }
 }
 
 #[tokio::main]
@@ -33,6 +68,18 @@ async fn serve() -> anyhow::Result<()> {
     // left unauthenticated.
     config.require_proxy_secret()?;
     info!("Bancwr Diogel {} starting...", config.version);
+
+    // The key, encrypted at rest (#94). The plain key never unlocks the bunker: while it is set, or
+    // when the root credential or key file is missing, wrong or altered, the bunker runs locked.
+    let unlock = key_store::unlock_from_env(&config.db_path);
+    let bunker_pubkey = match &unlock {
+        Unlock::Unlocked(secret_key) => Some(Keys::new(secret_key.clone()).public_key()),
+        Unlock::Locked { public_key, .. } => *public_key,
+    };
+    if let Some(public_key) = &bunker_pubkey {
+        config.check_admin_pubkey(&public_key.to_hex())?;
+    }
+
     let db = Database::new(&config.db_path)?;
 
     // Earlier versions stored a key submitted on the Config page in SQLite, in plain text, and
@@ -40,7 +87,7 @@ async fn serve() -> anyhow::Result<()> {
     if db.purge_stored_key_config()? {
         warn!(
             "Deleted an nsec stored in the database by an earlier version's Config page. It was never \
-             used: the signing key comes from BUNKER_NSEC_FILE or BUNKER_NSEC. It was stored in plain \
+             used: the signing key is the encrypted key file (#94). It was stored in plain \
              text, so if this database was ever copied or backed up, rotate that key."
         );
     }
@@ -56,18 +103,41 @@ async fn serve() -> anyhow::Result<()> {
         None if db.administrator_count()? == 0 => warn!(
             "No administrator is registered, so nobody can administer this bunker. Set \
              BANCWR_ADMIN_PUBKEY to the first administrator's npub and restart. It cannot be the \
-             bunker's own key (BUNKER_NSEC): the bunker signs for others, so that key never signs in."
+             bunker's own key: the bunker signs for others, so that key never signs in."
         ),
         None => {}
     }
 
-    let signer = Signer::new(config.secret_key.clone());
-    info!("Nsec loaded. Public key: {}", signer.public_key_bech32());
+    let port = config.port;
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+    let secret_key = match unlock {
+        Unlock::Unlocked(secret_key) => secret_key,
+        Unlock::Locked { reason, public_key, error } => {
+            match error {
+                Some(error) => error!("The bunker is locked and will not sign: {} ({})", reason, error),
+                None => error!("The bunker is locked and will not sign: {}", reason),
+            }
+            let state = LockedState {
+                reason: reason.to_string(),
+                pubkey: public_key.and_then(|key| key.to_bech32().ok()).unwrap_or_default(),
+                version: config.version.clone(),
+                nip46_enabled: config.nip46_enabled,
+                db: std::sync::Arc::new(db),
+            };
+            info!("HTTP API listening, locked, on http://{}", addr);
+            let app = create_locked_router(state, config.proxy_secret.clone());
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+            return Ok(());
+        }
+    };
+
+    let signer = Signer::new(secret_key);
+    info!("Key decrypted. Public key: {}", signer.public_key_bech32());
 
     let state = AppState::new(signer.clone(), db, config.clone());
 
-    let port = config.port;
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("HTTP API listening on http://{}", addr);
 
     let http_state = state.clone();

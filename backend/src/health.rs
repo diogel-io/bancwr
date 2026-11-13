@@ -194,3 +194,22 @@ pub async fn check_relays(state: &AppState) -> Check {
     };
     relay_check(enabled, &configured, &connected_relays(state).await)
 }
+
+/// While locked, NIP-46 never starts (#94).
+pub const LOCKED_RELAYS: &str = "NIP-46 is stopped while the bunker is locked.";
+
+/// The checks while the bunker is locked (#94): the signer fails with why, NIP-46 is stopped, and
+/// the database and administrator checks run as usual. The overall status is always unhealthy.
+pub fn locked_checks(reason: &str, nip46_enabled: bool, db: &Database) -> Vec<Check> {
+    let relays = if nip46_enabled {
+        Check::new(RELAYS, CheckStatus::Fail, LOCKED_RELAYS)
+    } else {
+        Check::new(RELAYS, CheckStatus::Disabled, "NIP-46 is turned off (NIP46_ENABLED), so no relays are used.")
+    };
+    vec![
+        Check::new(SIGNER, CheckStatus::Fail, reason),
+        check_database(db),
+        relays,
+        check_administrator(db),
+    ]
+}

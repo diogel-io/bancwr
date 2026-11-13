@@ -259,6 +259,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chacha20poly1305",
  "chrono",
  "dotenvy",
  "nostr",
@@ -278,6 +279,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
