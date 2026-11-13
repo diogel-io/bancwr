@@ -1,3 +1,4 @@
+use bunker::backup;
 use bunker::bunker_relays::{self, EffectiveRelays, RelaySource};
 use bunker::config::Config;
 use bunker::db::{Database, SeedOutcome};
@@ -26,14 +27,99 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("import-key") {
         std::process::exit(import_key());
     }
+    // `bunker backup` and `bunker restore` (#95): an encrypted archive on standard output, and a
+    // restore from standard input. Neither needs a runtime or starts the bunker.
+    if std::env::args().nth(1).as_deref() == Some("backup") {
+        std::process::exit(backup());
+    }
+    if std::env::args().nth(1).as_deref() == Some("restore") {
+        std::process::exit(restore());
+    }
     serve()
+}
+
+fn database_path() -> String {
+    std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./data/bancwr.db".to_string())
+}
+
+fn backup_failed(action: &str, error: &backup::BackupError) -> i32 {
+    eprintln!("Could not {}: {}", action, error.reason());
+    eprintln!("Detail: {}", error);
+    1
+}
+
+/// Writes an encrypted archive of the database and the key file to standard output, under
+/// BANCWR_BACKUP_KEY_FILE. Safe while the bunker runs. Returns the exit code.
+fn backup() -> i32 {
+    use std::io::{IsTerminal, Write};
+    let _ = dotenvy::dotenv();
+    if std::io::stdout().is_terminal() {
+        return backup_failed("back up", &backup::BackupError::StdoutIsTerminal);
+    }
+    let db_path = database_path();
+    let result = backup::Passphrase::from_env().and_then(|passphrase| {
+        let (contents, counts) =
+            backup::snapshot(std::path::Path::new(&db_path), &key_store::key_path(&db_path), chrono::Utc::now())?;
+        let archive = backup::seal(&passphrase, &contents, backup::Cost::DEFAULT)?;
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&archive).and_then(|_| stdout.flush()).map_err(backup::BackupError::WriteArchive)?;
+        Ok((contents, counts))
+    });
+    match result {
+        Ok((contents, counts)) => {
+            eprintln!("Backed up the bunker, encrypted under the backup passphrase.");
+            eprintln!("Public key: {}", contents.public_key.to_bech32().unwrap_or_default());
+            eprintln!(
+                "Schema version {}; {} members, {} connections, {} signing log entries.",
+                contents.schema_version, counts.members, counts.connections, counts.signatures
+            );
+            0
+        }
+        Err(error) => backup_failed("back up", &error),
+    }
+}
+
+/// Restores an archive from standard input into an empty data directory, then revokes every NIP-46
+/// connection and unused token. Checks the whole archive, and that BANCWR_ROOT_KEY_FILE decrypts
+/// its key, before writing anything. Returns the exit code.
+fn restore() -> i32 {
+    use std::io::{IsTerminal, Read};
+    let _ = dotenvy::dotenv();
+    if std::io::stdin().is_terminal() {
+        return backup_failed("restore", &backup::BackupError::StdinIsTerminal);
+    }
+    let db_path = database_path();
+    let result = backup::Passphrase::from_env().and_then(|passphrase| {
+        let mut archive = Vec::new();
+        std::io::stdin().lock().read_to_end(&mut archive).map_err(backup::BackupError::ReadArchive)?;
+        let contents = backup::open(&passphrase, &archive)?;
+        backup::place(&contents, key_store::RootKey::from_env(), std::path::Path::new(&db_path), &key_store::key_path(&db_path))?;
+        let db = Database::new(&db_path).map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
+        let revoked = db.revoke_all_for_restore(chrono::Utc::now()).map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
+        let members = db.get_team_members().map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?.len();
+        Ok((contents, revoked, members))
+    });
+    match result {
+        Ok((contents, (connections, tokens), members)) => {
+            println!("Restored the bunker from the backup taken at {}.", contents.created_at.to_rfc3339());
+            println!("Public key: {}", contents.public_key.to_bech32().unwrap_or_default());
+            println!("{} members, with their roles, are back.", members);
+            println!(
+                "Revoked {} connected apps and {} unused connection tokens: each app needs a new token to connect again.",
+                connections, tokens
+            );
+            println!("Next: start the bunker, sign in, and check Team for anyone removed since the backup.");
+            0
+        }
+        Err(error) => backup_failed("restore", &error),
+    }
 }
 
 /// Encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC) under BANCWR_ROOT_KEY_FILE into the key file. Never
 /// replaces an existing key file, and never prints the key. Returns the exit code.
 fn import_key() -> i32 {
     let _ = dotenvy::dotenv();
-    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./data/bancwr.db".to_string());
+    let db_path = database_path();
     let path = key_store::key_path(&db_path);
     let result = key_store::RootKey::from_env().and_then(|root| {
         let secret_key = key_store::read_plain_key()?;
