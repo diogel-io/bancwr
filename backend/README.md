@@ -10,20 +10,35 @@ variables. Bancwr is the product.
 The project supports loading environment variables from a `.env` file in the project root.
 The server runs on port 3000 by default, but this can be changed using the `BUNKER_PORT` environment variable.
 
-### From environment variable:
+### The key, encrypted at rest (#94)
+
+The bunker never runs from a plain key. Its key is in a file encrypted with XChaCha20-Poly1305
+under a root credential, 64 hex characters in the file `BANCWR_ROOT_KEY_FILE` names. Create them
+once:
+
 ```bash
-BUNKER_NSEC=nsec1... BUNKER_PORT=4000 cargo run
+mkdir -p -m 700 secrets data
+(umask 077; openssl rand -hex 32 > secrets/bancwr_root_key)
+(umask 077; ${EDITOR:-nano} secrets/bunker_nsec)   # the key, as an nsec or in hex
+BUNKER_NSEC_FILE=secrets/bunker_nsec BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key cargo run -- import-key
+rm secrets/bunker_nsec
 ```
 
-### From file:
+`import-key` writes `bunker-key.enc` beside the database (`BANCWR_KEY_PATH` sets another path),
+prints the npub, and never replaces an existing key file. It reads `BUNKER_NSEC_FILE` first, then
+`BUNKER_NSEC`. Then run the bunker with neither set:
+
 ```bash
-BUNKER_NSEC_FILE=/path/to/nsec cargo run
+BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key BUNKER_PORT=4000 cargo run
 ```
 
-The file holds the key as an nsec or in hex; a trailing newline is fine. `BUNKER_NSEC_FILE` wins
-when both are set. Under compose, give it as a secret file: see
-[docs/operating.md](../docs/operating.md#protecting-the-bunker-key), which also covers backing up
-the database.
+While `BUNKER_NSEC` or `BUNKER_NSEC_FILE` is set, or the root credential is missing or wrong, or the
+key file is missing or altered, the bunker runs locked: it signs nothing, NIP-46 does not start,
+`/health` answers `503` with `{"status":"locked","reason":"..."}`, `bunker healthcheck` prints the
+reason, and `GET /api/bunker/status` reports the `signer` check failed with it. Only the status and
+the member lookup that sign-in needs answer; every other route answers `503`. Under compose, see
+[docs/operating.md](../docs/operating.md#protecting-the-bunker-key), which also covers migrating a
+0.1.0 bunker and backing up the database.
 
 ### From SQLite (logging & configuration):
 By default, the bunker uses SQLite to store audit logs and configuration.
@@ -123,9 +138,9 @@ or keys. The raw error is in the bunker log.
 
 ### Get Config
 `GET /api/bunker/config`
-Returns the public key and, if the key was loaded from a file, that file's path. The configuration
-is read-only over the API: the signing key is set with `BUNKER_NSEC_FILE` or `BUNKER_NSEC` when the
-bunker starts, and the nsec is never returned.
+Returns the public key and `key_storage`, which is always `encrypted` (#94). The configuration is
+read-only over the API: the signing key is imported with `bunker import-key`, and neither the key
+nor where it is stored is ever returned.
 
 ### Team Management
 `GET /api/bunker/team`
@@ -329,11 +344,9 @@ change), `logout`. The NIP-04 and NIP-44 encryption methods are not supported.
 
 ### Build & Run with Podman
 
-1. Create a `.env` file with your `BUNKER_NSEC`:
-   ```env
-   BUNKER_NSEC=nsec1...
-   BUNKER_PORT=3000
-   ```
+1. Create the root credential and import the key, as
+   [docs/operating.md](../docs/operating.md#a-new-installation) describes, and a `.env` file from
+   `../.env.example`.
 
 2. Ensure the Podman socket is running (required for `podman compose`):
    ```bash

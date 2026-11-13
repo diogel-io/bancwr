@@ -81,7 +81,7 @@ NUXT_SITE_ORIGIN=http://localhost:3001
 Plain `http://` is accepted only for localhost; anywhere else Bancwr must be served over HTTPS (see
 the root README). Sign in with a NIP-07 extension or a NIP-46 `bunker://` string.
 
-`BANCWR_ADMIN_PUBKEY` must be your own key, never the bunker's (`BUNKER_NSEC`). The bunker key can
+`BANCWR_ADMIN_PUBKEY` must be your own key, never the bunker's. The bunker key can
 never sign in (403 `bunker_key`) or be registered, because the bunker signs for others (sign-in
 ADR, rule 10; #74). If you start the backend without `BANCWR_ADMIN_PUBKEY`, it has no
 administrator: its health shows `administrator` as a warning, and signing in with your own key
@@ -117,8 +117,11 @@ Each run:
 
 1. generates throwaway keys and secrets, held only in the environment: the bunker's key, a seeded
    administrator's key, the proxy secret and the session password;
-2. builds and starts the stack on <http://localhost:3100>, with the database on a tmpfs, so every
-   run starts empty and leaves nothing on disk. The bunker is not published on any host port;
+2. builds the images, imports the bunker's key with `bunker import-key` under a throwaway root
+   credential (#94), passing the key through the environment only, and starts the stack on
+   <http://localhost:3100>. The data directory and root credential are in a fresh temporary
+   directory, removed afterwards, so every run starts empty. The bunker is not published on any
+   host port;
 3. waits until the administrator can sign in and see the bunker `healthy` through the proxy, which
    proves sign-in, the session, the signed proxy and the bunker's guard;
 4. starts a minimal relay (`e2e/relay.ts`, on `127.0.0.1:7777`) and a NIP-46 test signer

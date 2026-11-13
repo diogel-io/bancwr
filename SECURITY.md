@@ -86,8 +86,9 @@ A change to any of these needs the security review:
 - `backend/src/proxy_auth.rs` and `backend/src/server.rs`, which decide who may call each route
 - `backend/src/registry.rs` and `backend/src/db.rs`, which hold members, roles, tokens and the audit
   log, and `backend/src/migrations.rs`
-- `backend/src/signer.rs`, `backend/src/config.rs` and `backend/src/main.rs`, which load the key
-  and the secrets and seed the first administrator
+- `backend/src/key_store.rs`, `backend/src/signer.rs`, `backend/src/config.rs` and
+  `backend/src/main.rs`, which encrypt, decrypt and load the key and the secrets, and seed the first
+  administrator
 - `backend/src/nip46.rs`, `backend/src/relay.rs`, `backend/src/connections_api.rs`,
   `backend/src/relays_api.rs` and `backend/src/bunker_relays.rs`, the NIP-46 path and its relays
 - `frontend/server/api/auth/*` and `frontend/server/utils/auth/*`, sign-in, sessions and the
