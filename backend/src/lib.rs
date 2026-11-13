@@ -16,3 +16,4 @@ pub mod health;
 pub mod connections_api;
 pub mod bunker_relays;
 pub mod relays_api;
+pub mod key_store;

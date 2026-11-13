@@ -19,22 +19,40 @@ pub fn check(port: u16) -> Result<(), String> {
         .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .map_err(|e| format!("cannot send the request: {}", e))?;
 
-    // The status line is all that is needed, and it arrives first.
+    // Read the whole answer (the request asked to close), up to a limit: the status line decides,
+    // and a locked bunker's body says why (#94).
     let mut response = Vec::new();
-    let mut buffer = [0u8; 256];
-    while !response.contains(&b'\n') {
-        let read = stream.read(&mut buffer).map_err(|e| format!("no answer: {}", e))?;
+    let mut buffer = [0u8; 1024];
+    while response.len() < MAX_RESPONSE {
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            Err(e) if response.is_empty() => return Err(format!("no answer: {}", e)),
+            Err(_) => break,
+        };
         if read == 0 {
             break;
         }
         response.extend_from_slice(&buffer[..read]);
     }
-    let status_line = String::from_utf8_lossy(&response);
-    let status_line = status_line.lines().next().unwrap_or_default();
+    let response = String::from_utf8_lossy(&response);
+    let status_line = response.lines().next().unwrap_or_default();
     match status_line.split_whitespace().nth(1) {
         Some("200") => Ok(()),
-        _ => Err(format!("unhealthy: {:?}", status_line)),
+        _ => match locked_reason(&response) {
+            Some(reason) => Err(format!("unhealthy: {:?}: locked: {}", status_line, reason)),
+            None => Err(format!("unhealthy: {:?}", status_line)),
+        },
     }
+}
+
+/// The most of an answer the probe reads.
+const MAX_RESPONSE: usize = 16 * 1024;
+
+/// The `reason` in a locked bunker's `/health` body (#94), if the answer carries one.
+pub fn locked_reason(response: &str) -> Option<String> {
+    let (_, body) = response.split_once("\r\n\r\n")?;
+    let body: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    body.get("reason")?.as_str().map(str::to_string)
 }
 
 /// The port the bunker listens on, as `Config` reads it, without loading the rest of the config:

@@ -21,6 +21,9 @@ tower-http = { version = "0.6.8", features = ["trace", "cors"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "=0.4.34", features = ["serde"] }
 uuid = { version = "1.0", features = ["serde", "v4"] }
+# The bunker key at rest (#94). Both already come in through nostr.
+chacha20poly1305 = "0.10"
+zeroize = "1"
 
 # Nostr client for relay connections
 nostr-relay-pool = "0.39"
@@ -110,3 +113,11 @@ path = "tests/unit/health_test.rs"
 [[test]]
 name = "relays_api_test"
 path = "tests/integration/relays_api_test.rs"
+
+[[test]]
+name = "key_store_test"
+path = "tests/unit/key_store_test.rs"
+
+[[test]]
+name = "key_lock_test"
+path = "tests/integration/key_lock_test.rs"

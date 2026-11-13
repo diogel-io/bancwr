@@ -14,7 +14,9 @@ services:
         start_period: 5s
         retries: 3
       environment:
-        - BUNKER_NSEC=${BUNKER_NSEC}
+        # The bunker's key is encrypted at rest in ./data/bunker-key.enc (#94), under this root
+        # credential. Create both once with `bunker import-key`: see docs/operating.md.
+        - BANCWR_ROOT_KEY_FILE=/run/secrets/bancwr_root_key
         # The first administrator's npub, registered at startup while no administrator exists.
         - BANCWR_ADMIN_PUBKEY=${BANCWR_ADMIN_PUBKEY:-}
         # Signs the caller's identity between frontend and bunker; both services read it. Required.
@@ -33,6 +35,10 @@ services:
       #        sudo chown -R 65532:65532 ./data             (Docker)
       volumes:
         - ./data:/data:Z
+      # 64 hex characters (openssl rand -hex 32), owned by UID 65532, mode 0400. Never stored with
+      # the backups of ./data: the two together are the key.
+      secrets:
+        - bancwr_root_key
 
     frontend:
       # The same version as the bunker: they are released together.
@@ -56,3 +62,7 @@ services:
         - NUXT_PUBLIC_BLOSSOM_SERVER=${NUXT_PUBLIC_BLOSSOM_SERVER:-}
       depends_on:
         - bunker
+
+secrets:
+    bancwr_root_key:
+      file: ./secrets/bancwr_root_key

@@ -26,12 +26,10 @@ fn state(db: Database, nip46_enabled: bool, relay_urls: Vec<String>) -> AppState
 fn bare_state(db: Database, nip46_enabled: bool, relay_urls: Vec<String>) -> AppState {
     let keys = Keys::generate();
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 0,
         db_path: ":memory:".to_string(),
         relay_urls,
         nip46_enabled,
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -211,4 +209,24 @@ async fn the_report_has_all_four_checks() {
     let (_, checks) = health::report(&state).await;
     let names: Vec<&str> = checks.iter().map(|check| check.name.as_str()).collect();
     assert_eq!(names, vec![health::SIGNER, health::DATABASE, health::RELAYS, health::ADMINISTRATOR]);
+}
+
+#[test]
+fn a_locked_bunker_is_unhealthy_and_the_signer_says_why() {
+    // #94: while the key cannot be unlocked, nothing signs and the signer check carries the reason.
+    let db = Database::new(":memory:").unwrap();
+    db.add_team_member("Admin", &Keys::generate().public_key().to_hex(), Role::Administrator).unwrap();
+    let reason = bunker::key_store::KeyStoreError::WrongRootKeyOrTampered.reason();
+
+    let checks = health::locked_checks(reason, true, &db);
+    assert_eq!(assess(&checks), Overall::Unhealthy);
+    assert_eq!((named(&checks, health::SIGNER).status, named(&checks, health::SIGNER).detail.as_str()), (CheckStatus::Fail, reason));
+    assert_eq!(named(&checks, health::RELAYS).status, CheckStatus::Fail);
+    assert_eq!(named(&checks, health::RELAYS).detail, health::LOCKED_RELAYS);
+    assert_eq!(named(&checks, health::DATABASE).status, CheckStatus::Pass);
+    assert_eq!(named(&checks, health::ADMINISTRATOR).status, CheckStatus::Pass);
+
+    let off = health::locked_checks(reason, false, &db);
+    assert_eq!(named(&off, health::RELAYS).status, CheckStatus::Disabled, "NIP-46 off is not a fault");
+    assert_eq!(assess(&off), Overall::Unhealthy, "the signer still fails");
 }

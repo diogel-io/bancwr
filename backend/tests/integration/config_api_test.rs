@@ -16,13 +16,14 @@ async fn test_get_config() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["pubkey"], app.bunker.public_key().to_bech32().unwrap());
     assert!(body.get("nsec").is_none(), "the key is never returned");
-    assert!(body["nsec_file"].is_null());
+    assert_eq!(body["key_storage"], "encrypted");
+    assert!(body.get("nsec_file").is_none(), "no key path is given (#94)");
 }
 
 #[tokio::test]
 async fn test_update_config_is_gone() {
-    // The Config page is read-only (#42): the signing key is set with BUNKER_NSEC_FILE or
-    // BUNKER_NSEC, and the API no longer accepts a key.
+    // The Config page is read-only (#42): the signing key is imported with `bunker import-key`
+    // (#94), and the API does not accept a key.
     let app = common::spawn(true).await;
 
     let res = app

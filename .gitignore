@@ -14,3 +14,7 @@
 
 # Playwright MCP output (see .mcp.json)
 .playwright-mcp/
+
+# The bunker key at rest and its root credential (#94): never committed.
+/secrets/
+bunker-key.enc

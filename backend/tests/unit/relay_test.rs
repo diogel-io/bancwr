@@ -13,12 +13,10 @@ async fn test_relay_client_new() {
     let relays = vec!["ws://relay.threenine.services ".to_string()];
     
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 3000,
         db_path: ":memory:".to_string(),
         relay_urls: relays.clone(),
         nip46_enabled: true,
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -36,12 +34,10 @@ async fn test_relay_client_empty_relays() {
     let relays = vec![];
     
     let config = Config {
-        secret_key: keys.secret_key().clone(),
         port: 3000,
         db_path: ":memory:".to_string(),
         relay_urls: relays.clone(),
         nip46_enabled: true,
-        nsec_file: None,
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
@@ -63,12 +59,10 @@ mod set_relays {
     fn state() -> (AppState, Keys) {
         let keys = Keys::generate();
         let config = Config {
-            secret_key: keys.secret_key().clone(),
             port: 0,
             db_path: ":memory:".to_string(),
             relay_urls: vec![],
             nip46_enabled: true,
-            nsec_file: None,
             version: "0.0.0".to_string(),
             admin_pubkey: None,
             proxy_secret: None,

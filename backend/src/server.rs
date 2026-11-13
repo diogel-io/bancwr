@@ -22,7 +22,11 @@ const STATUS_PATH: &str = "/api/bunker/status";
 // Removed local AppState struct as it is now in state.rs
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct HealthResponse {
+    /// `ok`, or `locked` when the bunker could not unlock its key (#94).
     pub status: String,
+    /// Why the bunker is locked: fixed wording, never a path or key material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -62,9 +66,12 @@ pub struct Metrics {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ConfigResponse {
     pub pubkey: String,
-    pub nsec_file: Option<String>,
-    // Note: nsec is intentionally omitted for security
+    /// How the signing key is stored: always `encrypted` since #94. Never the key, or a path.
+    pub key_storage: String,
 }
+
+/// `ConfigResponse::key_storage` since #94.
+pub const KEY_STORAGE_ENCRYPTED: &str = "encrypted";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TeamMemberResponse {
@@ -108,6 +115,7 @@ pub struct TeamOperationResponse {
 pub async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
+        reason: None,
     })
 }
 
@@ -202,7 +210,7 @@ pub async fn get_config(
 ) -> Json<ConfigResponse> {
     Json(ConfigResponse {
         pubkey: state.signer.read().await.public_key_bech32(),
-        nsec_file: state.config.read().await.nsec_file.clone(),
+        key_storage: KEY_STORAGE_ENCRYPTED.to_string(),
     })
 }
 
@@ -280,10 +288,17 @@ pub async fn get_team_member_by_pubkey(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<TeamMemberResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let pubkey = canonical_pubkey(&key).map_err(|_| {
+    lookup_member(&state.db, &key)
+}
+
+fn lookup_member(
+    db: &crate::db::Database,
+    key: &str,
+) -> Result<Json<TeamMemberResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let pubkey = canonical_pubkey(key).map_err(|_| {
         (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid_pubkey" })))
     })?;
-    match state.db.find_member_by_pubkey(&pubkey) {
+    match db.find_member_by_pubkey(&pubkey) {
         Ok(Some(member)) => Ok(Json(member.into())),
         Ok(None) => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "not_registered" })))),
         Err(e) => {
@@ -350,7 +365,7 @@ pub fn create_router(state: AppState) -> Router {
     let administration = Router::new()
         .route("/api/bunker/logs", get(get_logs))
         .route("/api/bunker/metrics", get(get_metrics))
-        // Read-only: the signing key is set with BUNKER_NSEC_FILE or BUNKER_NSEC (#42).
+        // Read-only (#42): the signing key is encrypted at rest and set with `bunker import-key` (#94).
         .route("/api/bunker/config", get(get_config))
         // Reading the team is TeamReader's; changing it stays the administrator's (#77).
         .route("/api/bunker/team", post(add_team_member))
@@ -381,6 +396,73 @@ pub fn create_router(state: AppState) -> Router {
         .merge(guarded(team_read, Access::TeamReader))
         .merge(guarded(lookup, Access::TeamReaderOrService))
         .merge(guarded(signer, Access::Signer))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// What a locked bunker knows (#94): why it is locked, and enough to answer the status.
+#[derive(Clone)]
+pub struct LockedState {
+    pub reason: String,
+    /// The public key the key file records, as an npub; empty when there is none to read.
+    pub pubkey: String,
+    pub version: String,
+    pub nip46_enabled: bool,
+    pub db: std::sync::Arc<crate::db::Database>,
+}
+
+/// The body every route but the status and the member lookup answers with while locked.
+fn locked_body(reason: &str) -> Json<HealthResponse> {
+    Json(HealthResponse { status: "locked".to_string(), reason: Some(reason.to_string()) })
+}
+
+/// GET /health while locked: 503, so the container is unhealthy, with the reason.
+pub async fn locked_health(State(state): State<LockedState>) -> (StatusCode, Json<HealthResponse>) {
+    (StatusCode::SERVICE_UNAVAILABLE, locked_body(&state.reason))
+}
+
+/// GET /api/bunker/status while locked: unhealthy, with the signer check saying why.
+pub async fn locked_status(State(state): State<LockedState>) -> Json<BunkerStatus> {
+    let checks = crate::health::locked_checks(&state.reason, state.nip46_enabled, &state.db);
+    Json(BunkerStatus {
+        status: crate::health::assess(&checks),
+        pubkey: state.pubkey.clone(),
+        version: state.version.clone(),
+        checks,
+    })
+}
+
+async fn locked_lookup(
+    State(state): State<LockedState>,
+    Path(key): Path<String>,
+) -> Result<Json<TeamMemberResponse>, (StatusCode, Json<serde_json::Value>)> {
+    lookup_member(&state.db, &key)
+}
+
+async fn locked_fallback(State(state): State<LockedState>) -> (StatusCode, Json<HealthResponse>) {
+    (StatusCode::SERVICE_UNAVAILABLE, locked_body(&state.reason))
+}
+
+/// The router while the bunker is locked (#94). Nothing here can sign. `/health` answers 503 with
+/// the reason; the status and the member lookup that sign-in needs keep their guards, so an
+/// administrator can sign in and read why; every other route answers 503.
+pub fn create_locked_router(state: LockedState, proxy_secret: Option<String>) -> Router {
+    let secret = proxy_secret.map(|secret| -> std::sync::Arc<[u8]> { secret.into_bytes().into() });
+    let guarded = |routes: Router<LockedState>, access: Access| match &secret {
+        Some(secret) => routes.route_layer(axum::middleware::from_fn_with_state(
+            Guard { secret: secret.clone(), db: state.db.clone(), access },
+            crate::proxy_auth::guard,
+        )),
+        None => routes,
+    };
+    let status = Router::new().route(STATUS_PATH, get(locked_status));
+    let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(locked_lookup));
+
+    Router::new()
+        .route(HEALTH_PATH, get(locked_health))
+        .merge(guarded(status, Access::Health))
+        .merge(guarded(lookup, Access::TeamReaderOrService))
+        .fallback(locked_fallback)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
