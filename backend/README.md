@@ -20,6 +20,11 @@ BUNKER_NSEC=nsec1... BUNKER_PORT=4000 cargo run
 BUNKER_NSEC_FILE=/path/to/nsec cargo run
 ```
 
+The file holds the key as an nsec or in hex; a trailing newline is fine. `BUNKER_NSEC_FILE` wins
+when both are set. Under compose, give it as a secret file: see
+[docs/operating.md](../docs/operating.md#protecting-the-bunker-key), which also covers backing up
+the database.
+
 ### From SQLite (logging & configuration):
 By default, the bunker uses SQLite to store audit logs and configuration.
 SQLite is compiled into the binary via `rusqlite` with the `bundled` feature, so no
