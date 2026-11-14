@@ -289,10 +289,10 @@ Audit actions, each recorded in the same transaction as the change:
 
 | `action` | When | `detail` |
 |----------|------|----------|
-| `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…` |
+| `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…`, then `;connection_lifetime_hours=…` when it has one |
 | `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore | `reason=revoked`, `member_removed`, `role_changed` or `restored` |
-| `connection_created` | An app connects with a token | `perms=…` |
-| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed` or `restored` |
+| `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
+| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored` or `expired` |
 | `member_added`, `member_removed` | Team changes | `role=…` |
 | `member_role_changed` | A role changes (today the `BANCWR_ADMIN_PUBKEY` bootstrap) | `from=…;to=…` |
 | `relays_changed` | An administrator saves the bunker relays | `relays=…` |
@@ -427,6 +427,10 @@ POST /api/bunker/connections/tokens
   each method by its name. If the app asks for permissions in `connect`, it gets those of them the
   token allows, and is refused if that leaves nothing.
 - The token is valid for 1 hour to 7 days (24 hours by default), and **for one connection only**.
+- `connection_lifetime_hours` (#98), 1 to 8,760 (365 days), is how long the connection lasts,
+  counted from when the app connects; anything else is `400 {"error":"invalid_lifetime"}`. Omitted,
+  the connection lasts until it is revoked, as before. The token's own validity only bounds when it
+  can be used to connect. A lifetime cannot be extended: issue a new token.
 - The response's `uri` is the `bunker://` string to give the app. It carries the token's secret,
   which is shown this once: the bunker stores only its SHA-256 hash.
 
@@ -440,6 +444,15 @@ administrator (any) or the member it was made for (their own) revokes it
 or its member is removed (`member_removed`) or becomes a viewer (`role_changed`, #77). A request
 from a connection whose member is now a viewer is refused as a removed member's is, and a token
 issued for one does not connect.
+
+A connection with a lifetime (#98) has an `expires_at`, and `null` without one. From that moment
+every request is refused. The first is answered `This connection has expired`, and the connection
+is marked revoked with the reason `expired`, no `revoked_by`, and `revoked_at` equal to its
+`expires_at`, so the record shows when access ended. That is recorded as `connection_revoked`,
+`reason=expired`, and logged. Later requests get `Not connected`, as any ended connection's do. The
+bunker also marks expired connections at start, every hour, before listing connections, and before
+an app connects again, so one that is never used again is still shown as ended.
+Tokens and the token just issued return `connection_lifetime_hours`, `null` when there is none.
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`, and the encryption methods below. Tokens, connections and the token just issued

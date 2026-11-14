@@ -397,6 +397,21 @@ A manual copy is not encrypted apart from the key file, and restoring it is just
 That brings back every connection and token as it was, including those revoked since. After
 restoring a manual copy, revoke under **Connections** every app and token you had shut out.
 
+## Apps with a time limit
+
+A contractor, a campaign or a bot often needs access for a set time. When issuing a token under
+**Connections**, choose how long the connection lasts under **Connection lasts**: 1, 7, 30 or 90
+days, or **Until revoked**, which is the default and how every earlier connection behaves (#98).
+
+- The time counts from when the app connects, not from when the token is issued. **Valid for** is
+  separate: it is how long the token can be used to connect.
+- When the time runs out, the bunker refuses the app and marks the connection ended, with the
+  reason "Its time limit ran out". The audit log records it as `connection_revoked`,
+  `reason=expired`.
+- Each connection shows when it ends, or "no time limit".
+- A time limit cannot be extended. To give more time, issue a new token, and the app connects again.
+- You can still revoke a connection before its time runs out.
+
 ## Apps that read and send private messages
 
 An app can be allowed to encrypt and decrypt with the brand's key (#97), which direct messages
