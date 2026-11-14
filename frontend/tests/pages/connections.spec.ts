@@ -15,7 +15,7 @@ const other = 'b'.repeat(64)
 
 const connection = (over: Partial<Nip46Connection> = {}): Nip46Connection => ({
   id: 'c1', client_pubkey: 'c'.repeat(64), for_pubkey: me, client_name: 'Damus', client_url: 'https://damus.io', client_image: null,
-  metadata_verified: false, kinds: [1, 7], connected_at: new Date(Date.now() - 3_600_000).toISOString(),
+  metadata_verified: false, kinds: [1, 7], methods: [], connected_at: new Date(Date.now() - 3_600_000).toISOString(),
   last_used_at: new Date(Date.now() - 120_000).toISOString(), revoked_at: null, revoked_reason: null, revoked_by: null, ...over
 })
 
@@ -46,7 +46,7 @@ registerEndpoint('/api/bunker/connections/tokens', {
       return { error: 'nip46_disabled', message: 'off' }
     }
     state.issued.push(await readBody(event))
-    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], expires_at: new Date(Date.now() + 86_400_000).toISOString() }
+    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], expires_at: new Date(Date.now() + 86_400_000).toISOString() }
   }
 })
 registerEndpoint('/api/bunker/connections/c1', {
@@ -104,7 +104,7 @@ describe('Connections page', () => {
     expect(row.text()).toContain('1 Note')
     expect(row.text()).toContain('7 Reaction')
     expect(row.text()).toContain('Connected 1 hour ago')
-    expect(row.text()).toContain('last signed 2 minutes ago')
+    expect(row.text()).toContain('last used 2 minutes ago')
     expect(row.text()).not.toContain('for ')
     expect(component.find('[data-testid="issue-token"]').exists()).toBe(false)
   })
@@ -147,7 +147,7 @@ describe('Connections page', () => {
 
   it('shows an administrator whom each app is for, and unused tokens', async () => {
     state.connections = [connection({ for_pubkey: other })]
-    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bob\'s laptop', kinds: [1], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null } satisfies Nip46Token]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bob\'s laptop', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null } satisfies Nip46Token]
     const component = await mount('administrator')
     await flushPromises()
     expect(component.find('[data-connection="c1"]').text()).toContain('for Bob')
@@ -161,7 +161,7 @@ describe('Connections page', () => {
     await form.trigger('submit')
     await vi.waitFor(() => expect(component.find('[data-testid="issued-uri"]').exists(), component.text()).toBe(true))
 
-    expect(state.issued).toEqual([{ for_pubkey: me, label: 'Damus on my phone', kinds: [1, 7], expires_in_hours: 24 }])
+    expect(state.issued).toEqual([{ for_pubkey: me, label: 'Damus on my phone', kinds: [1, 7], methods: [], expires_in_hours: 24 }])
     expect(component.find('[data-testid="issued-uri"]').text()).toContain('secret=')
     expect(component.find('[data-testid="issued-qr"]').attributes('src')).toMatch(/^data:image\/svg\+xml/)
     expect(component.text()).toContain('Shown once')
@@ -169,6 +169,55 @@ describe('Connections page', () => {
     await component.findAll('button').find(b => b.text() === 'Done')!.trigger('click')
     expect(component.find('[data-testid="issued-uri"]').exists()).toBe(false)
     expect(component.text()).not.toContain('secret=')
+  })
+
+  it('issues a token with encryption methods, in the bunker\'s order, and warns about decrypting (#97)', async () => {
+    const component = await mount('administrator')
+    const form = component.find('[data-testid="issue-token"]')
+    await form.find('input[maxlength="100"]').setValue('Messages app')
+    expect(component.find('[data-testid="issue-token-decrypt-warning"]').exists()).toBe(false)
+
+    await form.find('[data-method="nip44_decrypt"]').trigger('click')
+    await form.find('[data-method="nip44_encrypt"]').trigger('click')
+    await flushPromises()
+    expect(component.find('[data-testid="issue-token-decrypt-warning"]').text()).toContain('every message sent to the brand\'s key')
+
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(component.find('[data-testid="issued-uri"]').exists(), component.text()).toBe(true))
+    expect(state.issued).toEqual([{ for_pubkey: me, label: 'Messages app', kinds: [1, 7], methods: ['nip44_encrypt', 'nip44_decrypt'], expires_in_hours: 24 }])
+  })
+
+  it('issues an encryption-only token, but not one with nothing allowed', async () => {
+    const component = await mount('administrator')
+    const form = component.find('[data-testid="issue-token"]')
+    await form.find('input[maxlength="100"]').setValue('Encrypt only')
+    await form.find('#issue-token-kinds').trigger('click')
+    await flushPromises()
+    const none = [...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.includes('encryption only')) as HTMLElement
+    // reka-ui selects an option on pointerup.
+    none.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await vi.waitFor(() => expect(component.find('[data-testid="issue-token-methods"]').text()).toContain('Choose at least one method'))
+    const submit = () => component.findAll('button').find(b => b.text() === 'Issue token')!
+    expect(submit().attributes('disabled')).toBeDefined()
+
+    await form.find('[data-method="nip04_encrypt"]').trigger('click')
+    await flushPromises()
+    expect(submit().attributes('disabled')).toBeUndefined()
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(1))
+    expect(state.issued[0]).toMatchObject({ kinds: [], methods: ['nip04_encrypt'] })
+  })
+
+  it('lists the methods a token and a connection allow', async () => {
+    state.connections = [connection({ methods: ['nip44_encrypt', 'nip44_decrypt'] })]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Reader', kinds: [], methods: ['nip44_decrypt'], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null } satisfies Nip46Token]
+    const component = await mount('administrator')
+    await flushPromises()
+    expect(component.find('[data-testid="connection-methods"]').text()).toContain('Encrypt messages (NIP-44)')
+    expect(component.find('[data-testid="connection-methods"]').text()).toContain('Read encrypted messages (NIP-44)')
+    const token = component.find('[data-token="t1"]').text()
+    expect(token).toContain('may also: Read encrypted messages (NIP-44)')
+    expect(token).not.toContain('may sign')
   })
 
   it('offers tokens only for admins and signers, never a viewer (#77)', async () => {

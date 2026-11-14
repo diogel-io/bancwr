@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // Issuing a connection token (#31, administrators): for which member, a label, what the app may
-// sign, and for how long. The bunker:// string it returns carries the token's secret and is shown
-// once: the bunker keeps only its hash (#53), so it cannot be shown again.
+// sign, which encryption methods it may call (#97), and for how long. The bunker:// string it
+// returns carries the token's secret and is shown once: the bunker keeps only its hash (#53), so it
+// cannot be shown again.
 import { renderSVG } from 'uqr'
 import { canSign } from '#shared/types/bunker'
-import type { IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
-import { KIND_PRESETS, kindLabel, parseKinds } from '~/utils/connections'
+import type { EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
+import { ENCRYPTION_METHODS, KIND_PRESETS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
 
 const props = defineProps<{
   members: TeamMember[]
@@ -21,8 +22,9 @@ const EXPIRY = [
 
 const forPubkey = ref(props.self)
 const label = ref('')
-const preset = ref<number | 'custom'>(0)
+const preset = ref<number | 'custom' | 'none'>(0)
 const custom = ref('')
+const methods = ref<EncryptionMethod[]>([])
 const hours = ref(24)
 const issuing = ref(false)
 const error = ref<string>()
@@ -35,19 +37,34 @@ const memberItems = computed(() => props.members
   .filter(m => m.npub && canSign(m.role))
   .map(m => ({ label: m.pubkey === props.self ? `${m.name} (you)` : m.name, value: m.pubkey })))
 const presetItems = computed(() => [
-  ...KIND_PRESETS.map((p, i) => ({ label: `${p.label} (${p.kinds.map(kindLabel).join(', ')})`, value: i as number | 'custom' })),
-  { label: 'Choose kinds…', value: 'custom' as const }
+  ...KIND_PRESETS.map((p, i) => ({ label: `${p.label} (${p.kinds.map(kindLabel).join(', ')})`, value: i as number | 'custom' | 'none' })),
+  { label: 'Choose kinds…', value: 'custom' as const },
+  // An app that only encrypts and decrypts (#97).
+  { label: 'Nothing: encryption only', value: 'none' as const }
 ])
-const kinds = computed(() => preset.value === 'custom' ? parseKinds(custom.value) : { kinds: KIND_PRESETS[preset.value]!.kinds })
+const kinds = computed<{ kinds: number[] } | { error: string }>(() => {
+  if (preset.value === 'none') return { kinds: [] }
+  if (preset.value === 'custom') return parseKinds(custom.value)
+  return { kinds: KIND_PRESETS[preset.value]!.kinds }
+})
 const kindsError = computed(() => preset.value === 'custom' && custom.value.trim() && 'error' in kinds.value ? kinds.value.error : undefined)
-const canIssue = computed(() => !!label.value.trim() && 'kinds' in kinds.value && !issuing.value)
+const methodsError = computed(() => preset.value === 'none' && !methods.value.length ? 'Choose at least one method, or kinds the app may sign.' : undefined)
+const decrypts = computed(() => methods.value.some(isDecrypt))
+const canIssue = computed(() => !!label.value.trim() && 'kinds' in kinds.value && (kinds.value.kinds.length + methods.value.length) > 0 && !issuing.value)
+
+function toggleMethod(method: EncryptionMethod, on: boolean | 'indeterminate') {
+  const rest = methods.value.filter(m => m !== method)
+  // Kept in the bunker's order, so what is sent matches what it lists back.
+  methods.value = on === true ? ENCRYPTION_METHODS.map(m => m.value).filter(m => m === method || rest.includes(m)) : rest
+}
 // An image, not injected markup: the SVG is uqr's own output, but nothing here needs v-html.
 const qr = computed(() => issued.value ? `data:image/svg+xml;utf8,${encodeURIComponent(renderSVG(issued.value.uri, { border: 1 }))}` : '')
 
 const ERRORS: Record<string, string> = {
   nip46_disabled: 'NIP-46 is turned off on this bunker (NIP46_ENABLED=true turns it on), or it has no relays: an administrator adds them under Config, Bunker relays.',
   not_registered: 'Connections can only be issued for members of the vault.',
-  member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.'
+  member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.',
+  invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.'
 }
 
 async function submit() {
@@ -55,7 +72,7 @@ async function submit() {
   issuing.value = true
   error.value = undefined
   try {
-    issued.value = await props.issue({ for_pubkey: forPubkey.value, label: label.value.trim(), kinds: kinds.value.kinds, expires_in_hours: hours.value })
+    issued.value = await props.issue({ for_pubkey: forPubkey.value, label: label.value.trim(), kinds: kinds.value.kinds, methods: methods.value, expires_in_hours: hours.value })
     copied.value = false
   } catch (failure) {
     const data = (failure as { data?: { error?: string, message?: string } }).data
@@ -75,6 +92,7 @@ async function copy() {
 function done() {
   issued.value = undefined
   label.value = ''
+  methods.value = []
 }
 </script>
 
@@ -180,6 +198,24 @@ function done() {
           />
         </div>
       </UFormField>
+      <UFormField
+        label="May also"
+        help="Each is a separate permission. Encrypting lets the app send private messages as the brand."
+        :error="methodsError"
+        data-testid="issue-token-methods"
+      >
+        <div class="space-y-1.5">
+          <UCheckbox
+            v-for="method in ENCRYPTION_METHODS"
+            :id="`issue-token-${method.value}`"
+            :key="method.value"
+            :model-value="methods.includes(method.value)"
+            :label="method.label"
+            :data-method="method.value"
+            @update:model-value="on => toggleMethod(method.value, on)"
+          />
+        </div>
+      </UFormField>
       <UFormField label="Valid for">
         <USelect
           id="issue-token-expiry"
@@ -189,6 +225,15 @@ function done() {
         />
       </UFormField>
     </div>
+    <UAlert
+      v-if="decrypts"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-mail-open"
+      title="This app can read the brand's private messages"
+      description="Reading encrypted messages works for every message sent to the brand's key, from anyone. Each read is recorded in the log, without its content."
+      data-testid="issue-token-decrypt-warning"
+    />
     <div class="flex justify-end">
       <UButton
         type="submit"

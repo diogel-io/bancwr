@@ -1,4 +1,5 @@
 // Display helpers for connected apps (#31).
+import type { EncryptionMethod } from '#shared/types/bunker'
 
 /** Names for the event kinds an app is likely to be granted (NIP-01 and the NIPs that define them). */
 export const KIND_NAMES: Record<number, string> = {
@@ -29,6 +30,23 @@ export const KIND_PRESETS: { label: string, kinds: number[] }[] = [
   { label: 'Notes, reactions and reposts', kinds: [1, 6, 7] },
   { label: 'Profile only', kinds: [0] }
 ]
+
+/** The encryption methods an app may be allowed (#97), in the order the bunker lists them. */
+export const ENCRYPTION_METHODS: { value: EncryptionMethod, label: string }[] = [
+  { value: 'nip44_encrypt', label: 'Encrypt messages (NIP-44)' },
+  { value: 'nip44_decrypt', label: 'Read encrypted messages (NIP-44)' },
+  { value: 'nip04_encrypt', label: 'Encrypt messages (NIP-04, older apps)' },
+  { value: 'nip04_decrypt', label: 'Read encrypted messages (NIP-04, older apps)' }
+]
+
+export function methodLabel(method: EncryptionMethod): string {
+  return ENCRYPTION_METHODS.find(m => m.value === method)?.label ?? method
+}
+
+/** Whether a method lets the app read what was sent to the brand's key. */
+export function isDecrypt(method: EncryptionMethod): boolean {
+  return method.endsWith('_decrypt')
+}
 
 /** Custom kinds from "1, 7, 30023": numbers 0 to 65535, or why not. */
 export function parseKinds(input: string): { kinds: number[] } | { error: string } {

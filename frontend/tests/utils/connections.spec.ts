@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { kindLabel, parseKinds, relativeTime, revokedReason } from '~/utils/connections'
+import { ENCRYPTION_METHODS, isDecrypt, kindLabel, methodLabel, parseKinds, relativeTime, revokedReason } from '~/utils/connections'
 
 describe('connection display', () => {
   it('names known kinds and shows others as numbers', () => {
@@ -30,5 +30,12 @@ describe('connection display', () => {
     expect(revokedReason('member_removed')).toBe('Its member was removed from the vault')
     expect(revokedReason('restored')).toBe('The bunker was restored from a backup')
     expect(revokedReason(null)).toBe('Ended')
+  })
+
+  it('names the encryption methods in the bunker\'s order, and knows which read messages (#97)', () => {
+    expect(ENCRYPTION_METHODS.map(m => m.value)).toEqual(['nip44_encrypt', 'nip44_decrypt', 'nip04_encrypt', 'nip04_decrypt'])
+    expect(methodLabel('nip44_decrypt')).toBe('Read encrypted messages (NIP-44)')
+    expect(methodLabel('nip04_encrypt')).toBe('Encrypt messages (NIP-04, older apps)')
+    expect(ENCRYPTION_METHODS.filter(m => isDecrypt(m.value)).map(m => m.value)).toEqual(['nip44_decrypt', 'nip04_decrypt'])
   })
 })

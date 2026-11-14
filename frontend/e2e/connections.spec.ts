@@ -1,11 +1,13 @@
 // Connected apps (#31) through the real stack, with NIP-46 on (compose.e2e.yaml): an administrator
 // issues a token on the page, a real NIP-46 client (nostr-tools' BunkerSigner, the frontend's own
 // library) connects with it and signs a granted kind, the user sees the app and revokes it, and the
-// app can sign no more. The bunker's relay is the in-process one; from this process it is
-// 127.0.0.1, from the container e2e-host.
+// app can sign no more. An app granted the encryption methods (#97) encrypts and decrypts NIP-44
+// with the brand's key, and each decrypt is in the export. The bunker's relay is the in-process
+// one; from this process it is 127.0.0.1, from the container e2e-host.
 import type { Browser, Page } from '@playwright/test'
 import { BunkerSigner } from 'nostr-tools/nip46'
-import { generateSecretKey } from 'nostr-tools/pure'
+import * as nip44 from 'nostr-tools/nip44'
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { contextPost, test, expect } from './fixtures'
 import { signInAs } from './sign-in'
 import { baseUrl } from './stack'
@@ -75,7 +77,7 @@ test('an administrator connects an app for a signer, who sees it and revokes it'
   const rows = page.getByTestId('connections-list').locator('li')
   await expect(rows).toHaveCount(2)
   await expect(page.getByTestId('connections-list')).toContainText('for e2e signer')
-  await expect(page.getByTestId('connections-list')).toContainText('last signed')
+  await expect(page.getByTestId('connections-list')).toContainText('last used')
 
   // The signer sees only theirs, and revokes it.
   const user = await asSigner(browser)
@@ -94,6 +96,50 @@ test('an administrator connects an app for a signer, who sees it and revokes it'
   await app.close()
   await own.close()
   await user.context().close()
+})
+
+test('an app granted NIP-44 encrypts and decrypts as the brand, and each decrypt is recorded (#97)', async ({ page }) => {
+  await page.goto('/connections')
+  const form = page.getByTestId('issue-token')
+  await form.getByRole('combobox').first().click()
+  await page.getByRole('option', { name: /\(you\)/ }).click()
+  await form.getByLabel('Label').fill('e2e messages app')
+  await form.locator('#issue-token-kinds').click()
+  await page.getByRole('option', { name: 'Nothing: encryption only' }).click()
+  await expect(form.getByRole('button', { name: 'Issue token' })).toBeDisabled()
+  await form.getByLabel('Encrypt messages (NIP-44)').check()
+  await form.getByLabel('Read encrypted messages (NIP-44)').check()
+  await expect(page.getByTestId('issue-token-decrypt-warning')).toContainText('private messages')
+  await form.getByRole('button', { name: 'Issue token' }).click()
+  const uri = (await page.getByTestId('issued-uri').textContent())!.trim()
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  const app = await connectApp(uri)
+  const brand = new URL(uri).hostname
+  const friend = generateSecretKey()
+  const friendPubkey = getPublicKey(friend)
+
+  // What the app encrypts as the brand, the friend reads; what the friend sends, the app reads.
+  const sent = await within(app.nip44Encrypt(friendPubkey, 'hello from the brand'))
+  expect(nip44.decrypt(sent, nip44.getConversationKey(friend, brand))).toBe('hello from the brand')
+  const incoming = nip44.encrypt('hello brand', nip44.getConversationKey(friend, brand))
+  expect(await within(app.nip44Decrypt(friendPubkey, incoming))).toBe('hello brand')
+  // Nothing else was granted.
+  expect(await refusal(app.signEvent(note()))).toContain('Forbidden')
+  await app.close()
+
+  await page.reload()
+  // The only app here granted any method.
+  await expect(page.getByTestId('connection-methods')).toHaveCount(1)
+  await expect(page.getByTestId('connection-methods')).toContainText('Read encrypted messages (NIP-44)')
+
+  // The decrypt is in the export, with its peer and without the message.
+  const today = new Date().toISOString().slice(0, 10)
+  const csv = await (await page.request.get(`/api/bunker/logs/export?format=csv&from=${today}&to=${today}`)).text()
+  const decrypts = csv.split('\r\n').filter(l => l.includes(',audit,nip44_decrypt,') && l.endsWith(`peer=${friendPubkey}`))
+  expect(decrypts).toHaveLength(1)
+  expect(csv).not.toContain('hello brand')
+  expect(csv).not.toContain(incoming)
 })
 
 test.describe('viewer', () => {
