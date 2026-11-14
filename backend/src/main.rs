@@ -224,12 +224,15 @@ async fn serve() -> anyhow::Result<()> {
 
     let state = AppState::new(signer.clone(), db, config.clone());
 
-    // The log retention policy (#96): applied at start, then hourly. Unset keeps everything.
+    // The log retention policy (#96) and connection lifetimes (#98): applied at start, then hourly.
+    // Unset keeps everything. An expired connection is refused on its next request regardless;
+    // this marks it, so the console and the audit log show it ended.
     let prune_db = state.db.clone();
     tokio::spawn(async move {
         let mut hourly = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
         loop {
             hourly.tick().await;
+            bunker::nip46::expire_connections(&prune_db);
             bunker::logs_api::prune(&prune_db);
         }
     });

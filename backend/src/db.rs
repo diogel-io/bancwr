@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use uuid::Uuid;
 use std::path::Path;
 use std::fs;
@@ -548,6 +548,9 @@ pub struct Nip46Token {
     pub perms: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// How long a connection made with it lasts, from when the app connects (#98). None: until
+    /// revoked.
+    pub connection_lifetime_hours: Option<u32>,
     pub used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -571,6 +574,8 @@ pub struct Nip46Connection {
     pub revoked_reason: Option<String>,
     /// The key that revoked it (#31), when someone did; empty for logout, replaced, member removed.
     pub revoked_by: Option<String>,
+    /// When it stops working (#98): the token's lifetime after it connected. None: until revoked.
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// Unverified client metadata from `connect` (NIP-46 "Client metadata").
@@ -629,8 +634,15 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
 /// (#77). Matches `Role::can_sign`.
 const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
-const TOKEN_COLUMNS: &str = "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at";
-const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by";
+const TOKEN_COLUMNS: &str = "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at";
+
+/// Appended to a query on `nip46_connections c`, with parameter `?<param>` bound to `db_time(now)`:
+/// the connection has not reached its expiry (#98). `expires_at` is fixed-width, so text order is
+/// time order.
+fn not_expired(param: usize) -> String {
+    format!("AND (c.expires_at IS NULL OR c.expires_at > ?{})", param)
+}
 
 fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
     Ok(Nip46Token {
@@ -643,6 +655,7 @@ fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
         expires_at: parse_time(&row.get::<_, String>(6)?)?,
         used_at: parse_optional_time(row.get(7)?)?,
         revoked_at: parse_optional_time(row.get(8)?)?,
+        connection_lifetime_hours: row.get(9)?,
     })
 }
 
@@ -661,12 +674,13 @@ fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection>
         revoked_at: parse_optional_time(row.get(10)?)?,
         revoked_reason: row.get(11)?,
         revoked_by: row.get(12)?,
+        expires_at: parse_optional_time(row.get(13)?)?,
     })
 }
 
 impl Database {
-    /// Stores a new token. `secret_hash` is the hex SHA-256 of the secret; the secret itself is
-    /// handed to the administrator once and never stored.
+    /// Stores a new token whose connection lasts until revoked. `secret_hash` is the hex SHA-256
+    /// of the secret; the secret itself is handed to the administrator once and never stored.
     #[allow(clippy::too_many_arguments)]
     pub fn create_nip46_token(
         &self,
@@ -678,6 +692,23 @@ impl Database {
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> anyhow::Result<Nip46Token> {
+        self.create_nip46_token_with_lifetime(secret_hash, for_pubkey, issued_by, label, perms, now, expires_at, None)
+    }
+
+    /// Stores a new token, as `create_nip46_token`, whose connection lasts `connection_lifetime_hours`
+    /// from when the app connects (#98), or until revoked when None.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_nip46_token_with_lifetime(
+        &self,
+        secret_hash: &str,
+        for_pubkey: &str,
+        issued_by: &str,
+        label: &str,
+        perms: &[String],
+        now: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+        connection_lifetime_hours: Option<u32>,
+    ) -> anyhow::Result<Nip46Token> {
         let token = Nip46Token {
             id: Uuid::new_v4().to_string(),
             for_pubkey: for_pubkey.to_string(),
@@ -686,15 +717,19 @@ impl Database {
             perms: perms.to_vec(),
             created_at: now,
             expires_at,
+            connection_lifetime_hours,
             used_at: None,
             revoked_at: None,
         };
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339()],
+            "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, connection_lifetime_hours)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339(),
+                connection_lifetime_hours
+            ],
         )?;
         audit::record(
             &tx,
@@ -702,7 +737,10 @@ impl Database {
                 actor: audit::actor(issued_by),
                 member: Some(for_pubkey),
                 token_id: Some(&token.id),
-                detail: Some(format!("perms={};expires_at={}", join_perms(perms), db_time(expires_at))),
+                detail: Some(match connection_lifetime_hours {
+                    Some(hours) => format!("perms={};expires_at={};connection_lifetime_hours={}", join_perms(perms), db_time(expires_at), hours),
+                    None => format!("perms={};expires_at={}", join_perms(perms), db_time(expires_at)),
+                }),
                 ..Audit::new(action::TOKEN_ISSUED)
             },
             now,
@@ -825,12 +863,14 @@ impl Database {
             revoked_at: None,
             revoked_reason: None,
             revoked_by: None,
+            // To the microsecond, as `db_time` stores it, so this value is the stored one.
+            expires_at: token.connection_lifetime_hours.map(|hours| (now + chrono::Duration::hours(hours.into())).trunc_subsecs(6)),
         };
         tx.execute(
-            &format!("INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL)", CONNECTION_COLUMNS),
+            &format!("INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10)", CONNECTION_COLUMNS),
             params![
                 connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
-                connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339()
+                connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339(), connection.expires_at.map(db_time)
             ],
         )?;
         audit::record(
@@ -840,7 +880,10 @@ impl Database {
                 connection_id: Some(&connection.id),
                 token_id: Some(&connection.token_id),
                 client_pubkey: Some(client_pubkey),
-                detail: Some(format!("perms={}", join_perms(&connection.perms))),
+                detail: Some(match connection.expires_at {
+                    Some(expires_at) => format!("perms={};expires_at={}", join_perms(&connection.perms), db_time(expires_at)),
+                    None => format!("perms={}", join_perms(&connection.perms)),
+                }),
                 ..Audit::new(action::CONNECTION_CREATED)
             },
             now,
@@ -853,21 +896,70 @@ impl Database {
     /// an administrator or a signer, not a viewer (#77). A viewer's connections are revoked when
     /// they become one; this refuses them even if one was missed, as for a removed member.
     pub fn active_nip46_connection(&self, client_pubkey: &str) -> anyhow::Result<Option<Nip46Connection>> {
+        self.active_nip46_connection_at(client_pubkey, Utc::now())
+    }
+
+    /// `active_nip46_connection` as at `now`: a connection that has reached its expiry (#98) is not
+    /// active, whether or not `expire_nip46_connections` has marked it yet.
+    pub fn active_nip46_connection_at(&self, client_pubkey: &str, now: DateTime<Utc>) -> anyhow::Result<Option<Nip46Connection>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let connection = conn
             .query_row(
                 &format!(
                     "SELECT {} FROM nip46_connections c
-                     WHERE c.client_pubkey = ?1 AND c.revoked_at IS NULL
+                     WHERE c.client_pubkey = ?1 AND c.revoked_at IS NULL {}
                        AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey {})",
                     CONNECTION_COLUMNS.split(", ").map(|c| format!("c.{}", c)).collect::<Vec<_>>().join(", "),
+                    not_expired(2),
                     MEMBER_CAN_SIGN
                 ),
-                params![client_pubkey],
+                params![client_pubkey, db_time(now)],
                 connection_from_row,
             )
             .optional()?;
         Ok(connection)
+    }
+
+    /// Ends every connection that has reached its expiry (#98) and is not yet revoked, in one
+    /// transaction: `revoked_reason` `expired`, no `revoked_by`, and `revoked_at` the expiry itself,
+    /// so the record shows when access ended rather than when the bunker noticed. Each is recorded
+    /// as `connection_revoked`, `reason=expired`, with no actor. Returns the connections it ended.
+    pub fn expire_nip46_connections(&self, now: DateTime<Utc>) -> anyhow::Result<Vec<Nip46Connection>> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let expired: Vec<Nip46Connection> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT {} FROM nip46_connections WHERE revoked_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?1 ORDER BY expires_at",
+                CONNECTION_COLUMNS
+            ))?;
+            let rows = stmt.query_map(params![db_time(now)], connection_from_row)?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut ended = Vec::with_capacity(expired.len());
+        for mut connection in expired {
+            let Some(expires_at) = connection.expires_at else { continue };
+            tx.execute(
+                "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'expired' WHERE id = ?1 AND revoked_at IS NULL",
+                params![connection.id, expires_at.to_rfc3339()],
+            )?;
+            audit::record(
+                &tx,
+                &Audit {
+                    member: Some(&connection.for_pubkey),
+                    connection_id: Some(&connection.id),
+                    token_id: Some(&connection.token_id),
+                    client_pubkey: Some(&connection.client_pubkey),
+                    detail: Some("reason=expired".to_string()),
+                    ..Audit::new(action::CONNECTION_REVOKED)
+                },
+                now,
+            )?;
+            connection.revoked_at = Some(expires_at);
+            connection.revoked_reason = Some("expired".to_string());
+            ended.push(connection);
+        }
+        tx.commit()?;
+        Ok(ended)
     }
 
     /// Whether `pubkey` is the key of any NIP-46 app that has connected, active or not (#97). The
@@ -967,14 +1059,20 @@ impl Database {
 
     /// Active connections whose member is still in the vault and may sign (#77).
     pub fn active_nip46_connection_count(&self) -> anyhow::Result<usize> {
+        self.active_nip46_connection_count_at(Utc::now())
+    }
+
+    /// `active_nip46_connection_count` as at `now`: expired connections (#98) are not counted.
+    pub fn active_nip46_connection_count_at(&self, now: DateTime<Utc>) -> anyhow::Result<usize> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let count: i64 = conn.query_row(
             &format!(
-                "SELECT count(*) FROM nip46_connections c WHERE c.revoked_at IS NULL
+                "SELECT count(*) FROM nip46_connections c WHERE c.revoked_at IS NULL {}
                    AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey {})",
+                not_expired(1),
                 MEMBER_CAN_SIGN
             ),
-            [],
+            params![db_time(now)],
             |row| row.get(0),
         )?;
         Ok(count as usize)

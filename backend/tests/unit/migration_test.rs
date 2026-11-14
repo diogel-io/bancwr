@@ -462,3 +462,53 @@ fn rerunning_the_96_migrations_duplicates_nothing() {
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert_eq!(db.audit_event_count().unwrap(), count + 1, "the backfill once, and the later event kept");
 }
+
+/// A database as #97 left it (version 9): no connection lifetimes, one token and the connection it
+/// made, still active.
+fn database_before_98() -> NamedTempFile {
+    let file = NamedTempFile::new().unwrap();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE nip46_tokens DROP COLUMN connection_lifetime_hours;
+         ALTER TABLE nip46_connections DROP COLUMN expires_at;
+         PRAGMA user_version = 9;
+         INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES
+           ('00000000-0000-4000-8000-000000000001', 'Ann', 'aa00000000000000000000000000000000000000000000000000000000000001', 'administrator', '2026-01-01T00:00:00+00:00');
+         INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at) VALUES
+           ('t-used', 'h1', 'aa00000000000000000000000000000000000000000000000000000000000001', '', 'x', 'sign_event:1',
+            '2026-01-04T00:00:00+00:00', '2026-01-05T00:00:00+00:00', '2026-01-04T00:10:00+00:00', NULL);
+         INSERT INTO nip46_connections (id, client_pubkey, token_id, for_pubkey, perms, connected_at) VALUES
+           ('c-1', 'cc00000000000000000000000000000000000000000000000000000000000003', 't-used',
+            'aa00000000000000000000000000000000000000000000000000000000000001', 'sign_event:1', '2026-01-04T00:10:00+00:00');",
+    )
+    .unwrap();
+    file
+}
+
+#[test]
+fn migrating_to_98_adds_connection_lifetimes_and_leaves_existing_connections_unlimited() {
+    let file = database_before_98();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+
+    let tokens = db.list_nip46_tokens().unwrap();
+    assert_eq!(tokens[0].connection_lifetime_hours, None);
+    let client = "cc00000000000000000000000000000000000000000000000000000000000003";
+    let connection = db.active_nip46_connection(client).unwrap().expect("still active");
+    assert_eq!(connection.expires_at, None);
+    // Unlimited, however far ahead.
+    let later = chrono::Utc::now() + chrono::Duration::days(3650);
+    assert!(db.active_nip46_connection_at(client, later).unwrap().is_some());
+    assert!(db.expire_nip46_connections(later).unwrap().is_empty());
+}
+
+#[test]
+fn rerunning_the_98_migration_changes_nothing() {
+    let file = database_before_98();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 9;").unwrap();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(db.list_nip46_connections(None).unwrap().len(), 1);
+}

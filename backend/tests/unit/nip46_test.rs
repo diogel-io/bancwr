@@ -3,10 +3,10 @@
 // methods (#97): their permissions, parameters, the refusal of NIP-46 app keys as a peer, and the
 // audit event each decrypt leaves before it happens.
 use bunker::db::Database;
-use bunker::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS, Nip46Handler, Nip46Request, Nip46Response, NOT_CONNECTED};
+use bunker::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS, EXPIRED, Nip46Handler, Nip46Request, Nip46Response, NOT_CONNECTED};
 use bunker::registry::Role;
 use bunker::signer::Signer;
-use chrono::{Duration, Utc};
+use chrono::{Duration, SubsecRound, Utc};
 use nostr::prelude::*;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -453,4 +453,115 @@ async fn a_removed_members_connection_cannot_decrypt() {
     let refused = call(&s, &client, "nip44_decrypt", &friend.public_key(), &incoming).await;
     assert_eq!(refused.error.as_deref(), Some(NOT_CONNECTED));
     assert!(decrypt_events(&s).is_empty());
+}
+
+/// A client connected `ago` with a token whose connection lasts `lifetime_hours` (#98), redeemed
+/// through the database at that time, as the handler would have then.
+fn connected_ago(s: &Setup, lifetime_hours: Option<u32>, ago: Duration) -> (Keys, bunker::db::Nip46Connection) {
+    let then = Utc::now() - ago;
+    let secret = format!("secret-{}", uuid::Uuid::new_v4());
+    let perms = vec![sign_permission(1), "nip44_encrypt".to_string()];
+    s.db.create_nip46_token_with_lifetime(&hash_secret(&secret), &s.member.public_key().to_hex(), "admin", "test", &perms, then, then + Duration::hours(24), lifetime_hours).unwrap();
+    let client = Keys::generate();
+    let connection = s.db.redeem_nip46_token(&hash_secret(&secret), &client.public_key().to_hex(), None, &Default::default(), then).unwrap().unwrap();
+    (client, connection)
+}
+
+fn expired_events(s: &Setup) -> Vec<bunker::audit::ExportRow> {
+    s.db.audit_events().unwrap().into_iter().filter(|e| e.detail.as_deref() == Some("reason=expired")).collect()
+}
+
+#[tokio::test]
+async fn a_connection_lasts_its_lifetime_from_when_it_connected() {
+    let s = setup();
+    let (client, connection) = connected_ago(&s, Some(2), Duration::minutes(30));
+    let expires_at = connection.expires_at.expect("a lifetime");
+    // Two hours after it connected, to the microsecond as stored.
+    assert_eq!(expires_at, (connection.connected_at + Duration::hours(2)).trunc_subsecs(6));
+    assert!(sign(&s, &client, Kind::TextNote).await.result.is_some());
+    assert_eq!(s.handler.connection_count().await, 1);
+}
+
+#[tokio::test]
+async fn an_expired_connection_is_refused_once_as_expired_then_as_not_connected() {
+    let s = setup();
+    let (client, connection) = connected_ago(&s, Some(1), Duration::hours(2));
+    let friend = Keys::generate().public_key();
+
+    // Refused before anything marks it: active connections exclude it, and the count too.
+    assert!(s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().is_none());
+    assert_eq!(s.handler.connection_count().await, 0);
+
+    let first = sign(&s, &client, Kind::TextNote).await;
+    assert_eq!(first.result, None);
+    assert_eq!(first.error.as_deref(), Some(EXPIRED));
+    let again = s.handler.handle_request(request("nip44_encrypt", vec![friend.to_hex(), "x".into()]), client.public_key()).await;
+    assert_eq!(again.error.as_deref(), Some(NOT_CONNECTED));
+
+    // Marked expired, at its expiry rather than when it was noticed, by no one, and recorded once.
+    let ended = s.db.list_nip46_connections(None).unwrap().into_iter().find(|c| c.id == connection.id).unwrap();
+    assert_eq!(ended.revoked_reason.as_deref(), Some("expired"));
+    assert_eq!(ended.revoked_at, connection.expires_at);
+    assert_eq!(ended.revoked_by, None);
+    let events = expired_events(&s);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "connection_revoked");
+    assert_eq!(events[0].actor_pubkey, None);
+    assert_eq!(events[0].connection_id.as_deref(), Some(connection.id.as_str()));
+    assert_eq!(events[0].member_pubkey.as_deref(), Some(s.member.public_key().to_hex().as_str()));
+    assert_eq!(events[0].client_pubkey.as_deref(), Some(client.public_key().to_hex().as_str()));
+}
+
+#[tokio::test]
+async fn the_sweep_ends_only_expired_connections() {
+    let s = setup();
+    let (_, expired) = connected_ago(&s, Some(1), Duration::hours(3));
+    let (_, current) = connected_ago(&s, Some(24), Duration::hours(3));
+    let (_, unlimited) = connected_ago(&s, None, Duration::days(400));
+
+    let ended = bunker::nip46::expire_connections(&s.db);
+    assert_eq!(ended.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec![expired.id.as_str()]);
+    // Running it again ends nothing more, and records nothing more.
+    assert!(bunker::nip46::expire_connections(&s.db).is_empty());
+    assert_eq!(expired_events(&s).len(), 1);
+
+    let active: Vec<String> = s.db.list_nip46_connections(None).unwrap().into_iter().filter(|c| c.revoked_at.is_none()).map(|c| c.id).collect();
+    assert!(active.contains(&current.id) && active.contains(&unlimited.id));
+    assert_eq!(active.len(), 2);
+}
+
+#[tokio::test]
+async fn a_token_without_a_lifetime_connects_as_before() {
+    let s = setup();
+    let client = Keys::generate();
+    let secret = issue(&s, &[1], 24);
+    connect(&s, &client, connect_params(&s, &secret)).await;
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+    assert_eq!(connection.expires_at, None);
+    let tokens = s.db.list_nip46_tokens().unwrap();
+    assert_eq!(tokens[0].connection_lifetime_hours, None);
+    assert!(s.db.active_nip46_connection_at(&client.public_key().to_hex(), Utc::now() + Duration::days(3650)).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn an_app_that_reconnects_after_expiry_has_its_old_connection_marked_expired_not_replaced() {
+    let s = setup();
+    let (client, old) = connected_ago(&s, Some(1), Duration::hours(2));
+    let secret = issue(&s, &[1], 24);
+    let connected = connect(&s, &client, connect_params(&s, &secret)).await;
+    assert_eq!(connected.result.as_deref(), Some("ack"));
+    let ended = s.db.list_nip46_connections(None).unwrap().into_iter().find(|c| c.id == old.id).unwrap();
+    assert_eq!(ended.revoked_reason.as_deref(), Some("expired"));
+}
+
+#[tokio::test]
+async fn the_lifetime_and_expiry_are_in_the_audit_details() {
+    let s = setup();
+    let (_, connection) = connected_ago(&s, Some(5), Duration::minutes(1));
+    let events = s.db.audit_events().unwrap();
+    let issued = events.iter().find(|e| e.action == "token_issued").unwrap();
+    assert!(issued.detail.as_deref().unwrap().ends_with(";connection_lifetime_hours=5"), "{:?}", issued.detail);
+    let created = events.iter().find(|e| e.action == "connection_created").unwrap();
+    let expiry = bunker::audit::db_time(connection.expires_at.unwrap());
+    assert_eq!(created.detail.as_deref(), Some(format!("perms=sign_event:1,nip44_encrypt;expires_at={}", expiry).as_str()));
 }

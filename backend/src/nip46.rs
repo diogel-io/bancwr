@@ -66,6 +66,29 @@ pub const ENCRYPTION_METHODS: [&str; 4] = ["nip44_encrypt", "nip44_decrypt", "ni
 /// Shown to a client that has not connected, or whose connection ended.
 pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token first";
 
+/// Shown once to a client whose connection has just reached its expiry (#98). After that it is a
+/// revoked connection like any other, and gets `NOT_CONNECTED`.
+pub const EXPIRED: &str = "This connection has expired";
+
+/// Marks every connection past its expiry (#98) as `expired`, and logs each. Returns those it
+/// ended. A failure is logged and ends nothing: expired connections are refused regardless, since
+/// `active_nip46_connection` never returns one. Called by the handler, at start and hourly
+/// (`main.rs`), and before the connections are listed.
+pub fn expire_connections(db: &Database) -> Vec<Nip46Connection> {
+    match db.expire_nip46_connections(Utc::now()) {
+        Ok(ended) => {
+            for connection in &ended {
+                warn!("NIP-46 connection {} for {} from {} expired", connection.id, connection.for_pubkey, connection.client_pubkey);
+            }
+            ended
+        }
+        Err(e) => {
+            warn!("Failed to mark expired NIP-46 connections: {}", e);
+            Vec::new()
+        }
+    }
+}
+
 /// NIP-46 protocol handler
 pub struct Nip46Handler {
     signer: Arc<RwLock<Signer>>,
@@ -89,12 +112,21 @@ impl Nip46Handler {
     pub async fn handle_request(&self, request: Nip46Request, client_pubkey: PublicKey) -> Nip46Response {
         info!("Handling NIP-46 request: method={}, id={}", request.method, request.id);
         if request.method == "connect" {
+            // An app reconnecting after its connection expired (#98): mark that one `expired`
+            // first, rather than `replaced`.
+            expire_connections(&self.db);
             return self.handle_connect(request, client_pubkey).await;
         }
 
         let connection = match self.db.active_nip46_connection(&client_pubkey.to_hex()) {
             Ok(Some(connection)) => connection,
-            Ok(None) => return Nip46Response::err(request.id, NOT_CONNECTED),
+            Ok(None) => {
+                // Perhaps it has just expired (#98): it is refused either way, but the first
+                // refusal ends it and says why.
+                let client = client_pubkey.to_hex();
+                let expired = expire_connections(&self.db).into_iter().any(|c| c.client_pubkey == client);
+                return Nip46Response::err(request.id, if expired { EXPIRED } else { NOT_CONNECTED });
+            }
             Err(e) => {
                 warn!("Failed to read the NIP-46 connection of {}: {}", client_pubkey, e);
                 return Nip46Response::err(request.id, "Internal error");

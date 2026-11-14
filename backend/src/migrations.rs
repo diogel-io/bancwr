@@ -26,6 +26,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("replace the roles with administrator, signer and viewer", admin_signer_viewer_roles),
     ("record audit events", audit_events),
     ("normalise signing log timestamps", normalise_log_timestamps),
+    ("let NIP-46 connections expire", nip46_connection_lifetime),
 ];
 
 /// The version a fully migrated database is at.
@@ -452,6 +453,24 @@ fn normalise_log_timestamps(tx: &Transaction) -> anyhow::Result<()> {
     }
     if unreadable > 0 {
         warn!("{} signing log entries have an unreadable timestamp and were left as they are", unreadable);
+    }
+    Ok(())
+}
+
+/// 10. An optional lifetime for NIP-46 connections (#98). A token may carry
+///     `connection_lifetime_hours`, and the connection it makes then has an `expires_at`, written
+///     fixed-width (`audit::db_time`) so it compares as text. NULL in either means no limit, so
+///     every existing token and connection keeps lasting until revoked. Each column is added only
+///     when missing, so a database whose version was rewound re-runs this cleanly.
+fn nip46_connection_lifetime(tx: &Transaction) -> anyhow::Result<()> {
+    for (table, column, kind) in [("nip46_tokens", "connection_lifetime_hours", "INTEGER"), ("nip46_connections", "expires_at", "TEXT")] {
+        let columns: Vec<String> = tx
+            .prepare(&format!("SELECT name FROM pragma_table_info('{}')", table))?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        if !columns.iter().any(|c| c == column) {
+            tx.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, kind))?;
+        }
     }
     Ok(())
 }
