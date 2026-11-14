@@ -149,8 +149,10 @@ everywhere it was copied, and restarting the frontend signs everyone out.
 ### Connecting apps (NIP-46)
 
 With `NIP46_ENABLED=true`, Nostr apps can use the bunker as a remote signer. None can until an
-administrator issues it a single-use connection token naming the member it is for and the event
-kinds it may sign; every app signs as the bunker's key, never as the member's. Connections are kept
+administrator issues it a single-use connection token naming the member it is for, the event kinds
+it may sign, and whether it may encrypt and decrypt messages (NIP-44 or NIP-04, #97); every app
+signs, encrypts and decrypts as the bunker's key, never as the member's. An app allowed to decrypt
+can read every encrypted message sent to the brand, and each decrypt is recorded. Connections are kept
 across restarts and can be revoked. See "Connecting an app" in
 [`backend/README.md`](backend/README.md#connecting-an-app-53).
 
@@ -218,6 +220,8 @@ and revokes every connected app (#95). [docs/operating.md](docs/operating.md) ex
 
 The bunker records every signature, and every change to who may sign: tokens issued and revoked,
 apps connected and disconnected, team changes, the bunker relays and the retention policy (#96).
+It also records every decrypt an app asks for, with whose message it was but not what it said
+(#97).
 Administrators page through signatures under **Logs**, export everything between two dates as CSV
 or JSON Lines, and set a retention policy under **Config**. By default nothing is deleted. Signers
 and viewers cannot export. See [docs/operating.md](docs/operating.md#the-signing-log-and-audit-events).
@@ -289,6 +293,8 @@ lists them all, with what each one means.
   ([docs/operating.md](docs/operating.md#what-a-restore-keeps-and-what-it-revokes)).
 - Sessions live in the frontend's memory, so restarting the frontend signs everyone out, and only
   one frontend instance is supported (#100).
+- An app allowed to decrypt can read every encrypted message sent to the brand's key, from anyone.
+  It cannot be limited to particular senders, though each decrypt is recorded.
 
 ## Security
 

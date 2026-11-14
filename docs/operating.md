@@ -397,13 +397,34 @@ A manual copy is not encrypted apart from the key file, and restoring it is just
 That brings back every connection and token as it was, including those revoked since. After
 restoring a manual copy, revoke under **Connections** every app and token you had shut out.
 
+## Apps that read and send private messages
+
+An app can be allowed to encrypt and decrypt with the brand's key (#97), which direct messages
+(NIP-17), private lists and some other apps need. Under **Connections**, when issuing a token,
+tick what it may also do: **Encrypt messages** and **Read encrypted messages**, for NIP-44, and the
+same pair for NIP-04, which only older apps use. Each is a separate permission. Choose **Nothing:
+encryption only** under **May sign** for an app that does not sign.
+
+Before allowing an app to read encrypted messages:
+
+- It can read every encrypted message sent to the brand's key, from anyone. There is no way to
+  limit it to particular senders.
+- Each decrypt is recorded with the member, the app and the sender's key, but not the message. They
+  are in the export, as `nip44_decrypt` and `nip04_decrypt`.
+- A direct-message inbox decrypts twice for each message, so it adds audit events quickly. Set a
+  retention policy if the log should not grow without limit.
+- Revoking the app's connection stops it at once.
+
+No app can encrypt or decrypt with the key of another app connected to the bunker. That protects
+what apps and the bunker send each other.
+
 ## The signing log and audit events
 
 The bunker records every signature it makes, and every change to who may sign: connection tokens
 issued and revoked, apps connected and disconnected, members added, removed and given another role,
 the bunker relays, and the log's own retention policy (#96). Exports and pruning are recorded too.
-Each change is recorded in the same database transaction as the change itself. Event content is
-never recorded.
+Each change is recorded in the same database transaction as the change itself. Every decrypt an app
+asks for is recorded before it happens (#97). Event content and message content are never recorded.
 
 Administrators read the log under **Logs**, the newest 100 entries first, with **Load older** for
 the rest. The page lists signatures. The other events are in the export.
