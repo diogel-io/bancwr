@@ -134,7 +134,7 @@ export interface Nip46Connection {
   connected_at: string
   last_used_at: string | null
   revoked_at: string | null
-  /** `logout`, `revoked`, `replaced`, `member_removed` or `role_changed` (#77). */
+  /** `logout`, `revoked`, `replaced`, `member_removed`, `role_changed` (#77) or `restored` (#95). */
   revoked_reason: string | null
   /** Who revoked it (hex), when someone did (#31). */
   revoked_by: string | null

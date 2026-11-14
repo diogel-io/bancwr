@@ -38,7 +38,21 @@ key file is missing or altered, the bunker runs locked: it signs nothing, NIP-46
 reason, and `GET /api/bunker/status` reports the `signer` check failed with it. Only the status and
 the member lookup that sign-in needs answer; every other route answers `503`. Under compose, see
 [docs/operating.md](../docs/operating.md#protecting-the-bunker-key), which also covers migrating a
-0.1.0 bunker and backing up the database.
+0.1.0 bunker and backing up and restoring the bunker.
+
+`bunker backup` writes an encrypted archive of a consistent database snapshot and the key file to
+standard output, safe while the bunker runs. `bunker restore` reads one from standard input into an
+empty data directory and revokes every NIP-46 connection and unused token (#95). Both read the
+backup passphrase, 16 characters or more and not the root credential, from the file
+`BANCWR_BACKUP_KEY_FILE` names; `restore` also needs the root credential, and checks that it
+decrypts the archived key before writing anything:
+
+```bash
+(umask 077; openssl rand -base64 24 > secrets/bancwr_backup_key)
+BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key cargo run -- backup > bancwr.bcwr
+BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key \
+  DATABASE_PATH=restored/bancwr.db cargo run -- restore < bancwr.bcwr
+```
 
 ### From SQLite (logging & configuration):
 By default, the bunker uses SQLite to store audit logs and configuration.

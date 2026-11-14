@@ -743,6 +743,25 @@ impl Database {
         Ok(changed > 0)
     }
 
+    /// After a restore (#95): revokes every active NIP-46 connection (`restored`) and every token
+    /// neither used nor revoked, in one transaction, so apps pair again with new tokens and nothing
+    /// shut out after the backup comes back. Members, roles, the signing log and the relays are
+    /// untouched. Returns how many connections and tokens it revoked.
+    pub fn revoke_all_for_restore(&self, now: DateTime<Utc>) -> anyhow::Result<(usize, usize)> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let connections = tx.execute(
+            "UPDATE nip46_connections SET revoked_at = ?1, revoked_reason = ?2, revoked_by = NULL WHERE revoked_at IS NULL",
+            params![now.to_rfc3339(), crate::backup::RESTORED_REASON],
+        )?;
+        let tokens = tx.execute(
+            "UPDATE nip46_tokens SET revoked_at = ?1 WHERE revoked_at IS NULL AND used_at IS NULL",
+            params![now.to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok((connections, tokens))
+    }
+
     /// Every connection, newest first, or only those for `for_pubkey`.
     pub fn list_nip46_connections(&self, for_pubkey: Option<&str>) -> anyhow::Result<Vec<Nip46Connection>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;

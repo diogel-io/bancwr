@@ -28,6 +28,7 @@ describe('connection display', () => {
   it('explains why a connection ended', () => {
     expect(revokedReason('logout')).toBe('The app logged out')
     expect(revokedReason('member_removed')).toBe('Its member was removed from the vault')
+    expect(revokedReason('restored')).toBe('The bunker was restored from a backup')
     expect(revokedReason(null)).toBe('Ended')
   })
 })

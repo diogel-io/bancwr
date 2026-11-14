@@ -17,6 +17,9 @@ services:
         # The bunker's key is encrypted at rest in ./data/bunker-key.enc (#94), under this root
         # credential. Create both once with `bunker import-key`: see docs/operating.md.
         - BANCWR_ROOT_KEY_FILE=/run/secrets/bancwr_root_key
+        # Encrypts `bunker backup` archives (#95). A passphrase of 16 characters or more, not the
+        # root credential: see "Backing up the bunker" in docs/operating.md.
+        - BANCWR_BACKUP_KEY_FILE=/run/secrets/bancwr_backup_key
         # The first administrator's npub, registered at startup while no administrator exists.
         - BANCWR_ADMIN_PUBKEY=${BANCWR_ADMIN_PUBKEY:-}
         # Signs the caller's identity between frontend and bunker; both services read it. Required.
@@ -39,6 +42,8 @@ services:
       # the backups of ./data: the two together are the key.
       secrets:
         - bancwr_root_key
+        # Owned by UID 65532, mode 0400. Kept apart from the archives it encrypts.
+        - bancwr_backup_key
 
     frontend:
       # The same version as the bunker: they are released together.
@@ -66,3 +71,5 @@ services:
 secrets:
     bancwr_root_key:
       file: ./secrets/bancwr_root_key
+    bancwr_backup_key:
+      file: ./secrets/bancwr_backup_key

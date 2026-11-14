@@ -269,6 +269,7 @@ dependencies = [
  "nostr-sdk",
  "reqwest",
  "rusqlite",
+ "scrypt",
  "serde",
  "serde_json",
  "tempfile",
