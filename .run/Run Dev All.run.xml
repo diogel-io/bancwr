@@ -6,7 +6,7 @@
       <script value="dev:all" />
     </scripts>
     <node-interpreter value="project" />
-    <package-manager value="$PROJECT_DIR$/../../../../../../linuxbrew/.linuxbrew/bin/pnpm" />
+    <package-manager value="npm" />
     <envs />
     <method v="2" />
   </configuration>

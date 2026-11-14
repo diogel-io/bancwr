@@ -61,6 +61,9 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
 
 ## Running the Environment
 
+For local development in a JetBrains IDE, including the one-time bunker key setup, see
+[Running Bancwr in a JetBrains IDE](docs/ide.md).
+
 1. Create a `.env` file from the example:
    ```bash
    cp .env.example .env
