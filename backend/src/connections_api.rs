@@ -12,7 +12,7 @@
 //!
 //! A token's secret is returned once, in the creation response, and only its hash is kept.
 use crate::db::{Nip46Connection, Nip46Token};
-use crate::nip46::{hash_secret, sign_permission};
+use crate::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS};
 use crate::proxy_auth::Caller;
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
@@ -58,13 +58,22 @@ fn kinds(perms: &[String]) -> Vec<u16> {
     perms.iter().filter_map(|p| p.strip_prefix("sign_event:")?.parse().ok()).collect()
 }
 
+/// The encryption methods among the permissions (#97), in `ENCRYPTION_METHODS` order.
+fn methods(perms: &[String]) -> Vec<String> {
+    ENCRYPTION_METHODS.iter().filter(|m| perms.iter().any(|p| p == *m)).map(|m| m.to_string()).collect()
+}
+
 #[derive(Deserialize)]
 pub struct IssueTokenRequest {
     /// The member the connection is for (npub or hex); the caller when omitted.
     pub for_pubkey: Option<String>,
     pub label: String,
     /// Kinds the connection may sign.
+    #[serde(default)]
     pub kinds: Vec<u32>,
+    /// Encryption methods it may call (#97): any of `ENCRYPTION_METHODS`. None when omitted.
+    #[serde(default)]
+    pub methods: Vec<String>,
     pub expires_in_hours: Option<u32>,
 }
 
@@ -75,6 +84,8 @@ pub struct IssueTokenResponse {
     pub uri: String,
     pub for_pubkey: String,
     pub kinds: Vec<u16>,
+    /// Encryption methods it may call (#97).
+    pub methods: Vec<String>,
     pub expires_at: String,
 }
 
@@ -85,6 +96,7 @@ pub struct TokenResponse {
     pub issued_by: String,
     pub label: String,
     pub kinds: Vec<u16>,
+    pub methods: Vec<String>,
     pub created_at: String,
     pub expires_at: String,
     pub used_at: Option<String>,
@@ -99,6 +111,7 @@ impl From<Nip46Token> for TokenResponse {
             issued_by: t.issued_by,
             label: t.label,
             kinds: kinds(&t.perms),
+            methods: methods(&t.perms),
             created_at: t.created_at.to_rfc3339(),
             expires_at: t.expires_at.to_rfc3339(),
             used_at: t.used_at.map(|v| v.to_rfc3339()),
@@ -118,6 +131,7 @@ pub struct ConnectionResponse {
     pub client_image: Option<String>,
     pub metadata_verified: bool,
     pub kinds: Vec<u16>,
+    pub methods: Vec<String>,
     pub connected_at: String,
     pub last_used_at: Option<String>,
     pub revoked_at: Option<String>,
@@ -137,6 +151,7 @@ impl From<Nip46Connection> for ConnectionResponse {
             client_image: c.client_image,
             metadata_verified: false,
             kinds: kinds(&c.perms),
+            methods: methods(&c.perms),
             connected_at: c.connected_at.to_rfc3339(),
             last_used_at: c.last_used_at.map(|v| v.to_rfc3339()),
             revoked_at: c.revoked_at.map(|v| v.to_rfc3339()),
@@ -195,10 +210,20 @@ pub async fn issue_token(
             kinds.push(kind);
         }
     }
-    if kinds.is_empty() {
-        return Err(api_error(StatusCode::BAD_REQUEST, "invalid_kinds", "Choose at least one kind the connection may sign."));
-    }
     kinds.sort_unstable();
+    for method in &request.methods {
+        if !ENCRYPTION_METHODS.contains(&method.as_str()) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_methods",
+                "Methods are nip44_encrypt, nip44_decrypt, nip04_encrypt and nip04_decrypt.",
+            ));
+        }
+    }
+    let methods = methods(&request.methods);
+    if kinds.is_empty() && methods.is_empty() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid_kinds", "Choose at least one kind or method."));
+    }
     let hours = request.expires_in_hours.unwrap_or(DEFAULT_TOKEN_HOURS);
     if hours == 0 || hours > MAX_TOKEN_HOURS {
         return Err(api_error(StatusCode::BAD_REQUEST, "invalid_expiry", "A token can be valid for 1 hour to 7 days."));
@@ -224,7 +249,7 @@ pub async fn issue_token(
 
     let secret = new_secret();
     let now = Utc::now();
-    let perms: Vec<String> = kinds.iter().map(|k| sign_permission(*k)).collect();
+    let perms: Vec<String> = kinds.iter().map(|k| sign_permission(*k)).chain(methods.iter().cloned()).collect();
     let token = state
         .db
         .create_nip46_token(&hash_secret(&secret), &for_pubkey, &caller_pubkey, label, &perms, now, now + Duration::hours(hours.into()))
@@ -238,6 +263,7 @@ pub async fn issue_token(
         uri: format!("bunker://{}?{}secret={}", bunker, relay_params, secret),
         for_pubkey,
         kinds,
+        methods,
         expires_at: token.expires_at.to_rfc3339(),
     }))
 }

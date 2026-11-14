@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // An issued token not yet used (#31): its label, for whom, what it allows, when it expires.
 import type { Nip46Token } from '#shared/types/bunker'
-import { kindLabel, relativeTime } from '~/utils/connections'
+import { kindLabel, methodLabel, relativeTime } from '~/utils/connections'
 
 defineProps<{ token: Nip46Token, forName: string }>()
 const emit = defineEmits<{ revoke: [] }>()
@@ -17,7 +17,14 @@ const emit = defineEmits<{ revoke: [] }>()
         {{ token.label }}
       </p>
       <p class="text-xs text-muted">
-        For {{ forName }} · may sign {{ token.kinds.map(kindLabel).join(', ') }} · expires {{ relativeTime(token.expires_at) }}
+        For {{ forName }}
+        <template v-if="token.kinds.length">
+          · may sign {{ token.kinds.map(kindLabel).join(', ') }}
+        </template>
+        <template v-if="token.methods?.length">
+          · may also: {{ token.methods.map(methodLabel).join(', ') }}
+        </template>
+        · expires {{ relativeTime(token.expires_at) }}
       </p>
     </div>
     <UButton

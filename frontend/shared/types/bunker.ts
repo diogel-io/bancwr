@@ -117,6 +117,9 @@ export interface TeamOperationResponse {
 }
 
 /** A NIP-46 connection (#53), from GET /api/bunker/connections. The app signs as the bunker's key. */
+/** The NIP-46 encryption methods a connection may call (#97), each its own permission. */
+export type EncryptionMethod = 'nip44_encrypt' | 'nip44_decrypt' | 'nip04_encrypt' | 'nip04_decrypt'
+
 export interface Nip46Connection {
   id: string
   /** The app's NIP-46 key (hex). */
@@ -131,6 +134,8 @@ export interface Nip46Connection {
   metadata_verified: boolean
   /** Event kinds it may sign. */
   kinds: number[]
+  /** Encryption methods it may call (#97). */
+  methods: EncryptionMethod[]
   connected_at: string
   last_used_at: string | null
   revoked_at: string | null
@@ -147,6 +152,7 @@ export interface Nip46Token {
   issued_by: string
   label: string
   kinds: number[]
+  methods: EncryptionMethod[]
   created_at: string
   expires_at: string
   used_at: string | null
@@ -158,6 +164,7 @@ export interface IssueTokenRequest {
   for_pubkey?: string
   label: string
   kinds: number[]
+  methods: EncryptionMethod[]
   expires_in_hours?: number
 }
 
@@ -167,6 +174,7 @@ export interface IssueTokenResponse {
   uri: string
   for_pubkey: string
   kinds: number[]
+  methods: EncryptionMethod[]
   expires_at: string
 }
 

@@ -3,8 +3,9 @@
 //! Every change to who may sign is recorded as an audit event in the same transaction as the
 //! change, so the record cannot disagree with the database: tokens issued and revoked,
 //! connections made and revoked, members added, removed and given another role, the bunker's
-//! relays, and the log's own retention. Exports and pruning are recorded too. Event content is
-//! never recorded, here or in the signing log.
+//! relays, and the log's own retention. Exports and pruning are recorded too, and so is every
+//! decrypt a NIP-46 app asks for (#97), before it happens. Event content, plaintext and ciphertext
+//! are never recorded, here or in the signing log.
 //!
 //! Timestamps in `signing_logs` and `audit_events` are fixed-width UTC (`db_time`), so text order
 //! is time order: ranges and paging compare them as text, on the index (migration 9).
@@ -14,7 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::db::{Database, SigningLog};
+use crate::db::{Database, Nip46Connection, SigningLog};
 
 /// What an audit event records. Each is a fixed value: free text never goes in `action`.
 pub mod action {
@@ -30,6 +31,9 @@ pub mod action {
     pub const LOGS_PRUNED: &str = "logs_pruned";
     pub const LOGS_EXPORTED: &str = "logs_exported";
     pub const RESTORED: &str = "restored";
+    /// A NIP-46 app asked the bunker to decrypt (#97). Named as the NIP-46 methods are.
+    pub const NIP44_DECRYPT: &str = "nip44_decrypt";
+    pub const NIP04_DECRYPT: &str = "nip04_decrypt";
 }
 
 /// A timestamp as `signing_logs` and `audit_events` store it: UTC, always six fractional digits
@@ -366,6 +370,26 @@ impl Database {
         record(
             &conn,
             &Audit { actor, detail: Some(format!("format={};from={};to={}", format, from, to)), ..Audit::new(action::LOGS_EXPORTED) },
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// Records a decrypt a NIP-46 app asked for (#97): which method, for which member, through
+    /// which connection and app, and with whose key (`peer=<hex>`). It is written before the
+    /// bunker decrypts, so a decrypt cannot happen unrecorded. Never the plaintext or ciphertext.
+    pub fn record_decrypt(&self, connection: &Nip46Connection, decrypt_action: &str, peer: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let conn = self.lock()?;
+        record(
+            &conn,
+            &Audit {
+                member: Some(&connection.for_pubkey),
+                connection_id: Some(&connection.id),
+                token_id: Some(&connection.token_id),
+                client_pubkey: Some(&connection.client_pubkey),
+                detail: Some(format!("peer={}", peer)),
+                ..Audit::new(decrypt_action)
+            },
             now,
         )?;
         Ok(())

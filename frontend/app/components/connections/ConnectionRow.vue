@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // One connected app (#31): what it says it is (unverified), what it may sign, when it connected
-// and last signed, and Revoke, confirmed in place.
+// and last used (signing, or encrypting and decrypting, #97), and Revoke, confirmed in place.
 import { npubEncode } from 'nostr-tools/nip19'
 import type { Nip46Connection } from '#shared/types/bunker'
-import { kindLabel, relativeTime, revokedReason } from '~/utils/connections'
+import { kindLabel, methodLabel, relativeTime, revokedReason } from '~/utils/connections'
 import { NoReferrerImg } from '~/utils/no-referrer-img'
 
 // Third-party pictures load with no referrer, the policy set before src (#75).
@@ -81,7 +81,10 @@ function revoke() {
       >
         App key {{ npub }}
       </p>
-      <p class="text-xs">
+      <p
+        v-if="connection.kinds.length"
+        class="text-xs"
+      >
         May sign:
         <span
           v-for="kind in connection.kinds"
@@ -89,14 +92,26 @@ function revoke() {
           class="mr-1 inline-block rounded bg-elevated px-1.5 py-0.5"
         >{{ kindLabel(kind) }}</span>
       </p>
+      <p
+        v-if="connection.methods?.length"
+        class="text-xs"
+        data-testid="connection-methods"
+      >
+        May also:
+        <span
+          v-for="method in connection.methods"
+          :key="method"
+          class="mr-1 inline-block rounded bg-elevated px-1.5 py-0.5"
+        >{{ methodLabel(method) }}</span>
+      </p>
       <p class="text-xs text-muted">
         <span :title="exact(connection.connected_at)">Connected {{ relativeTime(connection.connected_at) }}</span>
         ·
         <span
           v-if="connection.last_used_at"
           :title="exact(connection.last_used_at)"
-        >last signed {{ relativeTime(connection.last_used_at) }}</span>
-        <span v-else>has not signed yet</span>
+        >last used {{ relativeTime(connection.last_used_at) }}</span>
+        <span v-else>not used yet</span>
         <template v-if="forName">
           · for {{ forName }}
         </template>

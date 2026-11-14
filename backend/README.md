@@ -278,9 +278,10 @@ Each row has these fields, in this order:
 | `connection_id`, `token_id` | The connection that signed | The connection or token it concerns |
 | `client_pubkey` | The NIP-46 app's key that asked | The app's key, for a connection |
 | `actor_pubkey` | empty | Who did it; empty for the bunker itself or the app |
-| `detail` | empty | Fixed values: a reason, permissions, a role change, counts |
+| `detail` | empty | Fixed values: a reason, permissions, a role change, counts, a peer's key |
 
-Event content is never recorded or exported. In CSV, a value that starts with `=`, `+`, `-`, `@`, a
+Event content is never recorded or exported, and neither is a decrypt's plaintext or ciphertext. In
+CSV, a value that starts with `=`, `+`, `-`, `@`, a
 tab or a carriage return gets a leading `'`, so a member's or app's name cannot run as a formula in
 a spreadsheet.
 
@@ -299,6 +300,13 @@ Audit actions, each recorded in the same transaction as the change:
 | `logs_pruned` | The policy deleted rows | `signatures=…;audit_events=…` |
 | `logs_exported` | An administrator exports | `format=…;from=…;to=…` |
 | `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…` |
+| `nip44_decrypt`, `nip04_decrypt` | A NIP-46 app asks the bunker to decrypt (#97) | `peer=…`: the hex key of the other party |
+
+A decrypt changes nothing, so it has no transaction of its own: its event is written before the
+bunker decrypts, and if that write fails nothing is decrypted. The event names the member, the
+connection, its token and the app, and has no actor. A decrypt that fails, such as a malformed
+ciphertext, is still recorded. Encrypting is not recorded: it shows the app nothing, and a message
+the app then sends is signed, and that signature is.
 
 Upgrading to this version adds the audit events table and fills it from what the database already
 held: each token's issue and revocation and each connection's creation and revocation, with the
@@ -402,7 +410,7 @@ administrator issues.
 
 ```bash
 POST /api/bunker/connections/tokens
-{ "for_pubkey": "npub1…", "label": "Damus on my phone", "kinds": [1, 7], "expires_in_hours": 24 }
+{ "for_pubkey": "npub1…", "label": "Damus on my phone", "kinds": [1, 7], "methods": ["nip44_encrypt", "nip44_decrypt"], "expires_in_hours": 24 }
 ```
 
 - `for_pubkey` is the vault member the connection is attributed to (the administrator when
@@ -410,7 +418,13 @@ POST /api/bunker/connections/tokens
   `400 {"error":"member_cannot_sign"}` (#77). Removing the member later ends their tokens and
   connections.
 - `kinds` are the event kinds the app may sign. Nothing else is ever signed: there is no
-  "everything" grant. If the app asks for permissions in `connect`, it gets those of them the
+  "everything" grant.
+- `methods` are the encryption methods it may call (#97), any of `nip44_encrypt`, `nip44_decrypt`,
+  `nip04_encrypt` and `nip04_decrypt`; none when omitted. Anything else is
+  `400 {"error":"invalid_methods"}`. A token needs at least one kind or method, or it is
+  `400 {"error":"invalid_kinds"}`, so a token may allow encryption alone.
+- The token's permissions are stored as NIP-46 writes them: `sign_event:<kind>` for each kind, and
+  each method by its name. If the app asks for permissions in `connect`, it gets those of them the
   token allows, and is refused if that leaves nothing.
 - The token is valid for 1 hour to 7 days (24 hours by default), and **for one connection only**.
 - The response's `uri` is the `bunker://` string to give the app. It carries the token's secret,
@@ -428,7 +442,26 @@ from a connection whose member is now a viewer is refused as a removed member's 
 issued for one does not connect.
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
-change), `logout`. The NIP-04 and NIP-44 encryption methods are not supported.
+change), `logout`, and the encryption methods below. Tokens, connections and the token just issued
+list `kinds` and `methods` separately.
+
+### Encryption (#97)
+`nip44_encrypt`, `nip44_decrypt`, `nip04_encrypt` and `nip04_decrypt` take
+`[<third_party_pubkey>, <payload>]`, the pubkey in hex, and encrypt or decrypt with the bunker's
+key: NIP-44 version 2, or NIP-04 for older apps. Each is a separate permission. A connection without
+it gets `Forbidden: this connection may not call <method>`, and nothing is encrypted, decrypted or
+recorded.
+
+The other party may be anyone, or the bunker's own key (NIP-51 private lists encrypt to oneself),
+but never the key of a NIP-46 app that has connected to this bunker, active or not:
+`Forbidden: <method> is not allowed with a NIP-46 app key`. The traffic between apps and the bunker
+is encrypted with the bunker's key, so without this an app could read another app's requests and
+answers, or write some of its own.
+
+A decrypt grant covers every message sent to the bunker's key, from anyone: it cannot be limited to
+particular senders. Each decrypt is recorded (see the audit actions above). A NIP-17 inbox decrypts
+twice for each message, a gift wrap and then its seal, so an app reading direct messages adds
+audit events quickly; a retention policy bounds them.
 
 ## Podman
 

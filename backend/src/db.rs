@@ -544,7 +544,7 @@ pub struct Nip46Token {
     /// The administrator who issued it (hex; empty only from an unauthenticated test router).
     pub issued_by: String,
     pub label: String,
-    /// What a connection made with it may do, e.g. `sign_event:1,sign_event:7`.
+    /// What a connection made with it may do, e.g. `sign_event:1,sign_event:7,nip44_encrypt`.
     pub perms: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -868,6 +868,14 @@ impl Database {
             )
             .optional()?;
         Ok(connection)
+    }
+
+    /// Whether `pubkey` is the key of any NIP-46 app that has connected, active or not (#97). The
+    /// traffic between those apps and the bunker is encrypted with the bunker's key, so the
+    /// encryption methods refuse them as a peer.
+    pub fn is_nip46_client(&self, pubkey: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM nip46_connections WHERE client_pubkey = ?1)", params![pubkey], |row| row.get(0))?)
     }
 
     pub fn touch_nip46_connection(&self, id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {

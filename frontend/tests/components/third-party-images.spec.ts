@@ -66,7 +66,7 @@ describe('third-party images send no Referer (#75)', () => {
   it('a connected app\'s icon, which the app itself names', async () => {
     const connection: Nip46Connection = {
       id: 'c1', client_pubkey: key, for_pubkey: 'a'.repeat(64), client_name: 'App', client_url: null,
-      client_image: 'https://app.example/icon.png', metadata_verified: false, kinds: [1],
+      client_image: 'https://app.example/icon.png', metadata_verified: false, kinds: [1], methods: [],
       connected_at: '2026-10-01T00:00:00Z', last_used_at: null, revoked_at: null, revoked_reason: null, revoked_by: null
     }
     // It has tooltips, which need the provider UApp installs in app.vue.

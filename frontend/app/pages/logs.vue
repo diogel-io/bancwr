@@ -65,9 +65,10 @@ const downloadUrl = computed(() => rangeError.value ? undefined : exportUrl(form
               Export
             </h2>
             <p class="text-sm text-muted">
-              Every signature and every recorded change (tokens, connections, members, relays and
-              retention) between two dates, in UTC, both included. Event content is never recorded.
-              The export itself is recorded.
+              Every signature, every recorded change (tokens, connections, members, relays and
+              retention) and every decrypt an app asked for, between two dates, in UTC, both
+              included. Event content and message content are never recorded. The export itself is
+              recorded.
             </p>
           </template>
 
