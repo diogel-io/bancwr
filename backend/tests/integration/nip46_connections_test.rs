@@ -1,7 +1,8 @@
 // NIP-46 connections end to end (#52, #53): an administrator issues a token through the API, a
 // standard NIP-46 client (rust-nostr's nostr-connect) connects with it through a relay, learns the
 // bunker's key and signs a granted kind; a kind outside the grant is refused; the connection is
-// listed for its member and survives a restart. Plus who may issue, list and revoke.
+// listed for its member and survives a restart. Plus who may issue, list and revoke, and the
+// encryption methods (#97) over the same client.
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -180,6 +181,10 @@ async fn issuing_is_validated_and_refused_with_nip46_off() {
         (json!({ "label": "", "kinds": [1] }), "invalid_label"),
         (json!({ "label": "x", "kinds": [] }), "invalid_kinds"),
         (json!({ "label": "x", "kinds": [70000] }), "invalid_kinds"),
+        (json!({ "label": "x" }), "invalid_kinds"),
+        (json!({ "label": "x", "kinds": [], "methods": [] }), "invalid_kinds"),
+        (json!({ "label": "x", "kinds": [1], "methods": ["nip44_sign"] }), "invalid_methods"),
+        (json!({ "label": "x", "methods": ["sign_event:1"] }), "invalid_methods"),
         (json!({ "label": "x", "kinds": [1], "expires_in_hours": 0 }), "invalid_expiry"),
         (json!({ "label": "x", "kinds": [1], "expires_in_hours": 169 }), "invalid_expiry"),
         (json!({ "label": "x", "kinds": [1], "for_pubkey": "nope" }), "invalid_pubkey"),
@@ -189,6 +194,66 @@ async fn issuing_is_validated_and_refused_with_nip46_off() {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{}", body);
         assert_eq!(res.json::<Value>().await.unwrap()["error"], error, "{}", body);
     }
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_encrypts_and_decrypts_only_with_the_methods_granted() {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    let user = app.register(Role::Signer);
+    start_bunker_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+
+    // Methods without kinds, listed back in their fixed order, without duplicates.
+    let res = issue(&app, &admin, json!({ "for_pubkey": user.public_key().to_hex(), "label": "DMs", "methods": ["nip44_decrypt", "nip44_encrypt", "nip44_decrypt"] })).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let token: IssueTokenResponse = res.json().await.unwrap();
+    assert!(token.kinds.is_empty());
+    assert_eq!(token.methods, vec!["nip44_encrypt", "nip44_decrypt"]);
+    let tokens: Vec<TokenResponse> = app.signed(Method::GET, "/api/bunker/connections/tokens", &admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(tokens[0].methods, vec!["nip44_encrypt", "nip44_decrypt"]);
+
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(10), None).unwrap();
+    let bunker = client.get_public_key().await.unwrap();
+    let friend = Keys::generate();
+
+    // NIP-44 both ways, with a third party, as a NIP-17 client does.
+    let sent = client.nip44_encrypt(&friend.public_key(), "hello from the brand").await.unwrap();
+    assert_eq!(nip44::decrypt(friend.secret_key(), &bunker, &sent).unwrap(), "hello from the brand");
+    let incoming = nip44::encrypt(friend.secret_key(), &bunker, "hello brand", nip44::Version::V2).unwrap();
+    assert_eq!(client.nip44_decrypt(&friend.public_key(), &incoming).await.unwrap(), "hello brand");
+
+    // NIP-04 and signing were not granted.
+    assert!(client.nip04_encrypt(&friend.public_key(), "x").await.is_err());
+    assert!(client.nip04_decrypt(&friend.public_key(), &nip04::encrypt(friend.secret_key(), &bunker, "x").unwrap()).await.is_err());
+    assert!(client.sign_event(EventBuilder::text_note("not granted").build(bunker)).await.is_err());
+
+    // The connection lists its methods, and the one decrypt is in the audit log.
+    let listed = connections(&app, &admin).await;
+    assert_eq!(listed[0].methods, vec!["nip44_encrypt", "nip44_decrypt"]);
+    let decrypts: Vec<_> = app.db.audit_events().unwrap().into_iter().filter(|e| e.action.ends_with("_decrypt")).collect();
+    assert_eq!(decrypts.len(), 1);
+    assert_eq!(decrypts[0].action, "nip44_decrypt");
+    assert_eq!(decrypts[0].member_pubkey.as_deref(), Some(user.public_key().to_hex().as_str()));
+    assert_eq!(decrypts[0].detail.as_deref(), Some(format!("peer={}", friend.public_key().to_hex()).as_str()));
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_encrypts_and_decrypts_nip04() {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_bunker_relay_client(&app, &relay.url()).await;
+    let token: IssueTokenResponse = issue(&app, &app.admin.public_key().to_hex(), json!({ "label": "Old app", "kinds": [4], "methods": ["nip04_encrypt", "nip04_decrypt"] })).await.json().await.unwrap();
+    assert_eq!(token.methods, vec!["nip04_encrypt", "nip04_decrypt"]);
+
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(10), None).unwrap();
+    let bunker = client.get_public_key().await.unwrap();
+    let friend = Keys::generate();
+    let sent = client.nip04_encrypt(&friend.public_key(), "hello").await.unwrap();
+    assert_eq!(nip04::decrypt(friend.secret_key(), &bunker, &sent).unwrap(), "hello");
+    let incoming = nip04::encrypt(friend.secret_key(), &bunker, "hi").unwrap();
+    assert_eq!(client.nip04_decrypt(&friend.public_key(), &incoming).await.unwrap(), "hi");
+    assert!(client.nip44_encrypt(&friend.public_key(), "x").await.is_err());
 }
 
 /// A NIP-44 request, as nostr-tools' BunkerSigner sends (#31's frontend client), answered in NIP-44
@@ -335,9 +400,15 @@ async fn a_token_is_not_issued_for_a_viewer() {
     let viewer = app.register(Role::Viewer).public_key().to_hex();
     let signer = app.register(Role::Signer).public_key().to_hex();
 
-    let res = issue(&app, &admin, json!({ "for_pubkey": viewer, "label": "x", "kinds": [1] })).await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(res.json::<Value>().await.unwrap()["error"], "member_cannot_sign");
+    // Nor with the encryption methods alone (#97): a viewer can never hold them.
+    for body in [
+        json!({ "for_pubkey": viewer, "label": "x", "kinds": [1] }),
+        json!({ "for_pubkey": viewer, "label": "x", "methods": ["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"] }),
+    ] {
+        let res = issue(&app, &admin, body).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.json::<Value>().await.unwrap()["error"], "member_cannot_sign");
+    }
     assert!(app.db.list_nip46_tokens().unwrap().is_empty(), "nothing was issued");
 
     for who in [&signer, &admin] {

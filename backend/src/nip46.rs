@@ -7,6 +7,12 @@
 //! connection whose member is still in the vault and may sign: an administrator or a signer, never
 //! a viewer (#77), whose connections are refused as a removed member's are. Clients sign as the
 //! bunker's key: "for a member" is attribution and accountability, not a separate key.
+//!
+//! The encryption methods (#97) are the same: each is a permission of its own, named as NIP-46
+//! names it, and the bunker encrypts and decrypts with its own key. Every decrypt is recorded as an
+//! audit event before it happens. A peer that is a NIP-46 app's key is refused, because the
+//! traffic between apps and the bunker is encrypted with that same key.
+use crate::audit::action;
 use crate::db::{ClientMetadata, Database, Nip46Connection, RedeemRefusal};
 use crate::signer::Signer;
 use chrono::Utc;
@@ -52,6 +58,10 @@ pub fn hash_secret(secret: &str) -> String {
 pub fn sign_permission(kind: u16) -> String {
     format!("sign_event:{}", kind)
 }
+
+/// The NIP-46 encryption methods (#97). Each is its own permission, named as the method is: NIP-46
+/// writes permissions as `method[:params]`, and these take no parameter.
+pub const ENCRYPTION_METHODS: [&str; 4] = ["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"];
 
 /// Shown to a client that has not connected, or whose connection ended.
 pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token first";
@@ -107,9 +117,7 @@ impl Nip46Handler {
                 }
                 Nip46Response::ok(request.id, "ack")
             }
-            "nip04_encrypt" | "nip04_decrypt" | "nip44_encrypt" | "nip44_decrypt" => {
-                Nip46Response::err(request.id, format!("Not supported: {}", request.method))
-            }
+            "nip04_encrypt" | "nip04_decrypt" | "nip44_encrypt" | "nip44_decrypt" => self.handle_crypto(request, &connection).await,
             _ => Nip46Response::err(request.id, format!("Unknown method: {}", request.method)),
         }
     }
@@ -198,6 +206,68 @@ impl Nip46Handler {
                 Nip46Response::ok(request.id, signed_event.as_json())
             }
             Err(e) => Nip46Response::err(request.id, format!("Signing error: {}", e)),
+        }
+    }
+}
+
+impl Nip46Handler {
+    /// `nip44_*` and `nip04_*` (#97): `[third_party_pubkey, payload]`, with the bunker's key.
+    /// Refused without the method's permission, and for a peer that is a NIP-46 app's key. A
+    /// decrypt is recorded first, and nothing is decrypted if that fails.
+    async fn handle_crypto(&self, request: Nip46Request, connection: &Nip46Connection) -> Nip46Response {
+        let method = request.method.as_str();
+        if !connection.perms.iter().any(|p| p == method) {
+            return Nip46Response::err(request.id, format!("Forbidden: this connection may not call {}", method));
+        }
+        let (Some(peer), Some(payload)) = (request.params.first(), request.params.get(1)) else {
+            return Nip46Response::err(request.id, "Missing parameters: expected a pubkey and a payload");
+        };
+        // NIP-46 sends the third party's key as hex.
+        let Ok(peer) = PublicKey::from_hex(peer.trim()) else {
+            return Nip46Response::err(request.id, "Invalid pubkey");
+        };
+        let peer_hex = peer.to_hex();
+
+        let signer = self.signer.read().await;
+        // The bunker's own key is allowed: NIP-51 private lists encrypt to oneself.
+        if peer_hex != signer.public_key_hex() {
+            match self.db.is_nip46_client(&peer_hex) {
+                Ok(false) => {}
+                Ok(true) => return Nip46Response::err(request.id, format!("Forbidden: {} is not allowed with a NIP-46 app key", method)),
+                Err(e) => {
+                    warn!("Failed to check the peer of a {} from {}: {}", method, connection.client_pubkey, e);
+                    return Nip46Response::err(request.id, "Internal error");
+                }
+            }
+        }
+
+        let now = Utc::now();
+        let decrypt_action = match method {
+            "nip44_decrypt" => Some(action::NIP44_DECRYPT),
+            "nip04_decrypt" => Some(action::NIP04_DECRYPT),
+            _ => None,
+        };
+        if let Some(decrypt_action) = decrypt_action {
+            if let Err(e) = self.db.record_decrypt(connection, decrypt_action, &peer_hex, now) {
+                warn!("Failed to record a {} from {}, so nothing was decrypted: {}", method, connection.client_pubkey, e);
+                return Nip46Response::err(request.id, "Internal error");
+            }
+        }
+
+        let result = match method {
+            "nip44_encrypt" => signer.encrypt(&peer, payload),
+            "nip44_decrypt" => signer.decrypt(&peer, payload),
+            "nip04_encrypt" => signer.nip04_encrypt(&peer, payload),
+            _ => signer.nip04_decrypt(&peer, payload),
+        };
+        drop(signer);
+        if let Err(e) = self.db.touch_nip46_connection(&connection.id, now) {
+            warn!("Failed to record NIP-46 connection use: {}", e);
+        }
+        match result {
+            Ok(output) => Nip46Response::ok(request.id, output),
+            // `Signer` words these without the payload.
+            Err(e) => Nip46Response::err(request.id, e.to_string()),
         }
     }
 }

@@ -1,7 +1,9 @@
 // NIP-46 behind connection tokens (#53): every refusal path, the grant intersection, logout,
-// persistence across a reopen, and member removal ending a connection.
+// persistence across a reopen, and member removal ending a connection. Plus the encryption
+// methods (#97): their permissions, parameters, the refusal of NIP-46 app keys as a peer, and the
+// audit event each decrypt leaves before it happens.
 use bunker::db::Database;
-use bunker::nip46::{hash_secret, sign_permission, Nip46Handler, Nip46Request, Nip46Response, NOT_CONNECTED};
+use bunker::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS, Nip46Handler, Nip46Request, Nip46Response, NOT_CONNECTED};
 use bunker::registry::Role;
 use bunker::signer::Signer;
 use chrono::{Duration, Utc};
@@ -36,10 +38,15 @@ fn handler_for(db: &Database, bunker: &Keys) -> Nip46Handler {
 
 /// Issues a token for the setup's member allowing `kinds`, valid for `hours`; returns its secret.
 fn issue(s: &Setup, kinds: &[u16], hours: i64) -> String {
-    let secret = format!("secret-{}", uuid::Uuid::new_v4());
     let perms: Vec<String> = kinds.iter().map(|k| sign_permission(*k)).collect();
+    issue_perms(s, &perms, hours)
+}
+
+/// Issues a token for the setup's member with exactly `perms`; returns its secret.
+fn issue_perms(s: &Setup, perms: &[String], hours: i64) -> String {
+    let secret = format!("secret-{}", uuid::Uuid::new_v4());
     let now = Utc::now();
-    s.db.create_nip46_token(&hash_secret(&secret), &s.member.public_key().to_hex(), "admin", "test", &perms, now, now + Duration::hours(hours)).unwrap();
+    s.db.create_nip46_token(&hash_secret(&secret), &s.member.public_key().to_hex(), "admin", "test", perms, now, now + Duration::hours(hours)).unwrap();
     secret
 }
 
@@ -176,7 +183,7 @@ async fn keeps_client_metadata_as_unverified_display_hints() {
 }
 
 #[tokio::test]
-async fn answers_get_public_key_with_hex_and_refuses_encryption_methods() {
+async fn answers_get_public_key_with_hex_and_refuses_encryption_methods_not_granted() {
     let s = setup();
     let client = Keys::generate();
     let secret = issue(&s, &[1], 24);
@@ -186,7 +193,7 @@ async fn answers_get_public_key_with_hex_and_refuses_encryption_methods() {
     let pong = s.handler.handle_request(request("ping", vec![]), client.public_key()).await;
     assert_eq!(pong.result.as_deref(), Some("pong"));
     let nip44 = s.handler.handle_request(request("nip44_encrypt", vec!["x".into(), "y".into()]), client.public_key()).await;
-    assert_eq!(nip44.error.as_deref(), Some("Not supported: nip44_encrypt"));
+    assert_eq!(nip44.error.as_deref(), Some("Forbidden: this connection may not call nip44_encrypt"));
 }
 
 #[tokio::test]
@@ -274,4 +281,176 @@ async fn signs_a_template_without_a_pubkey_as_nip46_defines_it() {
 
     let refused = s.handler.handle_request(request("sign_event", vec!["[1]".to_string()]), client.public_key()).await;
     assert!(refused.error.unwrap().starts_with("Invalid event JSON"));
+}
+
+/// A connected client granted `methods` (and kind 1), and its keys.
+async fn connected_with(s: &Setup, methods: &[&str]) -> Keys {
+    let mut perms = vec![sign_permission(1)];
+    perms.extend(methods.iter().map(|m| m.to_string()));
+    let secret = issue_perms(s, &perms, 24);
+    let client = Keys::generate();
+    let connected = connect(s, &client, connect_params(s, &secret)).await;
+    assert_eq!(connected.result.as_deref(), Some("ack"), "{:?}", connected.error);
+    client
+}
+
+async fn call(s: &Setup, client: &Keys, method: &str, peer: &PublicKey, payload: &str) -> Nip46Response {
+    s.handler.handle_request(request(method, vec![peer.to_hex(), payload.to_string()]), client.public_key()).await
+}
+
+fn decrypt_events(s: &Setup) -> Vec<bunker::audit::ExportRow> {
+    s.db.audit_events().unwrap().into_iter().filter(|e| e.action.ends_with("_decrypt")).collect()
+}
+
+#[tokio::test]
+async fn encrypts_and_decrypts_nip44_with_the_bunkers_key() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt"]).await;
+    let friend = Keys::generate();
+
+    // What the bunker encrypts to a friend, the friend can read, and the other way round.
+    let sent = call(&s, &client, "nip44_encrypt", &friend.public_key(), "hello friend").await;
+    let ciphertext = sent.result.expect("encrypted");
+    assert_eq!(nip44::decrypt(friend.secret_key(), &s.bunker.public_key(), &ciphertext).unwrap(), "hello friend");
+    let incoming = nip44::encrypt(friend.secret_key(), &s.bunker.public_key(), "hello brand", nip44::Version::V2).unwrap();
+    let read = call(&s, &client, "nip44_decrypt", &friend.public_key(), &incoming).await;
+    assert_eq!(read.result.as_deref(), Some("hello brand"), "{:?}", read.error);
+
+    // To itself, as NIP-51 private lists do.
+    let own = call(&s, &client, "nip44_encrypt", &s.bunker.public_key(), "private list").await.result.unwrap();
+    let back = call(&s, &client, "nip44_decrypt", &s.bunker.public_key(), &own).await;
+    assert_eq!(back.result.as_deref(), Some("private list"));
+}
+
+#[tokio::test]
+async fn encrypts_and_decrypts_nip04_with_the_bunkers_key() {
+    let s = setup();
+    let client = connected_with(&s, &["nip04_encrypt", "nip04_decrypt"]).await;
+    let friend = Keys::generate();
+
+    let sent = call(&s, &client, "nip04_encrypt", &friend.public_key(), "hello friend").await.result.expect("encrypted");
+    assert_eq!(nip04::decrypt(friend.secret_key(), &s.bunker.public_key(), &sent).unwrap(), "hello friend");
+    let incoming = nip04::encrypt(friend.secret_key(), &s.bunker.public_key(), "hello brand").unwrap();
+    let read = call(&s, &client, "nip04_decrypt", &friend.public_key(), &incoming).await;
+    assert_eq!(read.result.as_deref(), Some("hello brand"), "{:?}", read.error);
+}
+
+#[tokio::test]
+async fn each_method_needs_its_own_permission_and_a_refusal_decrypts_and_records_nothing() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt"]).await;
+    let friend = Keys::generate();
+    let incoming = nip44::encrypt(friend.secret_key(), &s.bunker.public_key(), "secret", nip44::Version::V2).unwrap();
+
+    for method in ["nip44_decrypt", "nip04_encrypt", "nip04_decrypt"] {
+        let refused = call(&s, &client, method, &friend.public_key(), &incoming).await;
+        assert_eq!(refused.result, None);
+        assert_eq!(refused.error.unwrap(), format!("Forbidden: this connection may not call {}", method));
+    }
+    assert!(decrypt_events(&s).is_empty());
+    assert!(call(&s, &client, "nip44_encrypt", &friend.public_key(), "allowed").await.result.is_some());
+}
+
+#[tokio::test]
+async fn the_client_request_narrows_the_methods_granted() {
+    let s = setup();
+    let perms: Vec<String> = std::iter::once(sign_permission(1)).chain(ENCRYPTION_METHODS.iter().map(|m| m.to_string())).collect();
+    let secret = issue_perms(&s, &perms, 24);
+    let client = Keys::generate();
+    let mut params = connect_params(&s, &secret);
+    params.push("nip44_encrypt,nip44_decrypt".to_string());
+    connect(&s, &client, params).await;
+
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+    assert_eq!(connection.perms, vec!["nip44_encrypt".to_string(), "nip44_decrypt".to_string()]);
+    let refused = call(&s, &client, "nip04_encrypt", &Keys::generate().public_key(), "x").await;
+    assert_eq!(refused.error.as_deref(), Some("Forbidden: this connection may not call nip04_encrypt"));
+}
+
+#[tokio::test]
+async fn refuses_missing_parameters_and_a_pubkey_that_is_not_hex() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt"]).await;
+    let missing = s.handler.handle_request(request("nip44_encrypt", vec![Keys::generate().public_key().to_hex()]), client.public_key()).await;
+    assert_eq!(missing.error.as_deref(), Some("Missing parameters: expected a pubkey and a payload"));
+    let npub = Keys::generate().public_key().to_bech32().unwrap();
+    let not_hex = s.handler.handle_request(request("nip44_decrypt", vec![npub, "x".into()]), client.public_key()).await;
+    assert_eq!(not_hex.error.as_deref(), Some("Invalid pubkey"));
+    assert!(decrypt_events(&s).is_empty());
+}
+
+#[tokio::test]
+async fn refuses_a_nip46_app_key_as_the_peer_active_or_not() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"]).await;
+    let other_app = connected_with(&s, &[]).await;
+    let gone_app = connected_with(&s, &[]).await;
+    let gone = s.db.active_nip46_connection(&gone_app.public_key().to_hex()).unwrap().unwrap();
+    s.db.revoke_nip46_connection(&gone.id, "logout", Utc::now()).unwrap();
+
+    // What another app sent the bunker, encrypted to the bunker's key.
+    let transport = nip44::encrypt(other_app.secret_key(), &s.bunker.public_key(), r#"{"id":"1","method":"sign_event","params":[]}"#, nip44::Version::V2).unwrap();
+    for peer in [other_app.public_key(), gone_app.public_key(), client.public_key()] {
+        for method in ENCRYPTION_METHODS {
+            let refused = call(&s, &client, method, &peer, &transport).await;
+            assert_eq!(refused.result, None);
+            assert_eq!(refused.error.unwrap(), format!("Forbidden: {} is not allowed with a NIP-46 app key", method));
+        }
+    }
+    assert!(decrypt_events(&s).is_empty());
+}
+
+#[tokio::test]
+async fn each_decrypt_is_recorded_with_member_connection_app_and_peer_and_no_content() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_decrypt", "nip04_decrypt"]).await;
+    let friend = Keys::generate();
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+
+    let nip44_text = nip44::encrypt(friend.secret_key(), &s.bunker.public_key(), "first secret", nip44::Version::V2).unwrap();
+    let nip04_text = nip04::encrypt(friend.secret_key(), &s.bunker.public_key(), "second secret").unwrap();
+    assert!(call(&s, &client, "nip44_decrypt", &friend.public_key(), &nip44_text).await.result.is_some());
+    assert!(call(&s, &client, "nip04_decrypt", &friend.public_key(), &nip04_text).await.result.is_some());
+    // A payload that does not decrypt is still recorded: the event is written first.
+    let failed = call(&s, &client, "nip44_decrypt", &friend.public_key(), "not a ciphertext").await;
+    assert!(failed.error.unwrap().starts_with("Decryption error"));
+
+    let events = decrypt_events(&s);
+    assert_eq!(events.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), vec!["nip44_decrypt", "nip04_decrypt", "nip44_decrypt"]);
+    for event in &events {
+        assert_eq!(event.member_pubkey.as_deref(), Some(s.member.public_key().to_hex().as_str()));
+        assert_eq!(event.member_name.as_deref(), Some("Member"));
+        assert_eq!(event.connection_id.as_deref(), Some(connection.id.as_str()));
+        assert_eq!(event.token_id.as_deref(), Some(connection.token_id.as_str()));
+        assert_eq!(event.client_pubkey.as_deref(), Some(client.public_key().to_hex().as_str()));
+        assert_eq!(event.actor_pubkey, None);
+        assert_eq!(event.detail.as_deref(), Some(format!("peer={}", friend.public_key().to_hex()).as_str()));
+        let row = serde_json::to_string(event).unwrap();
+        for content in ["first secret", "second secret", nip44_text.as_str(), nip04_text.as_str()] {
+            assert!(!row.contains(content));
+        }
+    }
+}
+
+#[tokio::test]
+async fn encrypts_are_not_recorded_and_use_is_touched() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt"]).await;
+    assert!(call(&s, &client, "nip44_encrypt", &Keys::generate().public_key(), "x").await.result.is_some());
+    assert!(decrypt_events(&s).is_empty());
+    assert!(s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap().last_used_at.is_some());
+}
+
+#[tokio::test]
+async fn a_removed_members_connection_cannot_decrypt() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_decrypt"]).await;
+    s.db.add_team_member("Admin", &Keys::generate().public_key().to_hex(), Role::Administrator).unwrap();
+    let member = s.db.find_member_by_pubkey(&s.member.public_key().to_hex()).unwrap().unwrap();
+    s.db.remove_team_member(member.id).unwrap();
+    let friend = Keys::generate();
+    let incoming = nip44::encrypt(friend.secret_key(), &s.bunker.public_key(), "x", nip44::Version::V2).unwrap();
+    let refused = call(&s, &client, "nip44_decrypt", &friend.public_key(), &incoming).await;
+    assert_eq!(refused.error.as_deref(), Some(NOT_CONNECTED));
+    assert!(decrypt_events(&s).is_empty());
 }
