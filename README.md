@@ -211,7 +211,16 @@ and revokes every connected app (#95). [docs/operating.md](docs/operating.md) ex
 - create the root credential and import the key, or migrate a 0.1.0 bunker's plain key;
 - what the bunker does when it cannot unlock its key, and where it says why;
 - take backups, by hand or daily with a systemd timer or cron;
-- restore one, and what a restore keeps and revokes.
+- restore one, and what a restore keeps and revokes;
+- export the signing log and audit events, and set how long they are kept.
+
+### The audit trail
+
+The bunker records every signature, and every change to who may sign: tokens issued and revoked,
+apps connected and disconnected, team changes, the bunker relays and the retention policy (#96).
+Administrators page through signatures under **Logs**, export everything between two dates as CSV
+or JSON Lines, and set a retention policy under **Config**. By default nothing is deleted. Signers
+and viewers cannot export. See [docs/operating.md](docs/operating.md#the-signing-log-and-audit-events).
 
 ### Roles
 
@@ -220,7 +229,7 @@ Only keys registered with the bunker can use it, each with one of three roles (#
 
 | Role | Can |
 |------|-----|
-| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members), Config (including the bunker relays), Logs, and everything a signer and a viewer can do. |
+| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer and a viewer can do. |
 | Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46). |
 | Viewer | A dashboard with the bunker's health; the team list and each member's profile, read-only. A viewer never holds a NIP-46 connection. |
 

@@ -1,8 +1,9 @@
 # Operating Bancwr: the key and the database
 
 This page is for whoever runs a Bancwr bunker. It covers the bunker's key, which is encrypted at
-rest from 0.2.0 (#94), moving a 0.1.0 bunker to it, and backing up and restoring the bunker with
-`bunker backup` and `bunker restore` (#95).
+rest from 0.2.0 (#94), moving a 0.1.0 bunker to it, backing up and restoring the bunker with
+`bunker backup` and `bunker restore` (#95), and keeping, exporting and pruning its signing log and
+audit events (#96).
 
 Commands are given for rootless Podman and for Docker. They assume the `compose.yaml` layout from
 the [README](../README.md#running-the-environment): the bunker's data in `./data` and its secrets
@@ -357,8 +358,8 @@ Then follow steps 2 and 3 above. Once you are sure the restore is good, delete `
 Kept, as at the backup:
 
 - members and their roles;
-- the signing log;
-- the bunker relays.
+- the signing log and the audit events, to which the restore adds one saying what it revoked;
+- the bunker relays and the log retention policy.
 
 Revoked:
 
@@ -395,6 +396,40 @@ running bunker: it runs in WAL mode, and recent changes are in `bancwr.db-wal`.
 A manual copy is not encrypted apart from the key file, and restoring it is just copying it back.
 That brings back every connection and token as it was, including those revoked since. After
 restoring a manual copy, revoke under **Connections** every app and token you had shut out.
+
+## The signing log and audit events
+
+The bunker records every signature it makes, and every change to who may sign: connection tokens
+issued and revoked, apps connected and disconnected, members added, removed and given another role,
+the bunker relays, and the log's own retention policy (#96). Exports and pruning are recorded too.
+Each change is recorded in the same database transaction as the change itself. Event content is
+never recorded.
+
+Administrators read the log under **Logs**, the newest 100 entries first, with **Load older** for
+the rest. The page lists signatures. The other events are in the export.
+
+### Exporting
+
+Under **Logs**, **Export** downloads every signature and recorded change between two dates, as CSV
+or JSON Lines. The dates are in UTC and both are included. Only administrators can export, and each
+export is recorded with who made it and the range. `backend/README.md` describes every field and
+event.
+
+An exported file is outside Bancwr's control once downloaded. It holds members' and apps' public
+keys and names and when they signed, but no keys that sign and no event content. Keep it as you
+keep your other records of who acted for the organisation.
+
+### Retention
+
+By default the bunker keeps everything. Under **Config**, **Log retention**, an administrator can
+keep entries for a number of days, keep at most a number of rows, or both. The two are applied to
+signatures and to the other events separately. The shortest policy allowed is 30 days or 10,000
+rows.
+
+Saving a policy deletes what falls outside it at once. After that the bunker applies it at start
+and every hour. Each change of policy, and each prune that deletes anything, is recorded with what
+it deleted. Deleted entries are gone from the database and from every backup taken afterwards, so
+export what you need to keep first. Earlier backups still hold them.
 
 ### Backups from before #42
 
