@@ -191,3 +191,20 @@ export interface ReplaceBunkerRelaysRequest {
 export const MAX_BUNKER_RELAYS = 6
 /** Fewer than this is allowed, but every connected app then depends on one relay. */
 export const ADVISED_MIN_BUNKER_RELAYS = 2
+
+/** GET and PUT /api/bunker/logs/retention (#96): how long the signing log and audit events are kept. */
+export interface LogRetention {
+  /** Rows older than this are pruned; null keeps them indefinitely. */
+  max_age_days: number | null
+  /** The oldest rows over this many, in each table, are pruned; null for no limit. */
+  max_rows: number | null
+}
+
+/** The answer to GET and PUT, with the floors a policy may not go under. */
+export interface LogRetentionResponse extends LogRetention {
+  min_age_days: number
+  min_rows: number
+}
+
+/** GET /api/bunker/logs/export formats (#96). */
+export type LogExportFormat = 'csv' | 'jsonl'

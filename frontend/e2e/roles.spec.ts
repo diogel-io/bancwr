@@ -52,6 +52,14 @@ test.describe('admin', () => {
 test.describe('signer', () => {
   test.use({ role: 'signer' })
 
+  test('cannot export the log or change its retention (#96)', async ({ page }) => {
+    await page.goto('/')
+    const exported = await page.request.get('/api/bunker/logs/export?format=csv&from=2026-01-01&to=2026-12-31')
+    expect(exported.status()).toBe(403)
+    const retention = await page.request.put('/api/bunker/logs/retention', { data: { max_age_days: 30, max_rows: null } })
+    expect(retention.status()).toBe(403)
+  })
+
   test('is offered the dashboard, their profile, follows, relays and connections', async ({ page }) => {
     await page.goto('/')
     await expectSidebar(page, ['Dashboard', 'Profile', 'Follows', 'Relays', 'Connections'])
@@ -86,6 +94,14 @@ test.describe('signer', () => {
 
 test.describe('viewer', () => {
   test.use({ role: 'viewer' })
+
+  test('cannot export the log or change its retention (#96)', async ({ page }) => {
+    await page.goto('/')
+    const exported = await page.request.get('/api/bunker/logs/export?format=csv&from=2026-01-01&to=2026-12-31')
+    expect(exported.status()).toBe(403)
+    const retention = await page.request.put('/api/bunker/logs/retention', { data: { max_age_days: 30, max_rows: null } })
+    expect(retention.status()).toBe(403)
+  })
 
   test('is offered the dashboard and the team', async ({ page }) => {
     await page.goto('/')
