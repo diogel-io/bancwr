@@ -18,3 +18,5 @@ pub mod bunker_relays;
 pub mod relays_api;
 pub mod key_store;
 pub mod backup;
+pub mod audit;
+pub mod logs_api;

@@ -262,6 +262,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "dotenvy",
+ "futures-util",
  "nostr",
  "nostr-connect",
  "nostr-relay-builder",

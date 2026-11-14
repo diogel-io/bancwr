@@ -26,6 +26,8 @@ chacha20poly1305 = "0.10"
 zeroize = "1"
 # Backup archives (#95): the passphrase's key derivation. Already in the lock file through nostr.
 scrypt = { version = "0.11", default-features = false }
+# Streams a log export (#96). Already in the lock file through axum and nostr.
+futures-util = { version = "0.3", default-features = false }
 
 # Nostr client for relay connections
 nostr-relay-pool = "0.39"
@@ -131,3 +133,11 @@ path = "tests/unit/backup_test.rs"
 [[test]]
 name = "backup_restore_test"
 path = "tests/integration/backup_restore_test.rs"
+
+[[test]]
+name = "audit_test"
+path = "tests/unit/audit_test.rs"
+
+[[test]]
+name = "logs_api_test"
+path = "tests/integration/logs_api_test.rs"

@@ -224,6 +224,16 @@ async fn serve() -> anyhow::Result<()> {
 
     let state = AppState::new(signer.clone(), db, config.clone());
 
+    // The log retention policy (#96): applied at start, then hourly. Unset keeps everything.
+    let prune_db = state.db.clone();
+    tokio::spawn(async move {
+        let mut hourly = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        loop {
+            hourly.tick().await;
+            bunker::logs_api::prune(&prune_db);
+        }
+    });
+
     info!("HTTP API listening on http://{}", addr);
 
     let http_state = state.clone();

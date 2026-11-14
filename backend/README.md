@@ -55,7 +55,7 @@ BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key BANCWR_ROOT_KEY_FILE=secrets/ba
 ```
 
 ### From SQLite (logging & configuration):
-By default, the bunker uses SQLite to store audit logs and configuration.
+By default, the bunker uses SQLite to store the signing log, audit events (#96) and configuration.
 SQLite is compiled into the binary via `rusqlite` with the `bundled` feature, so no
 system SQLite installation is required.
 
@@ -101,6 +101,7 @@ its group:
 | `GET /health` | open | open | open | open |
 | `GET /api/bunker/status` | yes | yes | yes | yes |
 | `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | | |
+| `GET /api/bunker/logs/export`; `GET`, `PUT /api/bunker/logs/retention` | yes | | | |
 | `GET /api/bunker/logs/mine` | own | own | | |
 | `GET /api/bunker/team` | yes | | yes | |
 | `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
@@ -217,12 +218,17 @@ Response:
 ```
 
 ### Get Logs
-`GET /api/bunker/logs`
-Returns the last 100 signing logs in reverse chronological order.
+`GET /api/bunker/logs?limit=&before=`
+Returns one page of the signing log, newest first (#96). Without parameters, the newest 100, as
+before. `limit` is 1 to 500. `before` continues after a page: the last entry's `timestamp` and
+`id`, joined by `|` (`2026-06-01T12:00:00.000000+00:00|<id>`), URL-encoded. A short page is the
+last. A bad `limit` is `400 invalid_limit`; a `before` that is not a timestamp and an id is
+`400 invalid_cursor`.
 
 Example:
 ```bash
 curl http://localhost:3000/api/bunker/logs
+curl 'http://localhost:3000/api/bunker/logs?limit=500&before=2026-06-01T12%3A00%3A00.000000%2B00%3A00%7C<id>'
 ```
 
 Response:
@@ -248,6 +254,76 @@ Response:
   for have both as `null`.
 - `member_name` is that member's name, read when the log is, so it is `null` once they have been
   removed.
+
+### Export the log and audit events (#96)
+`GET /api/bunker/logs/export?format=csv|jsonl&from=YYYY-MM-DD&to=YYYY-MM-DD`
+Downloads every signature and every audit event between two UTC dates, both included, oldest
+first, as `text/csv` (RFC 4180, CRLF, with a header row) or `application/x-ndjson` (one JSON
+object per line). `format` defaults to `csv`. A missing, malformed or reversed range is
+`400 invalid_range`; another format is `400 invalid_format`. The body is streamed in batches of
+1,000 rows, with `Content-Disposition: attachment; filename="bancwr-log-<from>-<to>.<ext>"`. The
+export is itself recorded as an audit event before its rows are read, so it appears in its own
+output.
+
+Each row has these fields, in this order:
+
+| Field | Signature | Audit event |
+|-------|-----------|-------------|
+| `time` | When it was signed, UTC, `YYYY-MM-DDTHH:MM:SS.ffffffZ` | When it was recorded, the same |
+| `source` | `signature` | `audit` |
+| `action` | `signed` | One of the actions below |
+| `event_kind` | The kind signed | empty |
+| `event_id` | The signed event's id | empty |
+| `member_pubkey`, `member_name` | The member the connection is for, with their name now (empty once removed) | The member it concerns, with their name when it was recorded |
+| `connection_id`, `token_id` | The connection that signed | The connection or token it concerns |
+| `client_pubkey` | The NIP-46 app's key that asked | The app's key, for a connection |
+| `actor_pubkey` | empty | Who did it; empty for the bunker itself or the app |
+| `detail` | empty | Fixed values: a reason, permissions, a role change, counts |
+
+Event content is never recorded or exported. In CSV, a value that starts with `=`, `+`, `-`, `@`, a
+tab or a carriage return gets a leading `'`, so a member's or app's name cannot run as a formula in
+a spreadsheet.
+
+Audit actions, each recorded in the same transaction as the change:
+
+| `action` | When | `detail` |
+|----------|------|----------|
+| `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…` |
+| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore | `reason=revoked`, `member_removed`, `role_changed` or `restored` |
+| `connection_created` | An app connects with a token | `perms=…` |
+| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed` or `restored` |
+| `member_added`, `member_removed` | Team changes | `role=…` |
+| `member_role_changed` | A role changes (today the `BANCWR_ADMIN_PUBKEY` bootstrap) | `from=…;to=…` |
+| `relays_changed` | An administrator saves the bunker relays | `relays=…` |
+| `retention_changed` | An administrator sets the retention policy | `max_age_days=…;max_rows=…` |
+| `logs_pruned` | The policy deleted rows | `signatures=…;audit_events=…` |
+| `logs_exported` | An administrator exports | `format=…;from=…;to=…` |
+| `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…` |
+
+Upgrading to this version adds the audit events table and fills it from what the database already
+held: each token's issue and revocation and each connection's creation and revocation, with the
+administrator where a column recorded one. Changes to the team before the upgrade were never
+recorded, so they are not there.
+
+Example:
+```bash
+curl -OJ 'http://localhost:3000/api/bunker/logs/export?format=csv&from=2026-06-01&to=2026-06-30'
+```
+
+### Log retention (#96)
+`GET /api/bunker/logs/retention` returns the policy, and `PUT` sets it:
+
+```json
+{ "max_age_days": 365, "max_rows": null, "min_age_days": 30, "min_rows": 10000 }
+```
+
+`max_age_days` deletes rows older than that many days; `max_rows` deletes the oldest rows over that
+many. Each applies to the signing log and to the audit events separately. `null` is no limit, and
+both `null`, the default, keeps everything. A policy under 30 days or 10,000 rows is refused
+(`400 invalid_max_age`, `400 invalid_max_rows`), so a mistake cannot wipe the trail. `PUT` takes
+`max_age_days` and `max_rows`, applies the policy at once, and returns it. The bunker applies it
+again at start and every hour, deleting 1,000 rows at a time, and records each change and each
+prune that deleted anything.
 
 ## NIP-46 Remote Signing
 The bunker supports the NIP-46 remote signing protocol (read at nips commit `0046368a`). When

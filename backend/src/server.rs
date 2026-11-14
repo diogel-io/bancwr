@@ -165,23 +165,6 @@ impl From<crate::db::SigningLog> for LogEntry {
 /// How many entries `GET /api/bunker/logs/mine` returns: enough for the signer dashboard (#77).
 pub const MY_LOGS_LIMIT: usize = 20;
 
-/// Get signing logs
-/// GET /api/bunker/logs
-pub async fn get_logs(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<LogEntry>>, (StatusCode, String)> {
-    match state.db.get_recent_logs(100) {
-        Ok(logs) => Ok(Json(logs.into_iter().map(Into::into).collect())),
-        Err(e) => {
-            error!("Failed to fetch logs: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error".to_string(),
-            ))
-        }
-    }
-}
-
 /// The caller's own recent signatures (#77), for the signer dashboard: those attributed to the
 /// caller as the member (diogel-io/workspace#38), newest first. Administrators and signers; an
 /// administrator sees only their own here too, and everyone's on /logs. Without the guard (an
@@ -235,6 +218,7 @@ pub async fn get_team(
 /// POST /api/bunker/team
 pub async fn add_team_member(
     State(state): State<AppState>,
+    who: Option<axum::Extension<crate::proxy_auth::Caller>>,
     Json(request): Json<AddTeamMemberRequest>,
 ) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
     // The three roles of #77: administrator, signer and viewer. Older names (`admin`, `user`) are
@@ -264,7 +248,8 @@ pub async fn add_team_member(
         }
     }
 
-    match state.db.add_team_member(&request.name, &pubkey, role) {
+    let (by, _) = crate::connections_api::caller(who);
+    match state.db.add_team_member_as(&request.name, &pubkey, role, crate::audit::actor(&by)) {
         Ok(_) => {
             info!("Added team member: {}", request.name);
             Ok(Json(TeamOperationResponse {
@@ -314,9 +299,11 @@ fn lookup_member(
 /// An id that is not a UUID is rejected with 400 by the `Path<Uuid>` extractor.
 pub async fn remove_team_member(
     State(state): State<AppState>,
+    who: Option<axum::Extension<crate::proxy_auth::Caller>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
-    match state.db.remove_team_member(id) {
+    let (by, _) = crate::connections_api::caller(who);
+    match state.db.remove_team_member_as(id, crate::audit::actor(&by)) {
         Ok(RemoveOutcome::Removed) => {
             info!("Removed team member: {}", id);
             Ok(Json(TeamOperationResponse {
@@ -363,7 +350,10 @@ pub fn create_router(state: AppState) -> Router {
     // POST /api/bunker/team): merging joins them, and each method keeps its own group's guard.
     let health = Router::new().route(STATUS_PATH, get(get_status));
     let administration = Router::new()
-        .route("/api/bunker/logs", get(get_logs))
+        // The signing log and audit trail (#96): paging, export and retention.
+        .route("/api/bunker/logs", get(crate::logs_api::get_logs))
+        .route("/api/bunker/logs/export", get(crate::logs_api::export_logs))
+        .route("/api/bunker/logs/retention", get(crate::logs_api::get_retention).put(crate::logs_api::set_retention))
         .route("/api/bunker/metrics", get(get_metrics))
         // Read-only (#42): the signing key is encrypted at rest and set with `bunker import-key` (#94).
         .route("/api/bunker/config", get(get_config))
