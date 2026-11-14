@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection, Transaction};
 use tracing::{info, warn};
 
+use crate::audit::db_time;
 use crate::registry::{canonical_pubkey, Role};
 
 type Migration = fn(&Transaction) -> anyhow::Result<()>;
@@ -23,6 +24,8 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("record the member and connection a signature was for", signing_log_member),
     ("store the bunker's own NIP-46 relays", bunker_relays),
     ("replace the roles with administrator, signer and viewer", admin_signer_viewer_roles),
+    ("record audit events", audit_events),
+    ("normalise signing log timestamps", normalise_log_timestamps),
 ];
 
 /// The version a fully migrated database is at.
@@ -274,6 +277,181 @@ fn admin_signer_viewer_roles(tx: &Transaction) -> anyhow::Result<()> {
     )?;
     if tokens > 0 {
         warn!("Revoked {} unused NIP-46 connection tokens issued for members who are now viewers (#77)", tokens);
+    }
+    Ok(())
+}
+
+/// 8. Audit events (#96): who issued and revoked tokens, made and revoked connections, and
+///    changed the team, the relays and the log's retention, beside the signing log. `member_name`
+///    is the member's name when the event was recorded, so it survives their removal.
+///
+///    What the existing tables already say is backfilled: each token's issue and revocation, and
+///    each connection's creation and revocation, with the actor where a column records one.
+///    Members are not: their history before this migration is not known. Backfilled rows have
+///    ids derived from the row they describe, so a database whose version was rewound re-runs this
+///    without duplicating them.
+fn audit_events(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS audit_events (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            actor_pubkey TEXT,
+            member_pubkey TEXT,
+            member_name TEXT,
+            connection_id TEXT,
+            token_id TEXT,
+            client_pubkey TEXT,
+            detail TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);",
+    )?;
+
+    struct Backfill {
+        id: String,
+        action: &'static str,
+        time: String,
+        actor: Option<String>,
+        member: String,
+        connection: Option<String>,
+        token: Option<String>,
+        client: Option<String>,
+        detail: String,
+    }
+    let mut rows: Vec<Backfill> = Vec::new();
+    {
+        let mut stmt = tx.prepare("SELECT id, for_pubkey, issued_by, perms, created_at, expires_at, revoked_at FROM nip46_tokens")?;
+        let tokens = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        for token in tokens {
+            let (id, member, issued_by, perms, created_at, expires_at, revoked_at) = token?;
+            rows.push(Backfill {
+                id: format!("backfill:token_issued:{}", id),
+                action: "token_issued",
+                time: created_at,
+                actor: (!issued_by.is_empty()).then_some(issued_by),
+                member: member.clone(),
+                connection: None,
+                token: Some(id.clone()),
+                client: None,
+                detail: format!("perms={};expires_at={}", perms, normalise(&expires_at).unwrap_or(expires_at.clone())),
+            });
+            if let Some(revoked_at) = revoked_at {
+                rows.push(Backfill {
+                    id: format!("backfill:token_revoked:{}", id),
+                    action: "token_revoked",
+                    time: revoked_at,
+                    actor: None,
+                    member,
+                    connection: None,
+                    token: Some(id),
+                    client: None,
+                    detail: "reason=unknown".to_string(),
+                });
+            }
+        }
+    }
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, client_pubkey, token_id, for_pubkey, perms, connected_at, revoked_at, revoked_reason, revoked_by FROM nip46_connections",
+        )?;
+        let connections = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+            ))
+        })?;
+        for connection in connections {
+            let (id, client, token, member, perms, connected_at, revoked_at, reason, revoked_by) = connection?;
+            rows.push(Backfill {
+                id: format!("backfill:connection_created:{}", id),
+                action: "connection_created",
+                time: connected_at,
+                actor: None,
+                member: member.clone(),
+                connection: Some(id.clone()),
+                token: Some(token),
+                client: Some(client.clone()),
+                detail: format!("perms={}", perms),
+            });
+            if let Some(revoked_at) = revoked_at {
+                rows.push(Backfill {
+                    id: format!("backfill:connection_revoked:{}", id),
+                    action: "connection_revoked",
+                    time: revoked_at,
+                    actor: revoked_by,
+                    member,
+                    connection: Some(id),
+                    token: None,
+                    client: Some(client),
+                    detail: format!("reason={}", reason.unwrap_or_else(|| "unknown".to_string())),
+                });
+            }
+        }
+    }
+    let mut unreadable = 0;
+    for row in rows {
+        let Some(time) = normalise(&row.time) else {
+            unreadable += 1;
+            continue;
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO audit_events
+                (id, action, timestamp, actor_pubkey, member_pubkey, member_name, connection_id, token_id, client_pubkey, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, (SELECT name FROM team_members WHERE pubkey = ?5), ?6, ?7, ?8, ?9)",
+            params![row.id, row.action, time, row.actor, row.member, row.connection, row.token, row.client, row.detail],
+        )?;
+    }
+    if unreadable > 0 {
+        warn!("{} token or connection records have an unreadable time and were not added to the audit events", unreadable);
+    }
+    Ok(())
+}
+
+/// An RFC 3339 time as `db_time` writes it, or None when it does not parse.
+fn normalise(value: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(value).ok().map(|t| db_time(t.with_timezone(&chrono::Utc)))
+}
+
+/// 9. Signing log timestamps become fixed-width UTC (`audit::db_time`) (#96). They were written
+///    with a varying number of fractional digits, so text order was not always time order (see
+///    migration 5). Paging and export ranges compare them as text, on the index. A value that does
+///    not parse is left as it is and counted in a warning. Running it again changes nothing.
+fn normalise_log_timestamps(tx: &Transaction) -> anyhow::Result<()> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx.prepare("SELECT id, timestamp FROM signing_logs")?;
+        let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        mapped.collect::<Result<_, _>>()?
+    };
+    let mut unreadable = 0;
+    let mut update = tx.prepare("UPDATE signing_logs SET timestamp = ?2 WHERE id = ?1")?;
+    for (id, timestamp) in rows {
+        match normalise(&timestamp) {
+            Some(fixed) if fixed != timestamp => {
+                update.execute(params![id, fixed])?;
+            }
+            Some(_) => {}
+            None => unreadable += 1,
+        }
+    }
+    if unreadable > 0 {
+        warn!("{} signing log entries have an unreadable timestamp and were left as they are", unreadable);
     }
     Ok(())
 }

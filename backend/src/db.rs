@@ -3,9 +3,10 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use std::path::Path;
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::info;
 
+use crate::audit::{self, action, db_time, Audit, Cursor};
 use crate::registry::Role;
 
 #[derive(Clone)]
@@ -130,6 +131,11 @@ impl Database {
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
+    /// The connection, for the modules that keep their queries beside their types (`audit`).
+    pub(crate) fn lock(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+        self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))
+    }
+
     /// Log a signing event. `pubkey` is the requesting client's key; `member_pubkey` and
     /// `connection_id` say which member and connection it signed for (diogel-io/workspace#38).
     pub fn log_signing_event(
@@ -142,7 +148,8 @@ impl Database {
         timestamp: DateTime<Utc>,
     ) -> anyhow::Result<()> {
         let id = Uuid::new_v4().to_string();
-        let timestamp_str = timestamp.to_rfc3339();
+        // Fixed width, so text order is time order (#96).
+        let timestamp_str = db_time(timestamp);
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         conn.execute(
             "INSERT INTO signing_logs (id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp)
@@ -154,26 +161,39 @@ impl Database {
 
     /// Get recent signing logs (for API)
     pub fn get_recent_logs(&self, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
-        self.recent_logs(None, limit)
+        self.recent_logs(None, None, limit)
+    }
+
+    /// One page of every member's signatures, newest first: the newest `limit`, or the `limit`
+    /// before `before` (#96).
+    pub fn logs_page(&self, before: Option<&Cursor>, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
+        self.recent_logs(None, before, limit)
     }
 
     /// The recent signatures made for one member (#77's `GET /api/bunker/logs/mine`), by the
     /// member each was attributed to (diogel-io/workspace#38), not the client that asked. A row
     /// logged before #38 that no connection accounts for has no member, so it is never included.
     pub fn get_recent_logs_for_member(&self, member_pubkey: &str, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
-        self.recent_logs(Some(member_pubkey), limit)
+        self.recent_logs(Some(member_pubkey), None, limit)
     }
 
     /// Every member's recent signatures, or only `member_pubkey`'s.
-    fn recent_logs(&self, member_pubkey: Option<&str>, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
+    /// Every member's recent signatures, or only `member_pubkey`'s, older than `before` if given.
+    /// Ties on the timestamp are broken by id, so paging never skips or repeats a row.
+    fn recent_logs(&self, member_pubkey: Option<&str>, before: Option<&Cursor>, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT l.id, l.event_id, l.pubkey, l.event_kind, l.timestamp, l.member_pubkey, m.name, l.connection_id
              FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
-             WHERE ?2 IS NULL OR l.member_pubkey = ?2
-             ORDER BY l.timestamp DESC LIMIT ?1",
+             WHERE (?2 IS NULL OR l.member_pubkey = ?2)
+               AND (?3 IS NULL OR l.timestamp < ?3 OR (l.timestamp = ?3 AND l.id < ?4))
+             ORDER BY l.timestamp DESC, l.id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64, member_pubkey], |row| {
+        let (before_time, before_id) = match before {
+            Some(cursor) => (Some(cursor.timestamp.as_str()), Some(cursor.id.as_str())),
+            None => (None, None),
+        };
+        let rows = stmt.query_map(params![limit as i64, member_pubkey, before_time, before_id], |row| {
             let id_str: String = row.get(0)?;
             let event_kind_raw: i64 = row.get(3)?;
             let timestamp_str: String = row.get(4)?;
@@ -270,14 +290,26 @@ impl Database {
         pubkey: &str,
         role: Role,
     ) -> anyhow::Result<Uuid> {
+        self.add_team_member_as(name, pubkey, role, None)
+    }
+
+    /// Adds a team member and records who added them (#96), in one transaction.
+    pub fn add_team_member_as(&self, name: &str, pubkey: &str, role: Role, actor: Option<&str>) -> anyhow::Result<Uuid> {
         let id = Uuid::new_v4();
         let id_str = id.to_string();
-        let now = Utc::now().to_rfc3339();
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        conn.execute(
+        let now = Utc::now();
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id_str, name, pubkey, role.as_str(), now],
+            params![id_str, name, pubkey, role.as_str(), now.to_rfc3339()],
         )?;
+        audit::record(
+            &tx,
+            &Audit { actor, member: Some(pubkey), detail: Some(format!("role={}", role.as_str())), ..Audit::new(action::MEMBER_ADDED) },
+            now,
+        )?;
+        tx.commit()?;
         Ok(id)
     }
 
@@ -353,8 +385,15 @@ impl Database {
     /// NIP-46 connections are revoked (`role_changed`) and their unused tokens with them. The only
     /// administrator is never demoted, for the reason `remove_team_member` gives.
     pub fn change_member_role(&self, pubkey: &str, role: Role) -> anyhow::Result<RoleChangeOutcome> {
+        self.change_member_role_as(pubkey, role, None)
+    }
+
+    /// `change_member_role`, recording who made the change (#96).
+    pub fn change_member_role_as(&self, pubkey: &str, role: Role, actor: Option<&str>) -> anyhow::Result<RoleChangeOutcome> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
+        let from: Option<String> =
+            tx.query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![pubkey], |row| row.get(0)).optional()?;
         let changed = tx.execute(
             "UPDATE team_members SET role = ?2 WHERE pubkey = ?1 AND NOT (
                 ?2 != 'administrator' AND role = 'administrator'
@@ -367,17 +406,22 @@ impl Database {
                 tx.query_row("SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
             return Ok(if exists { RoleChangeOutcome::LastAdministrator } else { RoleChangeOutcome::NotFound });
         }
+        let now = Utc::now();
+        // Recorded only when the role is different: setting the same role changes nothing.
+        if from.as_deref() != Some(role.as_str()) {
+            audit::record(
+                &tx,
+                &Audit {
+                    actor,
+                    member: Some(pubkey),
+                    detail: Some(format!("from={};to={}", from.as_deref().unwrap_or(""), role.as_str())),
+                    ..Audit::new(action::MEMBER_ROLE_CHANGED)
+                },
+                now,
+            )?;
+        }
         if !role.can_sign() {
-            let now = Utc::now().to_rfc3339();
-            tx.execute(
-                "UPDATE nip46_tokens SET revoked_at = ?2 WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL",
-                params![pubkey, now],
-            )?;
-            let revoked = tx.execute(
-                "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'role_changed'
-                 WHERE for_pubkey = ?1 AND revoked_at IS NULL",
-                params![pubkey, now],
-            )?;
+            let (revoked, _) = revoke_member_access(&tx, pubkey, "role_changed", now)?;
             if revoked > 0 {
                 info!("Revoked {} NIP-46 connections of {}: a {} cannot sign (#77)", revoked, pubkey, role);
             }
@@ -389,12 +433,26 @@ impl Database {
     /// Remove a team member, unless they are the only administrator: removing them would leave
     /// nobody able to administer the bunker (#25). One statement, so the check cannot race.
     pub fn remove_team_member(&self, id: Uuid) -> anyhow::Result<RemoveOutcome> {
+        self.remove_team_member_as(id, None)
+    }
+
+    /// `remove_team_member`, recording who removed them (#96).
+    pub fn remove_team_member_as(&self, id: Uuid, actor: Option<&str>) -> anyhow::Result<RemoveOutcome> {
         let id_str = id.to_string();
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
-        let pubkey: Option<String> = tx
-            .query_row("SELECT pubkey FROM team_members WHERE id = ?1", params![id_str], |row| row.get(0))
+        let member: Option<(String, String)> = tx
+            .query_row("SELECT pubkey, role FROM team_members WHERE id = ?1", params![id_str], |row| Ok((row.get(0)?, row.get(1)?)))
             .optional()?;
+        let now = Utc::now();
+        // Recorded first, while the member's name can still be copied; rolled back if refused.
+        if let Some((pubkey, role)) = &member {
+            audit::record(
+                &tx,
+                &Audit { actor, member: Some(pubkey), detail: Some(format!("role={}", role)), ..Audit::new(action::MEMBER_REMOVED) },
+                now,
+            )?;
+        }
         let removed = tx.execute(
             "DELETE FROM team_members WHERE id = ?1 AND NOT (
                 role = 'administrator'
@@ -404,17 +462,8 @@ impl Database {
         )?;
         if removed > 0 {
             // Their NIP-46 tokens and connections end with them (#53), in the same transaction.
-            if let Some(pubkey) = pubkey {
-                let now = Utc::now().to_rfc3339();
-                tx.execute(
-                    "UPDATE nip46_tokens SET revoked_at = ?2 WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL",
-                    params![pubkey, now],
-                )?;
-                tx.execute(
-                    "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'member_removed'
-                     WHERE for_pubkey = ?1 AND revoked_at IS NULL",
-                    params![pubkey, now],
-                )?;
+            if let Some((pubkey, _)) = &member {
+                revoke_member_access(&tx, pubkey, "member_removed", now)?;
             }
             tx.commit()?;
             return Ok(RemoveOutcome::Removed);
@@ -427,6 +476,50 @@ impl Database {
         )?;
         Ok(if exists { RemoveOutcome::LastAdministrator } else { RemoveOutcome::NotFound })
     }
+}
+
+/// Revokes a member's active connections (with `reason`) and unused tokens, recording each, inside
+/// the caller's transaction. Returns how many connections and tokens it revoked.
+fn revoke_member_access(conn: &Connection, pubkey: &str, reason: &str, now: DateTime<Utc>) -> rusqlite::Result<(usize, usize)> {
+    let connections: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, client_pubkey FROM nip46_connections WHERE for_pubkey = ?1 AND revoked_at IS NULL")?;
+        let rows = stmt.query_map(params![pubkey], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let tokens: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM nip46_tokens WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL")?;
+        let rows = stmt.query_map(params![pubkey], |row| row.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    conn.execute(
+        "UPDATE nip46_tokens SET revoked_at = ?2 WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL",
+        params![pubkey, now.to_rfc3339()],
+    )?;
+    conn.execute(
+        "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = ?3 WHERE for_pubkey = ?1 AND revoked_at IS NULL",
+        params![pubkey, now.to_rfc3339(), reason],
+    )?;
+    for (id, client) in &connections {
+        audit::record(
+            conn,
+            &Audit {
+                member: Some(pubkey),
+                connection_id: Some(id),
+                client_pubkey: Some(client),
+                detail: Some(format!("reason={}", reason)),
+                ..Audit::new(action::CONNECTION_REVOKED)
+            },
+            now,
+        )?;
+    }
+    for id in &tokens {
+        audit::record(
+            conn,
+            &Audit { member: Some(pubkey), token_id: Some(id), detail: Some(format!("reason={}", reason)), ..Audit::new(action::TOKEN_REVOKED) },
+            now,
+        )?;
+    }
+    Ok((connections.len(), tokens.len()))
 }
 
 fn team_member_from_row(
@@ -596,12 +689,25 @@ impl Database {
             used_at: None,
             revoked_at: None,
         };
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        conn.execute(
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339()],
         )?;
+        audit::record(
+            &tx,
+            &Audit {
+                actor: audit::actor(issued_by),
+                member: Some(for_pubkey),
+                token_id: Some(&token.id),
+                detail: Some(format!("perms={};expires_at={}", join_perms(perms), db_time(expires_at))),
+                ..Audit::new(action::TOKEN_ISSUED)
+            },
+            now,
+        )?;
+        tx.commit()?;
         Ok(token)
     }
 
@@ -615,11 +721,26 @@ impl Database {
 
     /// Revokes an unused, unrevoked token. False when there is no such token.
     pub fn revoke_nip46_token(&self, id: &str, now: DateTime<Utc>) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let changed = conn.execute(
+        self.revoke_nip46_token_as(id, None, now)
+    }
+
+    /// `revoke_nip46_token`, recording who revoked it (#96).
+    pub fn revoke_nip46_token_as(&self, id: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
             "UPDATE nip46_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL AND used_at IS NULL",
             params![id, now.to_rfc3339()],
         )?;
+        if changed > 0 {
+            let member = Database::token_member(&tx, id)?;
+            audit::record(
+                &tx,
+                &Audit { actor, member: member.as_deref(), token_id: Some(id), detail: Some("reason=revoked".to_string()), ..Audit::new(action::TOKEN_REVOKED) },
+                now,
+            )?;
+        }
+        tx.commit()?;
         Ok(changed > 0)
     }
 
@@ -667,11 +788,29 @@ impl Database {
         }
 
         tx.execute("UPDATE nip46_tokens SET used_at = ?2 WHERE id = ?1", params![token.id, now.to_rfc3339()])?;
+        let replaced: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT id, for_pubkey FROM nip46_connections WHERE client_pubkey = ?1 AND revoked_at IS NULL")?;
+            let rows = stmt.query_map(params![client_pubkey], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
         tx.execute(
             "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = 'replaced'
              WHERE client_pubkey = ?1 AND revoked_at IS NULL",
             params![client_pubkey, now.to_rfc3339()],
         )?;
+        for (id, member) in &replaced {
+            audit::record(
+                &tx,
+                &Audit {
+                    member: Some(member),
+                    connection_id: Some(id),
+                    client_pubkey: Some(client_pubkey),
+                    detail: Some("reason=replaced".to_string()),
+                    ..Audit::new(action::CONNECTION_REVOKED)
+                },
+                now,
+            )?;
+        }
         let connection = Nip46Connection {
             id: Uuid::new_v4().to_string(),
             client_pubkey: client_pubkey.to_string(),
@@ -693,6 +832,18 @@ impl Database {
                 connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
                 connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339()
             ],
+        )?;
+        audit::record(
+            &tx,
+            &Audit {
+                member: Some(&connection.for_pubkey),
+                connection_id: Some(&connection.id),
+                token_id: Some(&connection.token_id),
+                client_pubkey: Some(client_pubkey),
+                detail: Some(format!("perms={}", join_perms(&connection.perms))),
+                ..Audit::new(action::CONNECTION_CREATED)
+            },
+            now,
         )?;
         tx.commit()?;
         Ok(Ok(connection))
@@ -734,13 +885,35 @@ impl Database {
     /// `only_for` set, only a connection made for that key is touched. False when there is no such
     /// active connection, so a caller cannot tell another member's connection from none.
     pub fn revoke_nip46_connection_as(&self, id: &str, reason: &str, revoked_by: Option<&str>, only_for: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let changed = conn.execute(
-            "UPDATE nip46_connections SET revoked_at = ?3, revoked_reason = ?2, revoked_by = ?4
-             WHERE id = ?1 AND revoked_at IS NULL AND (?5 IS NULL OR for_pubkey = ?5)",
-            params![id, reason, now.to_rfc3339(), revoked_by, only_for],
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let target: Option<(String, String)> = tx
+            .query_row(
+                "SELECT for_pubkey, client_pubkey FROM nip46_connections
+                 WHERE id = ?1 AND revoked_at IS NULL AND (?2 IS NULL OR for_pubkey = ?2)",
+                params![id, only_for],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((member, client)) = target else { return Ok(false) };
+        tx.execute(
+            "UPDATE nip46_connections SET revoked_at = ?3, revoked_reason = ?2, revoked_by = ?4 WHERE id = ?1",
+            params![id, reason, now.to_rfc3339(), revoked_by],
         )?;
-        Ok(changed > 0)
+        audit::record(
+            &tx,
+            &Audit {
+                actor: revoked_by,
+                member: Some(&member),
+                connection_id: Some(id),
+                client_pubkey: Some(&client),
+                detail: Some(format!("reason={}", reason)),
+                ..Audit::new(action::CONNECTION_REVOKED)
+            },
+            now,
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// After a restore (#95): revokes every active NIP-46 connection (`restored`) and every token
@@ -750,13 +923,24 @@ impl Database {
     pub fn revoke_all_for_restore(&self, now: DateTime<Utc>) -> anyhow::Result<(usize, usize)> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
-        let connections = tx.execute(
-            "UPDATE nip46_connections SET revoked_at = ?1, revoked_reason = ?2, revoked_by = NULL WHERE revoked_at IS NULL",
-            params![now.to_rfc3339(), crate::backup::RESTORED_REASON],
-        )?;
-        let tokens = tx.execute(
-            "UPDATE nip46_tokens SET revoked_at = ?1 WHERE revoked_at IS NULL AND used_at IS NULL",
-            params![now.to_rfc3339()],
+        let members: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT for_pubkey FROM nip46_connections WHERE revoked_at IS NULL
+                 UNION SELECT for_pubkey FROM nip46_tokens WHERE revoked_at IS NULL AND used_at IS NULL",
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let (mut connections, mut tokens) = (0, 0);
+        for member in &members {
+            let (c, t) = revoke_member_access(&tx, member, crate::backup::RESTORED_REASON, now)?;
+            connections += c;
+            tokens += t;
+        }
+        audit::record(
+            &tx,
+            &Audit { detail: Some(format!("connections={};tokens={}", connections, tokens)), ..Audit::new(action::RESTORED) },
+            now,
         )?;
         tx.commit()?;
         Ok((connections, tokens))
@@ -839,6 +1023,11 @@ impl Database {
                 params![url, position as i64, added_by, added_at],
             )?;
         }
+        audit::record(
+            &tx,
+            &Audit { actor: audit::actor(by), detail: Some(format!("relays={}", urls.join(" "))), ..Audit::new(action::RELAYS_CHANGED) },
+            now,
+        )?;
         tx.commit()?;
         Ok(())
     }

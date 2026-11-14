@@ -27,6 +27,9 @@ const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/api/bunker/status", roles: &[A, S, V], service: true },
     Route { method: "GET", path: "/api/bunker/logs", roles: &[A], service: false },
     Route { method: "GET", path: "/api/bunker/logs/mine", roles: &[A, S], service: false },
+    Route { method: "GET", path: "/api/bunker/logs/export?format=csv&from=2026-06-01&to=2026-06-01", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/logs/retention", roles: &[A], service: false },
+    Route { method: "PUT", path: "/api/bunker/logs/retention", roles: &[A], service: false },
     Route { method: "GET", path: "/api/bunker/metrics", roles: &[A], service: false },
     Route { method: "GET", path: "/api/bunker/config", roles: &[A], service: false },
     Route { method: "GET", path: "/api/bunker/relays", roles: &[A], service: false },
@@ -57,6 +60,7 @@ fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> reqwest:
     match (route.method, route.path) {
         ("POST", "/api/bunker/team") => request.json(&member_body()),
         ("PUT", "/api/bunker/relays") => request.json(&serde_json::json!({ "relays": [] })),
+        ("PUT", "/api/bunker/logs/retention") => request.json(&serde_json::json!({ "max_age_days": null, "max_rows": null })),
         ("POST", "/api/bunker/connections/tokens") => {
             request.json(&serde_json::json!({ "label": "x", "kinds": [1] }))
         }

@@ -251,8 +251,13 @@ pub async fn list_tokens(State(state): State<AppState>) -> Result<Json<Vec<Token
 
 /// Revoke an unused token
 /// DELETE /api/bunker/connections/tokens/:id
-pub async fn revoke_token(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    if state.db.revoke_nip46_token(&id, Utc::now()).map_err(database_error)? {
+pub async fn revoke_token(
+    State(state): State<AppState>,
+    who: Option<Extension<Caller>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (by, _) = caller(who);
+    if state.db.revoke_nip46_token_as(&id, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
         info!("Revoked NIP-46 connection token {}", id);
         Ok(Json(json!({ "success": true })))
     } else {

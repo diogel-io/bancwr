@@ -4,6 +4,7 @@
 import { resolveBackendUrl, BackendTargetError } from '../../utils/backend'
 import { proxyHeaders } from '../../utils/auth/proxy-signature'
 import { sessionPubkey } from '../../utils/auth/session'
+import { downloadHeaders, isDownload } from '../../utils/download'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -42,6 +43,21 @@ export default defineEventHandler(async (event) => {
   // Forward the request
   const method = getMethod(event)
   const body = method !== 'GET' ? await readBody(event) : undefined
+
+  // A download (#96) is streamed through rather than parsed, keeping only its content type and
+  // file name. A refusal is JSON, forwarded as any other error is.
+  if (method === 'GET' && isDownload(pathname)) {
+    const response = await fetch(url, {
+      headers: proxyHeaders(config.proxySecret, pubkey, method, target),
+      redirect: 'error'
+    })
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => undefined)
+      throw createError({ statusCode: response.status || 500, statusMessage: response.statusText || 'Internal Server Error', data })
+    }
+    setResponseHeaders(event, downloadHeaders(response.headers))
+    return sendStream(event, response.body)
+  }
 
   try {
     return await $fetch(url, {

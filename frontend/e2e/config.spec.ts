@@ -8,16 +8,42 @@ test('shows the bunker public key, and that the signing key is encrypted at rest
   await expect(page.getByTestId('key-storage')).toHaveText('Encrypted at rest')
 })
 
-test('is read-only (#42)', async ({ page }) => {
+test('the key is read-only (#42)', async ({ page }) => {
   await page.goto('/config')
   // UDashboardPanel id="config" renders as #dashboard-panel-config.
   const panel = page.locator('#dashboard-panel-config')
   await expect(panel).toBeVisible()
   await expect(page.getByText('Current Pubkey')).toBeVisible()
 
-  await expect(panel.getByRole('textbox')).toHaveCount(0)
-  await expect(panel.getByRole('combobox')).toHaveCount(0)
-  await expect(panel.locator('form, button[type="submit"]')).toHaveCount(0)
+  // The key's card takes no input. The log retention card below it is a form (#96).
+  const keyCard = page.getByTestId('key-card')
+  await expect(keyCard.getByRole('textbox')).toHaveCount(0)
+  await expect(keyCard.getByRole('combobox')).toHaveCount(0)
+  await expect(keyCard.locator('form, button[type="submit"]')).toHaveCount(0)
+})
+
+test('shows and saves the log retention policy (#96)', async ({ page }) => {
+  await page.goto('/config')
+  const card = page.getByTestId('log-retention')
+  await expect(card.getByTestId('log-retention-current')).toHaveText('Kept indefinitely')
+
+  // Under the floor: refused before anything is sent.
+  await card.getByTestId('log-retention-days').fill('7')
+  await expect(card.getByText('At least 30 days, or leave it empty.')).toBeVisible()
+  await expect(card.getByTestId('log-retention-save')).toBeDisabled()
+
+  // Ten years prunes nothing the other specs made.
+  await card.getByTestId('log-retention-days').fill('3650')
+  await card.getByTestId('log-retention-save').click()
+  await expect(card.getByTestId('log-retention-saved')).toBeVisible()
+  await expect(card.getByTestId('log-retention-current')).toHaveText('Kept for 3,650 days')
+  await page.reload()
+  await expect(page.getByTestId('log-retention-current')).toHaveText('Kept for 3,650 days')
+
+  // Back to the default, for the specs after this one.
+  await page.getByTestId('log-retention-days').fill('')
+  await page.getByTestId('log-retention-save').click()
+  await expect(page.getByTestId('log-retention-current')).toHaveText('Kept indefinitely')
 })
 
 test('never exposes a secret key', async ({ page }) => {

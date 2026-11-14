@@ -369,3 +369,96 @@ fn a_new_database_records_migration_7_so_a_rewind_keeps_its_signers() {
     let db = Database::new(&path).unwrap();
     assert_eq!(role_of(&db, &signer), "signer");
 }
+
+// Migrations 8 and 9 (#96): audit events, backfilled from tokens and connections, and signing log
+// timestamps made fixed-width.
+
+/// A database as #95 left it: at version 7, without `audit_events`, with a token issued by an
+/// administrator and revoked, a used token whose connection was revoked by its member, and two
+/// signatures in the old timestamp format.
+fn database_before_96() -> NamedTempFile {
+    let file = NamedTempFile::new().unwrap();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch(
+        "DROP TABLE audit_events; PRAGMA user_version = 7;
+         INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES
+           ('00000000-0000-4000-8000-000000000001', 'Ann', 'aa00000000000000000000000000000000000000000000000000000000000001', 'administrator', '2026-01-01T00:00:00+00:00');
+         INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at) VALUES
+           ('t-revoked', 'h1', 'aa00000000000000000000000000000000000000000000000000000000000001',
+            'aa00000000000000000000000000000000000000000000000000000000000001', 'x', 'sign_event:1',
+            '2026-01-02T00:00:00.5+00:00', '2026-01-03T00:00:00+00:00', NULL, '2026-01-02T01:00:00+00:00'),
+           ('t-used', 'h2', 'aa00000000000000000000000000000000000000000000000000000000000001', '', 'y', 'sign_event:7',
+            '2026-01-04T00:00:00+00:00', '2026-01-05T00:00:00+00:00', '2026-01-04T00:10:00+00:00', NULL);
+         INSERT INTO nip46_connections (id, client_pubkey, token_id, for_pubkey, perms, connected_at, revoked_at, revoked_reason, revoked_by) VALUES
+           ('c-1', 'cc00000000000000000000000000000000000000000000000000000000000003', 't-used',
+            'aa00000000000000000000000000000000000000000000000000000000000001', 'sign_event:7',
+            '2026-01-04T00:10:00+00:00', '2026-01-04T02:00:00.123+00:00', 'revoked',
+            'aa00000000000000000000000000000000000000000000000000000000000001');
+         INSERT INTO signing_logs (id, event_id, pubkey, event_kind, timestamp) VALUES
+           ('00000000-0000-4000-8000-0000000000a1', 'e1', 'cc', 1, '2026-01-04T00:20:00+00:00'),
+           ('00000000-0000-4000-8000-0000000000a2', 'e2', 'cc', 1, '2026-01-04T00:20:00.25+01:00'),
+           ('00000000-0000-4000-8000-0000000000a3', 'e3', 'cc', 1, 'not a time');",
+    )
+    .unwrap();
+    file
+}
+
+#[test]
+fn migrating_to_96_backfills_audit_events_from_tokens_and_connections() {
+    let file = database_before_96();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+
+    let events = db.audit_events().unwrap();
+    let summary: Vec<(String, String, Option<String>, Option<String>)> =
+        events.iter().map(|e| (e.time.clone(), e.action.clone(), e.actor_pubkey.clone(), e.detail.clone())).collect();
+    let admin = Some("aa00000000000000000000000000000000000000000000000000000000000001".to_string());
+    assert_eq!(
+        summary,
+        vec![
+            ("2026-01-02T00:00:00.500000Z".into(), "token_issued".into(), admin.clone(), Some("perms=sign_event:1;expires_at=2026-01-03T00:00:00.000000Z".into())),
+            ("2026-01-02T01:00:00.000000Z".into(), "token_revoked".into(), None, Some("reason=unknown".into())),
+            ("2026-01-04T00:00:00.000000Z".into(), "token_issued".into(), None, Some("perms=sign_event:7;expires_at=2026-01-05T00:00:00.000000Z".into())),
+            ("2026-01-04T00:10:00.000000Z".into(), "connection_created".into(), None, Some("perms=sign_event:7".into())),
+            ("2026-01-04T02:00:00.123000Z".into(), "connection_revoked".into(), admin.clone(), Some("reason=revoked".into())),
+        ]
+    );
+    assert!(events.iter().all(|e| e.member_name.as_deref() == Some("Ann")));
+    let created = &events[3];
+    assert_eq!((created.connection_id.as_deref(), created.token_id.as_deref()), (Some("c-1"), Some("t-used")));
+}
+
+#[test]
+fn migrating_to_96_makes_signing_log_timestamps_fixed_width_and_keeps_an_unreadable_one() {
+    let file = database_before_96();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    let stamps: Vec<(String, String)> = conn
+        .prepare("SELECT event_id, timestamp FROM signing_logs ORDER BY event_id").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        .collect::<Result<_, _>>().unwrap();
+    assert_eq!(
+        stamps,
+        vec![
+            ("e1".to_string(), "2026-01-04T00:20:00.000000Z".to_string()),
+            // +01:00 becomes UTC, so it now sorts before e1, as it happened.
+            ("e2".to_string(), "2026-01-03T23:20:00.250000Z".to_string()),
+            ("e3".to_string(), "not a time".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn rerunning_the_96_migrations_duplicates_nothing() {
+    let file = database_before_96();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    let count = db.audit_event_count().unwrap();
+    db.add_team_member("Later", "bb00000000000000000000000000000000000000000000000000000000000002", Role::Signer).unwrap();
+    drop(db);
+    Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 7;").unwrap();
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(db.audit_event_count().unwrap(), count + 1, "the backfill once, and the later event kept");
+}

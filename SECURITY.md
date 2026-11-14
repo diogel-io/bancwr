@@ -85,7 +85,8 @@ A change to any of these needs the security review:
 
 - `backend/src/proxy_auth.rs` and `backend/src/server.rs`, which decide who may call each route
 - `backend/src/registry.rs` and `backend/src/db.rs`, which hold members, roles, tokens and the audit
-  log, and `backend/src/migrations.rs`
+  log, `backend/src/audit.rs` and `backend/src/logs_api.rs`, which record, export and prune it, and
+  `backend/src/migrations.rs`
 - `backend/src/key_store.rs`, `backend/src/signer.rs`, `backend/src/config.rs` and
   `backend/src/main.rs`, which encrypt, decrypt and load the key and the secrets, and seed the first
   administrator
@@ -94,8 +95,8 @@ A change to any of these needs the security review:
   `backend/src/relays_api.rs` and `backend/src/bunker_relays.rs`, the NIP-46 path and its relays
 - `frontend/server/api/auth/*` and `frontend/server/utils/auth/*`, sign-in, sessions and the
   proxy identity
-- `frontend/server/api/bunker/[...].ts`, `frontend/server/utils/bunker-service.ts` and
-  `frontend/server/utils/backend.ts`, the proxy to the bunker
+- `frontend/server/api/bunker/[...].ts`, `frontend/server/utils/bunker-service.ts`,
+  `frontend/server/utils/backend.ts` and `frontend/server/utils/download.ts`, the proxy to the bunker
 - `compose.yaml`, `.env.example`, `backend/Dockerfile` and `frontend/Dockerfile`
 - `backend/Cargo.toml`, `backend/Cargo.lock`, `frontend/package.json`, `frontend/pnpm-lock.yaml`,
   `.trivyignore` and `.github/workflows/*`

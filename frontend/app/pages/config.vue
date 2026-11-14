@@ -6,7 +6,7 @@ import { isForbidden } from '~/utils/access'
 // The key is read-only (#42). It is encrypted at rest and imported once with `bunker import-key`
 // (#94); the API does not accept a key, and never returns one or says where it is stored. Below
 // it, the bunker's own relays (#78), which an administrator can change unless NIP46_RELAYS sets
-// them.
+// them, and the log retention policy (#96).
 const { data: config, error } = await useFetch<ConfigResponse>('/api/bunker/config')
 </script>
 
@@ -22,7 +22,10 @@ const { data: config, error } = await useFetch<ConfigResponse>('/api/bunker/conf
         v-else
         class="space-y-6"
       >
-        <UCard class="max-w-2xl">
+        <UCard
+          class="max-w-2xl"
+          data-testid="key-card"
+        >
           <dl class="space-y-6">
             <div>
               <dt class="text-sm font-medium">
@@ -60,6 +63,9 @@ const { data: config, error } = await useFetch<ConfigResponse>('/api/bunker/conf
 
         <!-- The bunker's own NIP-46 relays (#78): editable unless NIP46_RELAYS sets them. -->
         <BunkerRelaysSection />
+
+        <!-- How long the signing log and audit events are kept (#96). -->
+        <LogRetention />
       </div>
     </template>
   </UDashboardPanel>
