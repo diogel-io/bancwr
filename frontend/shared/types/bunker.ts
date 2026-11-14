@@ -139,10 +139,12 @@ export interface Nip46Connection {
   connected_at: string
   last_used_at: string | null
   revoked_at: string | null
-  /** `logout`, `revoked`, `replaced`, `member_removed`, `role_changed` (#77) or `restored` (#95). */
+  /** `logout`, `revoked`, `replaced`, `member_removed`, `role_changed` (#77), `restored` (#95) or `expired` (#98). */
   revoked_reason: string | null
   /** Who revoked it (hex), when someone did (#31). */
   revoked_by: string | null
+  /** When it stops working (#98); null: until revoked. */
+  expires_at: string | null
 }
 
 /** A connection token (#53), from GET /api/bunker/connections/tokens: never the secret. */
@@ -155,6 +157,8 @@ export interface Nip46Token {
   methods: EncryptionMethod[]
   created_at: string
   expires_at: string
+  /** How long its connection lasts once the app connects (#98); null: until revoked. */
+  connection_lifetime_hours: number | null
   used_at: string | null
   revoked_at: string | null
 }
@@ -166,6 +170,8 @@ export interface IssueTokenRequest {
   kinds: number[]
   methods: EncryptionMethod[]
   expires_in_hours?: number
+  /** How long the connection lasts once the app connects (#98), 1 to 8760; omitted: until revoked. */
+  connection_lifetime_hours?: number
 }
 
 /** The token just issued: `uri` carries its secret and is shown once. */
@@ -176,6 +182,7 @@ export interface IssueTokenResponse {
   kinds: number[]
   methods: EncryptionMethod[]
   expires_at: string
+  connection_lifetime_hours: number | null
 }
 
 /** Where the bunker's own relays come from (#78): `environment` is NIP46_RELAYS, read-only here. */

@@ -16,7 +16,7 @@ const other = 'b'.repeat(64)
 const connection = (over: Partial<Nip46Connection> = {}): Nip46Connection => ({
   id: 'c1', client_pubkey: 'c'.repeat(64), for_pubkey: me, client_name: 'Damus', client_url: 'https://damus.io', client_image: null,
   metadata_verified: false, kinds: [1, 7], methods: [], connected_at: new Date(Date.now() - 3_600_000).toISOString(),
-  last_used_at: new Date(Date.now() - 120_000).toISOString(), revoked_at: null, revoked_reason: null, revoked_by: null, ...over
+  last_used_at: new Date(Date.now() - 120_000).toISOString(), revoked_at: null, revoked_reason: null, revoked_by: null, expires_at: null, ...over
 })
 
 const state = vi.hoisted(() => ({
@@ -46,7 +46,7 @@ registerEndpoint('/api/bunker/connections/tokens', {
       return { error: 'nip46_disabled', message: 'off' }
     }
     state.issued.push(await readBody(event))
-    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], expires_at: new Date(Date.now() + 86_400_000).toISOString() }
+    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], connection_lifetime_hours: null, expires_at: new Date(Date.now() + 86_400_000).toISOString() }
   }
 })
 registerEndpoint('/api/bunker/connections/c1', {
@@ -147,7 +147,7 @@ describe('Connections page', () => {
 
   it('shows an administrator whom each app is for, and unused tokens', async () => {
     state.connections = [connection({ for_pubkey: other })]
-    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bob\'s laptop', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null } satisfies Nip46Token]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bob\'s laptop', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null } satisfies Nip46Token]
     const component = await mount('administrator')
     await flushPromises()
     expect(component.find('[data-connection="c1"]').text()).toContain('for Bob')
@@ -210,7 +210,7 @@ describe('Connections page', () => {
 
   it('lists the methods a token and a connection allow', async () => {
     state.connections = [connection({ methods: ['nip44_encrypt', 'nip44_decrypt'] })]
-    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Reader', kinds: [], methods: ['nip44_decrypt'], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null } satisfies Nip46Token]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Reader', kinds: [], methods: ['nip44_decrypt'], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null } satisfies Nip46Token]
     const component = await mount('administrator')
     await flushPromises()
     expect(component.find('[data-testid="connection-methods"]').text()).toContain('Encrypt messages (NIP-44)')
@@ -218,6 +218,42 @@ describe('Connections page', () => {
     const token = component.find('[data-token="t1"]').text()
     expect(token).toContain('may also: Read encrypted messages (NIP-44)')
     expect(token).not.toContain('may sign')
+  })
+
+  it('issues a token whose connection lasts 30 days, and lists it with its end (#98)', async () => {
+    const component = await mount('administrator')
+    const form = component.find('[data-testid="issue-token"]')
+    await form.find('input[maxlength="100"]').setValue('Contractor')
+    await form.find('#issue-token-lifetime').trigger('click')
+    await flushPromises()
+    const option = [...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === '30 days') as HTMLElement
+    // reka-ui selects an option on pointerup.
+    option.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await vi.waitFor(() => expect(form.find('#issue-token-lifetime').text()).toContain('30 days'))
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(1))
+    expect(state.issued[0]).toMatchObject({ label: 'Contractor', connection_lifetime_hours: 720 })
+  })
+
+  it('shows when each active connection ends, and why an expired one ended', async () => {
+    state.connections = [
+      connection({ id: 'c1', expires_at: new Date(Date.now() + 6 * 86_400_000).toISOString() }),
+      connection({ id: 'c2', client_pubkey: 'd'.repeat(64) }),
+      connection({ id: 'c3', client_pubkey: 'e'.repeat(64), expires_at: new Date(Date.now() - 3_600_000).toISOString(), revoked_at: new Date(Date.now() - 3_600_000).toISOString(), revoked_reason: 'expired' })
+    ]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bot', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: 168 } satisfies Nip46Token]
+    const component = await mount('administrator')
+    await flushPromises()
+    expect(component.find('[data-connection="c1"] [data-testid="connection-end"]').text()).toBe('ends in 6 days')
+    expect(component.find('[data-connection="c2"] [data-testid="connection-end"]').text()).toBe('no time limit')
+    expect(component.find('[data-token="t1"]').text()).toContain('connection lasts 7 days')
+
+    expect(component.find('[data-connection="c3"]').exists()).toBe(false)
+    await component.find('[role="switch"]').trigger('click')
+    await flushPromises()
+    const ended = component.find('[data-connection="c3"]')
+    expect(ended.text()).toContain('Its time limit ran out')
+    expect(ended.find('[data-testid="connection-end"]').exists()).toBe(false)
   })
 
   it('offers tokens only for admins and signers, never a viewer (#77)', async () => {

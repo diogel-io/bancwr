@@ -59,6 +59,28 @@ export function parseKinds(input: string): { kinds: number[] } | { error: string
   return kinds.length ? { kinds: kinds.sort((a, b) => a - b) } : { error: 'Choose at least one kind.' }
 }
 
+/** How long a connection may last once the app connects (#98). 0 is until revoked. */
+export const LIFETIMES: { label: string, value: number }[] = [
+  { label: 'Until revoked', value: 0 },
+  { label: '1 day', value: 24 },
+  { label: '7 days', value: 168 },
+  { label: '30 days', value: 720 },
+  { label: '90 days', value: 2160 }
+]
+
+/** "1 day", "30 days", "36 hours": a connection lifetime in hours, in whole days when it is. */
+export function lifetimeLabel(hours: number): string {
+  if (hours % 24 === 0) return `${hours / 24} day${hours === 24 ? '' : 's'}`
+  return `${hours} hour${hours === 1 ? '' : 's'}`
+}
+
+/** When an active connection stops working (#98): "ends in 6 days", or that it has no limit. */
+export function connectionEnd(expiresAt: string | null, now = Date.now()): string {
+  if (!expiresAt) return 'no time limit'
+  const ended = new Date(expiresAt).getTime() <= now
+  return `${ended ? 'time limit reached' : 'ends'} ${relativeTime(expiresAt, now)}`
+}
+
 /** "3 minutes ago", "2 days ago", from an ISO time, relative to `now`. */
 export function relativeTime(iso: string, now = Date.now()): string {
   const seconds = Math.round((now - new Date(iso).getTime()) / 1000)
@@ -76,7 +98,8 @@ const REASONS: Record<string, string> = {
   replaced: 'Replaced by a newer connection from the same app',
   member_removed: 'Its member was removed from the vault',
   role_changed: 'Its member became a viewer, who cannot sign',
-  restored: 'The bunker was restored from a backup'
+  restored: 'The bunker was restored from a backup',
+  expired: 'Its time limit ran out'
 }
 
 export function revokedReason(reason: string | null): string {

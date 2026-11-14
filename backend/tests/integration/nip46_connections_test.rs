@@ -2,7 +2,7 @@
 // standard NIP-46 client (rust-nostr's nostr-connect) connects with it through a relay, learns the
 // bunker's key and signs a granted kind; a kind outside the grant is refused; the connection is
 // listed for its member and survives a restart. Plus who may issue, list and revoke, and the
-// encryption methods (#97) over the same client.
+// encryption methods (#97) over the same client, and connection lifetimes (#98).
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -185,6 +185,8 @@ async fn issuing_is_validated_and_refused_with_nip46_off() {
         (json!({ "label": "x", "kinds": [], "methods": [] }), "invalid_kinds"),
         (json!({ "label": "x", "kinds": [1], "methods": ["nip44_sign"] }), "invalid_methods"),
         (json!({ "label": "x", "methods": ["sign_event:1"] }), "invalid_methods"),
+        (json!({ "label": "x", "kinds": [1], "connection_lifetime_hours": 0 }), "invalid_lifetime"),
+        (json!({ "label": "x", "kinds": [1], "connection_lifetime_hours": 8761 }), "invalid_lifetime"),
         (json!({ "label": "x", "kinds": [1], "expires_in_hours": 0 }), "invalid_expiry"),
         (json!({ "label": "x", "kinds": [1], "expires_in_hours": 169 }), "invalid_expiry"),
         (json!({ "label": "x", "kinds": [1], "for_pubkey": "nope" }), "invalid_pubkey"),
@@ -301,6 +303,79 @@ async fn a_nip44_client_is_answered_in_nip44_with_kind_24133() {
     assert_eq!(connected["result"], "ack", "{}", connected);
     let key = nip44_request(&client, &keys, bunker, "get_public_key", vec![]).await;
     assert_eq!(key["result"], bunker.to_hex());
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_on_a_connection_with_a_lifetime_signs_and_is_shown_its_end() {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_bunker_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+
+    // Issued for a week; the token itself can still be used for only 24 hours.
+    let res = issue(&app, &admin, json!({ "label": "Contractor", "kinds": [1], "connection_lifetime_hours": 168 })).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let token: IssueTokenResponse = res.json().await.unwrap();
+    assert_eq!(token.connection_lifetime_hours, Some(168));
+    let tokens: Vec<TokenResponse> = app.signed(Method::GET, "/api/bunker/connections/tokens", &admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(tokens[0].connection_lifetime_hours, Some(168));
+
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(10), None).unwrap();
+    let bunker = client.get_public_key().await.unwrap();
+    assert!(client.sign_event(EventBuilder::text_note("within its time").build(bunker)).await.is_ok());
+
+    // The week runs from when it connected.
+    let listed = connections(&app, &admin).await;
+    let connected = chrono::DateTime::parse_from_rfc3339(&listed[0].connected_at).unwrap();
+    let ends = chrono::DateTime::parse_from_rfc3339(listed[0].expires_at.as_deref().expect("an end")).unwrap();
+    // Stored to the microsecond, so within a second of 168 hours.
+    assert!(((ends - connected) - chrono::Duration::hours(168)).num_seconds().abs() < 1, "{} to {}", connected, ends);
+
+    // Without a lifetime, as before: no end.
+    let open: IssueTokenResponse = issue(&app, &admin, json!({ "label": "Phone", "kinds": [1] })).await.json().await.unwrap();
+    assert_eq!(open.connection_lifetime_hours, None);
+}
+
+#[tokio::test]
+async fn an_expired_connection_is_refused_over_the_relay_and_listed_as_expired() {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_bunker_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+
+    // A connection made two hours ago for one hour, and one made then for a day.
+    let then = chrono::Utc::now() - chrono::Duration::hours(2);
+    let connect_then = |lifetime: u32| {
+        let secret = format!("secret-{}", uuid::Uuid::new_v4());
+        app.db
+            .create_nip46_token_with_lifetime(&bunker::nip46::hash_secret(&secret), &admin, &admin, "x", &["sign_event:1".to_string()], then, then + chrono::Duration::hours(24), Some(lifetime))
+            .unwrap();
+        let keys = Keys::generate();
+        app.db.redeem_nip46_token(&bunker::nip46::hash_secret(&secret), &keys.public_key().to_hex(), None, &Default::default(), then).unwrap().unwrap();
+        keys
+    };
+    let expired = connect_then(1);
+    let current = connect_then(24);
+
+    let bunker = app.bunker.public_key();
+    let note = |keys: &Keys| serde_json::to_string(&EventBuilder::text_note("hello").build(keys.public_key())).unwrap();
+    for (keys, expected) in [(&current, None), (&expired, Some(bunker::nip46::EXPIRED)), (&expired, Some(bunker::nip46::NOT_CONNECTED))] {
+        let client = Client::builder().signer(keys.clone()).build();
+        client.add_relay(relay.url()).await.unwrap();
+        client.connect().await;
+        client.subscribe(Filter::new().kind(Kind::from(24133)).pubkey(keys.public_key()), None).await.unwrap();
+        let answer = nip44_request(&client, keys, bunker, "sign_event", vec![note(keys)]).await;
+        match expected {
+            None => assert!(answer["result"].is_string(), "{}", answer),
+            Some(error) => assert_eq!(answer["error"], error, "{}", answer),
+        }
+    }
+
+    let listed = connections(&app, &admin).await;
+    let ended = listed.iter().find(|c| c.client_pubkey == expired.public_key().to_hex()).unwrap();
+    assert_eq!(ended.revoked_reason.as_deref(), Some("expired"));
+    assert_eq!(ended.revoked_at, ended.expires_at);
+    assert!(listed.iter().find(|c| c.client_pubkey == current.public_key().to_hex()).unwrap().revoked_at.is_none());
 }
 
 /// Connects one client for `member` through the handler; returns the client keys.

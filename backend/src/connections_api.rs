@@ -29,6 +29,8 @@ use tracing::{error, info};
 
 pub const DEFAULT_TOKEN_HOURS: u32 = 24;
 pub const MAX_TOKEN_HOURS: u32 = 24 * 7;
+/// The longest a connection may be issued to last (#98): 365 days. Longer is "until revoked".
+pub const MAX_CONNECTION_LIFETIME_HOURS: u32 = 24 * 365;
 pub const MAX_LABEL_CHARS: usize = 100;
 
 pub(crate) type ApiError = (StatusCode, Json<Value>);
@@ -75,6 +77,10 @@ pub struct IssueTokenRequest {
     #[serde(default)]
     pub methods: Vec<String>,
     pub expires_in_hours: Option<u32>,
+    /// How long the connection lasts once the app connects (#98), 1 hour to 365 days. None: until
+    /// revoked.
+    #[serde(default)]
+    pub connection_lifetime_hours: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -87,6 +93,8 @@ pub struct IssueTokenResponse {
     /// Encryption methods it may call (#97).
     pub methods: Vec<String>,
     pub expires_at: String,
+    /// How long the connection lasts once the app connects (#98). None: until revoked.
+    pub connection_lifetime_hours: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -99,6 +107,8 @@ pub struct TokenResponse {
     pub methods: Vec<String>,
     pub created_at: String,
     pub expires_at: String,
+    /// How long the connection lasts once the app connects (#98). None: until revoked.
+    pub connection_lifetime_hours: Option<u32>,
     pub used_at: Option<String>,
     pub revoked_at: Option<String>,
 }
@@ -114,6 +124,7 @@ impl From<Nip46Token> for TokenResponse {
             methods: methods(&t.perms),
             created_at: t.created_at.to_rfc3339(),
             expires_at: t.expires_at.to_rfc3339(),
+            connection_lifetime_hours: t.connection_lifetime_hours,
             used_at: t.used_at.map(|v| v.to_rfc3339()),
             revoked_at: t.revoked_at.map(|v| v.to_rfc3339()),
         }
@@ -138,6 +149,8 @@ pub struct ConnectionResponse {
     pub revoked_reason: Option<String>,
     /// Who revoked it (hex), when someone did (#31).
     pub revoked_by: Option<String>,
+    /// When it stops working (#98). None: until revoked.
+    pub expires_at: Option<String>,
 }
 
 impl From<Nip46Connection> for ConnectionResponse {
@@ -157,6 +170,7 @@ impl From<Nip46Connection> for ConnectionResponse {
             revoked_at: c.revoked_at.map(|v| v.to_rfc3339()),
             revoked_reason: c.revoked_reason,
             revoked_by: c.revoked_by,
+            expires_at: c.expires_at.map(|v| v.to_rfc3339()),
         }
     }
 }
@@ -228,6 +242,11 @@ pub async fn issue_token(
     if hours == 0 || hours > MAX_TOKEN_HOURS {
         return Err(api_error(StatusCode::BAD_REQUEST, "invalid_expiry", "A token can be valid for 1 hour to 7 days."));
     }
+    if let Some(lifetime) = request.connection_lifetime_hours {
+        if lifetime == 0 || lifetime > MAX_CONNECTION_LIFETIME_HOURS {
+            return Err(api_error(StatusCode::BAD_REQUEST, "invalid_lifetime", "A connection can last 1 hour to 365 days, or until revoked."));
+        }
+    }
 
     let for_pubkey = match request.for_pubkey.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
         Some(key) => canonical_pubkey(key).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "That is not a valid npub or hex key."))?,
@@ -252,7 +271,16 @@ pub async fn issue_token(
     let perms: Vec<String> = kinds.iter().map(|k| sign_permission(*k)).chain(methods.iter().cloned()).collect();
     let token = state
         .db
-        .create_nip46_token(&hash_secret(&secret), &for_pubkey, &caller_pubkey, label, &perms, now, now + Duration::hours(hours.into()))
+        .create_nip46_token_with_lifetime(
+            &hash_secret(&secret),
+            &for_pubkey,
+            &caller_pubkey,
+            label,
+            &perms,
+            now,
+            now + Duration::hours(hours.into()),
+            request.connection_lifetime_hours,
+        )
         .map_err(database_error)?;
 
     let bunker = state.signer.read().await.public_key_hex();
@@ -265,6 +293,7 @@ pub async fn issue_token(
         kinds,
         methods,
         expires_at: token.expires_at.to_rfc3339(),
+        connection_lifetime_hours: token.connection_lifetime_hours,
     }))
 }
 
@@ -299,6 +328,8 @@ pub async fn list_connections(
 ) -> Result<Json<Vec<ConnectionResponse>>, ApiError> {
     let (pubkey, administrator) = caller(who);
     let scope = if administrator { None } else { Some(pubkey.as_str()) };
+    // Mark any that have expired (#98), so none is listed as active after its time.
+    crate::nip46::expire_connections(&state.db);
     let connections = state.db.list_nip46_connections(scope).map_err(database_error)?;
     Ok(Json(connections.into_iter().map(Into::into).collect()))
 }

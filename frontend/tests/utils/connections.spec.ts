@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ENCRYPTION_METHODS, isDecrypt, kindLabel, methodLabel, parseKinds, relativeTime, revokedReason } from '~/utils/connections'
+import { ENCRYPTION_METHODS, LIFETIMES, connectionEnd, isDecrypt, kindLabel, lifetimeLabel, methodLabel, parseKinds, relativeTime, revokedReason } from '~/utils/connections'
 
 describe('connection display', () => {
   it('names known kinds and shows others as numbers', () => {
@@ -37,5 +37,18 @@ describe('connection display', () => {
     expect(methodLabel('nip44_decrypt')).toBe('Read encrypted messages (NIP-44)')
     expect(methodLabel('nip04_encrypt')).toBe('Encrypt messages (NIP-04, older apps)')
     expect(ENCRYPTION_METHODS.filter(m => isDecrypt(m.value)).map(m => m.value)).toEqual(['nip44_decrypt', 'nip04_decrypt'])
+  })
+
+  it('names connection lifetimes and when a connection ends (#98)', () => {
+    expect(LIFETIMES.map(l => l.label)).toEqual(['Until revoked', '1 day', '7 days', '30 days', '90 days'])
+    expect(lifetimeLabel(24)).toBe('1 day')
+    expect(lifetimeLabel(720)).toBe('30 days')
+    expect(lifetimeLabel(36)).toBe('36 hours')
+    expect(lifetimeLabel(1)).toBe('1 hour')
+    const now = Date.parse('2026-06-01T12:00:00Z')
+    expect(connectionEnd(null, now)).toBe('no time limit')
+    expect(connectionEnd('2026-06-03T12:00:00Z', now)).toBe('ends in 2 days')
+    expect(connectionEnd('2026-06-01T11:00:00Z', now)).toBe('time limit reached 1 hour ago')
+    expect(revokedReason('expired')).toBe('Its time limit ran out')
   })
 })
