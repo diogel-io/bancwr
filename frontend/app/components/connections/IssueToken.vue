@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // Issuing a connection token (#31, administrators): for which member, a label, what the app may
-// sign, which encryption methods it may call (#97), and for how long. The bunker:// string it
+// sign, which encryption methods it may call (#97), how long the token is valid and how long the
+// connection lasts (#98). The bunker:// string it
 // returns carries the token's secret and is shown once: the bunker keeps only its hash (#53), so it
 // cannot be shown again.
 import { renderSVG } from 'uqr'
 import { canSign } from '#shared/types/bunker'
 import type { EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
-import { ENCRYPTION_METHODS, KIND_PRESETS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
+import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
 
 const props = defineProps<{
   members: TeamMember[]
@@ -26,6 +27,8 @@ const preset = ref<number | 'custom' | 'none'>(0)
 const custom = ref('')
 const methods = ref<EncryptionMethod[]>([])
 const hours = ref(24)
+/** Hours the connection lasts once the app connects (#98); 0 is until revoked. */
+const lifetime = ref(0)
 const issuing = ref(false)
 const error = ref<string>()
 const issued = ref<IssueTokenResponse>()
@@ -64,6 +67,7 @@ const ERRORS: Record<string, string> = {
   nip46_disabled: 'NIP-46 is turned off on this bunker (NIP46_ENABLED=true turns it on), or it has no relays: an administrator adds them under Config, Bunker relays.',
   not_registered: 'Connections can only be issued for members of the vault.',
   member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.',
+  invalid_lifetime: 'A connection can last 1 hour to 365 days, or until revoked.',
   invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.'
 }
 
@@ -72,7 +76,14 @@ async function submit() {
   issuing.value = true
   error.value = undefined
   try {
-    issued.value = await props.issue({ for_pubkey: forPubkey.value, label: label.value.trim(), kinds: kinds.value.kinds, methods: methods.value, expires_in_hours: hours.value })
+    issued.value = await props.issue({
+      for_pubkey: forPubkey.value,
+      label: label.value.trim(),
+      kinds: kinds.value.kinds,
+      methods: methods.value,
+      expires_in_hours: hours.value,
+      ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {})
+    })
     copied.value = false
   } catch (failure) {
     const data = (failure as { data?: { error?: string, message?: string } }).data
@@ -93,6 +104,7 @@ function done() {
   issued.value = undefined
   label.value = ''
   methods.value = []
+  lifetime.value = 0
 }
 </script>
 
@@ -216,11 +228,25 @@ function done() {
           />
         </div>
       </UFormField>
-      <UFormField label="Valid for">
+      <UFormField
+        label="Valid for"
+        help="How long the token can be used to connect."
+      >
         <USelect
           id="issue-token-expiry"
           v-model="hours"
           :items="EXPIRY"
+          class="w-full"
+        />
+      </UFormField>
+      <UFormField
+        label="Connection lasts"
+        help="Counted from when the app connects. It cannot be extended: issue a new token instead."
+      >
+        <USelect
+          id="issue-token-lifetime"
+          v-model="lifetime"
+          :items="LIFETIMES"
           class="w-full"
         />
       </UFormField>

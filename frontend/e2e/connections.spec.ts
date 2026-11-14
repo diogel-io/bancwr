@@ -2,7 +2,8 @@
 // issues a token on the page, a real NIP-46 client (nostr-tools' BunkerSigner, the frontend's own
 // library) connects with it and signs a granted kind, the user sees the app and revokes it, and the
 // app can sign no more. An app granted the encryption methods (#97) encrypts and decrypts NIP-44
-// with the brand's key, and each decrypt is in the export. The bunker's relay is the in-process
+// with the brand's key, and each decrypt is in the export. A connection issued for 7 days (#98)
+// shows when it ends. The bunker's relay is the in-process
 // one; from this process it is 127.0.0.1, from the container e2e-host.
 import type { Browser, Page } from '@playwright/test'
 import { BunkerSigner } from 'nostr-tools/nip46'
@@ -140,6 +141,26 @@ test('an app granted NIP-44 encrypts and decrypts as the brand, and each decrypt
   expect(decrypts).toHaveLength(1)
   expect(csv).not.toContain('hello brand')
   expect(csv).not.toContain(incoming)
+})
+
+test('a connection issued for 7 days signs and shows when it ends (#98)', async ({ page }) => {
+  await page.goto('/connections')
+  const form = page.getByTestId('issue-token')
+  await form.getByRole('combobox').first().click()
+  await page.getByRole('option', { name: /\(you\)/ }).click()
+  await form.getByLabel('Label').fill('e2e contractor app')
+  await form.locator('#issue-token-lifetime').click()
+  await page.getByRole('option', { name: '7 days' }).click()
+  await form.getByRole('button', { name: 'Issue token' }).click()
+  const uri = (await page.getByTestId('issued-uri').textContent())!.trim()
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  const app = await connectApp(uri)
+  await expect(within(app.signEvent(note()))).resolves.toHaveProperty('sig')
+  await app.close()
+
+  await page.reload()
+  await expect(page.getByTestId('connection-end').filter({ hasText: 'ends in 7 days' })).toHaveCount(1)
 })
 
 test.describe('viewer', () => {
