@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // Issuing a connection token (#31, administrators): for which member, a label, what the app may
-// sign, which encryption methods it may call (#97), how long the token is valid and how long the
-// connection lasts (#98). The bunker:// string it
+// sign, which encryption methods it may call (#97), how long the token is valid, how long the
+// connection lasts (#98) and how fast it may use the key (#101). The bunker:// string it
 // returns carries the token's secret and is shown once: the bunker keeps only its hash (#53), so it
 // cannot be shown again.
 import { renderSVG } from 'uqr'
 import { canSign } from '#shared/types/bunker'
 import type { EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
-import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
+import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
 
 const props = defineProps<{
   members: TeamMember[]
@@ -29,6 +29,8 @@ const methods = ref<EncryptionMethod[]>([])
 const hours = ref(24)
 /** Hours the connection lasts once the app connects (#98); 0 is until revoked. */
 const lifetime = ref(0)
+/** An index into RATE_LIMITS (#101); 0 is the bunker's default, which sends nothing. */
+const rateLimit = ref(0)
 const issuing = ref(false)
 const error = ref<string>()
 const issued = ref<IssueTokenResponse>()
@@ -68,7 +70,14 @@ const ERRORS: Record<string, string> = {
   not_registered: 'Connections can only be issued for members of the vault.',
   member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.',
   invalid_lifetime: 'A connection can last 1 hour to 365 days, or until revoked.',
+  invalid_rate_limit: 'A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.',
   invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.'
+}
+
+/** The chosen rate limit, or nothing for the default. */
+function rateLimitRequest(): { rate_per_minute?: number, rate_burst?: number } {
+  const chosen = RATE_LIMITS.find(r => r.value === rateLimit.value)
+  return chosen && chosen.value ? { rate_per_minute: chosen.perMinute, rate_burst: chosen.burst } : {}
 }
 
 async function submit() {
@@ -82,7 +91,8 @@ async function submit() {
       kinds: kinds.value.kinds,
       methods: methods.value,
       expires_in_hours: hours.value,
-      ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {})
+      ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {}),
+      ...rateLimitRequest()
     })
     copied.value = false
   } catch (failure) {
@@ -105,6 +115,7 @@ function done() {
   label.value = ''
   methods.value = []
   lifetime.value = 0
+  rateLimit.value = 0
 }
 </script>
 
@@ -247,6 +258,17 @@ function done() {
           id="issue-token-lifetime"
           v-model="lifetime"
           :items="LIFETIMES"
+          class="w-full"
+        />
+      </UFormField>
+      <UFormField
+        label="Rate limit"
+        help="How many signing and encryption requests the app may make. Past it, the app is told to wait."
+      >
+        <USelect
+          id="issue-token-rate-limit"
+          v-model="rateLimit"
+          :items="RATE_LIMITS"
           class="w-full"
         />
       </UFormField>

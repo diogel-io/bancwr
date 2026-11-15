@@ -2,7 +2,8 @@
 // persistence across a reopen, and member removal ending a connection. Plus the encryption
 // methods (#97): their permissions, parameters, the refusal of NIP-46 app keys as a peer, and the
 // audit event each decrypt leaves before it happens.
-use bunker::db::Database;
+use bunker::db::{Database, TokenOptions};
+use bunker::rate_limit::RateLimit;
 use bunker::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS, EXPIRED, Nip46Handler, Nip46Request, Nip46Response, NOT_CONNECTED};
 use bunker::registry::Role;
 use bunker::signer::Signer;
@@ -564,4 +565,165 @@ async fn the_lifetime_and_expiry_are_in_the_audit_details() {
     let created = events.iter().find(|e| e.action == "connection_created").unwrap();
     let expiry = bunker::audit::db_time(connection.expires_at.unwrap());
     assert_eq!(created.detail.as_deref(), Some(format!("perms=sign_event:1,nip44_encrypt;expires_at={}", expiry).as_str()));
+}
+
+// Rate limits (#101).
+
+/// A client connected through the handler with a token carrying `rate_limit`, allowed kind 1 and
+/// every encryption method.
+async fn connected_limited(s: &Setup, rate_limit: Option<RateLimit>) -> Keys {
+    let secret = format!("secret-{}", uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let perms: Vec<String> = std::iter::once(sign_permission(1)).chain(ENCRYPTION_METHODS.iter().map(|m| m.to_string())).collect();
+    let options = TokenOptions { rate_limit, ..TokenOptions::default() };
+    s.db.create_nip46_token_with(&hash_secret(&secret), &s.member.public_key().to_hex(), "admin", "test", &perms, now, now + Duration::hours(1), options).unwrap();
+    let client = Keys::generate();
+    let connected = connect(s, &client, connect_params(s, &secret)).await;
+    assert_eq!(connected.result.as_deref(), Some("ack"), "{:?}", connected.error);
+    client
+}
+
+/// One a minute with a burst of 2: the third request at once is refused, and nothing refills
+/// during a test.
+const TIGHT: RateLimit = RateLimit { per_minute: 1, burst: 2 };
+
+fn rate_limited_events(s: &Setup) -> Vec<bunker::audit::ExportRow> {
+    s.db.audit_events().unwrap().into_iter().filter(|e| e.action == "connection_rate_limited").collect()
+}
+
+#[tokio::test]
+async fn signing_beyond_the_burst_is_refused_with_when_to_try_again_and_signs_nothing() {
+    let s = setup();
+    let client = connected_limited(&s, Some(TIGHT)).await;
+    for _ in 0..2 {
+        assert!(sign(&s, &client, Kind::TextNote).await.result.is_some());
+    }
+    let signatures = s.db.signature_count().unwrap();
+    let refused = sign(&s, &client, Kind::TextNote).await;
+    assert_eq!(refused.result, None);
+    let error = refused.error.unwrap();
+    assert!(error.starts_with("Rate limited: this connection may make 1 requests a minute (burst 2). Try again in "), "{}", error);
+    assert!(error.ends_with(" s"), "{}", error);
+    assert_eq!(s.db.signature_count().unwrap(), signatures, "nothing signed or logged");
+    assert_eq!(s.handler.rate_limited_count(), 1);
+}
+
+#[tokio::test]
+async fn a_decrypt_beyond_the_limit_is_refused_before_it_is_recorded() {
+    let s = setup();
+    let client = connected_limited(&s, Some(TIGHT)).await;
+    let friend = Keys::generate();
+    let incoming = nip44::encrypt(friend.secret_key(), &s.bunker.public_key(), "secret", nip44::Version::V2).unwrap();
+    for _ in 0..2 {
+        assert!(call(&s, &client, "nip44_decrypt", &friend.public_key(), &incoming).await.result.is_some());
+    }
+    let refused = call(&s, &client, "nip44_decrypt", &friend.public_key(), &incoming).await;
+    assert!(refused.error.unwrap().starts_with("Rate limited"));
+    assert_eq!(decrypt_events(&s).len(), 2, "the refused decrypt left no decrypt event");
+}
+
+#[tokio::test]
+async fn a_refusal_for_a_kind_not_granted_still_counts() {
+    let s = setup();
+    let client = connected_limited(&s, Some(TIGHT)).await;
+    for _ in 0..2 {
+        assert!(sign(&s, &client, Kind::Metadata).await.error.unwrap().starts_with("Forbidden"));
+    }
+    assert!(sign(&s, &client, Kind::Metadata).await.error.unwrap().starts_with("Rate limited"));
+}
+
+#[tokio::test]
+async fn the_methods_that_do_not_use_the_key_still_answer_when_limited() {
+    let s = setup();
+    let client = connected_limited(&s, Some(TIGHT)).await;
+    for _ in 0..3 {
+        sign(&s, &client, Kind::TextNote).await;
+    }
+    for _ in 0..30 {
+        let ping = s.handler.handle_request(request("ping", vec![]), client.public_key()).await;
+        assert_eq!(ping.result.as_deref(), Some("pong"));
+    }
+    let key = s.handler.handle_request(request("get_public_key", vec![]), client.public_key()).await;
+    assert_eq!(key.result, Some(s.bunker.public_key().to_hex()));
+    let logout = s.handler.handle_request(request("logout", vec![]), client.public_key()).await;
+    assert_eq!(logout.result.as_deref(), Some("ack"));
+}
+
+#[tokio::test]
+async fn another_connection_is_unaffected() {
+    let s = setup();
+    let busy = connected_limited(&s, Some(TIGHT)).await;
+    let quiet = connected_limited(&s, Some(TIGHT)).await;
+    for _ in 0..5 {
+        sign(&s, &busy, Kind::TextNote).await;
+    }
+    assert!(sign(&s, &busy, Kind::TextNote).await.error.unwrap().starts_with("Rate limited"));
+    assert!(sign(&s, &quiet, Kind::TextNote).await.result.is_some());
+}
+
+#[tokio::test]
+async fn a_connection_without_a_limit_gets_the_default() {
+    let s = setup();
+    let client = connected_limited(&s, None).await;
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+    assert_eq!(connection.rate_limit, None);
+    assert_eq!(connection.effective_rate_limit(), RateLimit::DEFAULT);
+    // The default burst is 20. Refilling at one a second may add one more while these run.
+    let mut allowed = 0;
+    for _ in 0..25 {
+        if sign(&s, &client, Kind::TextNote).await.result.is_some() {
+            allowed += 1;
+        }
+    }
+    assert!((20..=21).contains(&allowed), "{}", allowed);
+    assert!(s.handler.rate_limited_count() >= 4);
+}
+
+#[tokio::test]
+async fn the_connection_keeps_its_tokens_limit() {
+    let s = setup();
+    let client = connected_limited(&s, Some(RateLimit { per_minute: 30, burst: 10 })).await;
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+    assert_eq!(connection.rate_limit, Some(RateLimit { per_minute: 30, burst: 10 }));
+}
+
+#[tokio::test]
+async fn refusals_are_audited_once_a_minute_however_many_there_are() {
+    let s = setup();
+    let client = connected_limited(&s, Some(TIGHT)).await;
+    for _ in 0..12 {
+        sign(&s, &client, Kind::TextNote).await;
+    }
+    assert_eq!(s.handler.rate_limited_count(), 10);
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+    let events = rate_limited_events(&s);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.connection_id.as_deref(), Some(connection.id.as_str()));
+    assert_eq!(event.member_pubkey.as_deref(), Some(s.member.public_key().to_hex().as_str()));
+    assert_eq!(event.client_pubkey.as_deref(), Some(client.public_key().to_hex().as_str()));
+    assert_eq!(event.actor_pubkey, None);
+    assert_eq!(event.detail.as_deref(), Some("rate_per_minute=1;burst=2"));
+}
+
+#[tokio::test]
+async fn traffic_within_the_limit_is_unchanged() {
+    let s = setup();
+    let client = connected_limited(&s, Some(RateLimit { per_minute: 600, burst: 100 })).await;
+    for _ in 0..50 {
+        assert!(sign(&s, &client, Kind::TextNote).await.result.is_some());
+    }
+    assert_eq!(s.handler.rate_limited_count(), 0);
+    assert!(rate_limited_events(&s).is_empty());
+}
+
+#[tokio::test]
+async fn a_token_with_a_limit_records_it_when_issued_and_the_default_does_not() {
+    let s = setup();
+    connected_limited(&s, Some(TIGHT)).await;
+    connected_limited(&s, Some(RateLimit::DEFAULT)).await;
+    let issued: Vec<String> = s.db.audit_events().unwrap().into_iter().filter(|e| e.action == "token_issued").filter_map(|e| e.detail).collect();
+    assert_eq!(issued.len(), 2);
+    assert!(issued[0].ends_with(";rate_per_minute=1;rate_burst=2"), "{}", issued[0]);
+    assert!(!issued[1].contains("rate_"), "{}", issued[1]);
 }

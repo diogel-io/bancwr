@@ -226,14 +226,17 @@ async fn serve() -> anyhow::Result<()> {
 
     // The log retention policy (#96) and connection lifetimes (#98): applied at start, then hourly.
     // Unset keeps everything. An expired connection is refused on its next request regardless;
-    // this marks it, so the console and the audit log show it ended.
+    // this marks it, so the console and the audit log show it ended. The rate limiter's idle
+    // buckets (#101) are dropped too, which only bounds memory.
     let prune_db = state.db.clone();
+    let prune_handler = state.nip46_handler.clone();
     tokio::spawn(async move {
         let mut hourly = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
         loop {
             hourly.tick().await;
             bunker::nip46::expire_connections(&prune_db);
             bunker::logs_api::prune(&prune_db);
+            prune_handler.sweep_rate_limits();
         }
     });
 

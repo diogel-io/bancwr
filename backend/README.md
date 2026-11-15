@@ -292,7 +292,7 @@ Audit actions, each recorded in the same transaction as the change:
 
 | `action` | When | `detail` |
 |----------|------|----------|
-| `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…`, then `;connection_lifetime_hours=…` when it has one |
+| `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…`, then `;connection_lifetime_hours=…` when it has one, and `;rate_per_minute=…;rate_burst=…` when its rate limit is not the default (#101) |
 | `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore | `reason=revoked`, `member_removed`, `role_changed` or `restored` |
 | `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
 | `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored` or `expired` |
@@ -304,6 +304,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `logs_exported` | An administrator exports | `format=…;from=…;to=…` |
 | `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…` |
 | `nip44_decrypt`, `nip04_decrypt` | A NIP-46 app asks the bunker to decrypt (#97) | `peer=…`: the hex key of the other party |
+| `connection_rate_limited` | A NIP-46 app is refused for going over its connection's rate limit (#101), at most once a minute per connection | `rate_per_minute=…;burst=…` |
 
 A decrypt changes nothing, so it has no transaction of its own: its event is written before the
 bunker decrypts, and if that write fails nothing is decrypted. The event names the member, the
@@ -434,6 +435,9 @@ POST /api/bunker/connections/tokens
   counted from when the app connects; anything else is `400 {"error":"invalid_lifetime"}`. Omitted,
   the connection lasts until it is revoked, as before. The token's own validity only bounds when it
   can be used to connect. A lifetime cannot be extended: issue a new token.
+- `rate_per_minute`, 1 to 600, and `rate_burst`, 1 to 100, are the connection's rate limit (#101).
+  Each defaults on its own, to 60 and 20; anything else is `400 {"error":"invalid_rate_limit"}`. See
+  [Rate limits](#rate-limits-101).
 - The response's `uri` is the `bunker://` string to give the app. It carries the token's secret,
   which is shown this once: the bunker stores only its SHA-256 hash.
 
@@ -456,6 +460,8 @@ is marked revoked with the reason `expired`, no `revoked_by`, and `revoked_at` e
 bunker also marks expired connections at start, every hour, before listing connections, and before
 an app connects again, so one that is never used again is still shown as ended.
 Tokens and the token just issued return `connection_lifetime_hours`, `null` when there is none.
+Tokens, connections and the token just issued return `rate_per_minute` and `rate_burst`, the limit
+in force (#101).
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`, and the encryption methods below. Tokens, connections and the token just issued
@@ -478,6 +484,41 @@ A decrypt grant covers every message sent to the bunker's key, from anyone: it c
 particular senders. Each decrypt is recorded (see the audit actions above). A NIP-17 inbox decrypts
 twice for each message, a gift wrap and then its seal, so an app reading direct messages adds
 audit events quickly; a retention policy bounds them.
+
+### Rate limits (#101)
+Each connection may use the bunker's key only so fast, so a runaway bot or a compromised app cannot
+sign or decrypt without limit. NIP-46 traffic arrives over relays, so no reverse proxy can do this:
+the bunker does it, per connection, as a token bucket. The bucket holds `rate_burst` requests and
+refills at `rate_per_minute`; a request that finds it empty is refused.
+
+- **What counts:** `sign_event`, `nip44_encrypt`, `nip44_decrypt`, `nip04_encrypt` and
+  `nip04_decrypt`, the methods that use the key for the app. `connect`, `ping`,
+  `get_public_key`, `switch_relays` and `logout` do not.
+- **When:** once the request's connection is found, before its permissions are checked and before
+  any work. A flood of requests for kinds the app may not sign is limited too, and a refused decrypt
+  decrypts and records nothing.
+- **The limit:** set when the token is issued, and copied to the connection. 60 a minute with a
+  burst of 20 by default; from 1 to 600 a minute, with a burst of 1 to 100. There is no unlimited
+  setting. A connection's limit cannot be changed: issue a new token.
+- **A refusal** is answered
+  `Rate limited: this connection may make <n> requests a minute (burst <b>). Try again in <s> s`.
+  The first refusal, and then at most one a minute per connection however hard the app pushes, is
+  logged as a warning (connection, member and app key) and recorded as `connection_rate_limited`
+  with no actor. If recording fails, that is logged, and the request is still refused.
+- **The count:** `GET /api/bunker/metrics` returns `nip46_rate_limited`, the requests refused since
+  the bunker started, beside `http_requests`, `nip46_connections` and `total_signatures`. The
+  dashboard shows it.
+- **In memory:** the buckets are kept in memory. A restart refills them all, and the hourly sweep
+  drops those that are full. Each connection has its own bucket, so a member with several
+  connections has several.
+
+Not limited: a refused request still costs the bunker a decrypt of the request, an encrypted reply
+and a relay event, so the limit bounds what the app gets done, not relay traffic. Requests from keys
+with no active connection are not limited either: each is refused as `Not connected` after one
+indexed lookup.
+
+Upgrading: tokens and connections from before #101 have no stored limit, so they get the default,
+60 a minute with a burst of 20, from the upgrade (migration 11).
 
 ## Podman
 

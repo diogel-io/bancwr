@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::info;
 
 use crate::audit::{self, action, db_time, Audit, Cursor};
+use crate::rate_limit::RateLimit;
 use crate::registry::Role;
 
 #[derive(Clone)]
@@ -564,6 +565,8 @@ pub struct Nip46Token {
     /// How long a connection made with it lasts, from when the app connects (#98). None: until
     /// revoked.
     pub connection_lifetime_hours: Option<u32>,
+    /// The rate limit of a connection made with it (#101). None: `RateLimit::DEFAULT`.
+    pub rate_limit: Option<RateLimit>,
     pub used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -589,6 +592,24 @@ pub struct Nip46Connection {
     pub revoked_by: Option<String>,
     /// When it stops working (#98): the token's lifetime after it connected. None: until revoked.
     pub expires_at: Option<DateTime<Utc>>,
+    /// How fast it may use the bunker's key (#101), copied from its token. None: `RateLimit::DEFAULT`.
+    pub rate_limit: Option<RateLimit>,
+}
+
+impl Nip46Connection {
+    /// The limit in force: its own, or the default.
+    pub fn effective_rate_limit(&self) -> RateLimit {
+        RateLimit::effective(self.rate_limit)
+    }
+}
+
+/// What a token gives the connection made with it, beyond its permissions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenOptions {
+    /// How long the connection lasts once made (#98). None: until revoked.
+    pub connection_lifetime_hours: Option<u32>,
+    /// How fast it may use the bunker's key (#101). None: `RateLimit::DEFAULT`.
+    pub rate_limit: Option<RateLimit>,
 }
 
 /// Unverified client metadata from `connect` (NIP-46 "Client metadata").
@@ -647,8 +668,18 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
 /// (#77). Matches `Role::can_sign`.
 const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
-const TOKEN_COLUMNS: &str = "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours";
-const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at";
+const TOKEN_COLUMNS: &str =
+    "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours, rate_per_minute, rate_burst";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst";
+
+/// A stored rate limit (#101): both columns NULL is none, so the default; one NULL takes the
+/// default's part, as issuing does. Values were checked when the token was issued.
+fn stored_rate_limit(per_minute: Option<u32>, burst: Option<u32>) -> Option<RateLimit> {
+    if per_minute.is_none() && burst.is_none() {
+        return None;
+    }
+    Some(RateLimit { per_minute: per_minute.unwrap_or(RateLimit::DEFAULT.per_minute), burst: burst.unwrap_or(RateLimit::DEFAULT.burst) })
+}
 
 /// Appended to a query on `nip46_connections c`, with parameter `?<param>` bound to `db_time(now)`:
 /// the connection has not reached its expiry (#98). `expires_at` is fixed-width, so text order is
@@ -669,6 +700,7 @@ fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
         used_at: parse_optional_time(row.get(7)?)?,
         revoked_at: parse_optional_time(row.get(8)?)?,
         connection_lifetime_hours: row.get(9)?,
+        rate_limit: stored_rate_limit(row.get(10)?, row.get(11)?),
     })
 }
 
@@ -688,6 +720,7 @@ fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection>
         revoked_reason: row.get(11)?,
         revoked_by: row.get(12)?,
         expires_at: parse_optional_time(row.get(13)?)?,
+        rate_limit: stored_rate_limit(row.get(14)?, row.get(15)?),
     })
 }
 
@@ -705,7 +738,7 @@ impl Database {
         now: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> anyhow::Result<Nip46Token> {
-        self.create_nip46_token_with_lifetime(secret_hash, for_pubkey, issued_by, label, perms, now, expires_at, None)
+        self.create_nip46_token_with(secret_hash, for_pubkey, issued_by, label, perms, now, expires_at, TokenOptions::default())
     }
 
     /// Stores a new token, as `create_nip46_token`, whose connection lasts `connection_lifetime_hours`
@@ -722,6 +755,25 @@ impl Database {
         expires_at: DateTime<Utc>,
         connection_lifetime_hours: Option<u32>,
     ) -> anyhow::Result<Nip46Token> {
+        let options = TokenOptions { connection_lifetime_hours, ..TokenOptions::default() };
+        self.create_nip46_token_with(secret_hash, for_pubkey, issued_by, label, perms, now, expires_at, options)
+    }
+
+    /// Stores a new token, as `create_nip46_token`, with what a connection made with it gets beyond
+    /// its permissions: its lifetime (#98) and its rate limit (#101).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_nip46_token_with(
+        &self,
+        secret_hash: &str,
+        for_pubkey: &str,
+        issued_by: &str,
+        label: &str,
+        perms: &[String],
+        now: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+        options: TokenOptions,
+    ) -> anyhow::Result<Nip46Token> {
+        let TokenOptions { connection_lifetime_hours, rate_limit } = options;
         let token = Nip46Token {
             id: Uuid::new_v4().to_string(),
             for_pubkey: for_pubkey.to_string(),
@@ -731,17 +783,19 @@ impl Database {
             created_at: now,
             expires_at,
             connection_lifetime_hours,
+            rate_limit,
             used_at: None,
             revoked_at: None,
         };
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, connection_lifetime_hours)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO nip46_tokens
+                (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, connection_lifetime_hours, rate_per_minute, rate_burst)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339(),
-                connection_lifetime_hours
+                connection_lifetime_hours, rate_limit.map(|l| l.per_minute), rate_limit.map(|l| l.burst)
             ],
         )?;
         audit::record(
@@ -750,9 +804,15 @@ impl Database {
                 actor: audit::actor(issued_by),
                 member: Some(for_pubkey),
                 token_id: Some(&token.id),
-                detail: Some(match connection_lifetime_hours {
-                    Some(hours) => format!("perms={};expires_at={};connection_lifetime_hours={}", join_perms(perms), db_time(expires_at), hours),
-                    None => format!("perms={};expires_at={}", join_perms(perms), db_time(expires_at)),
+                detail: Some({
+                    let mut detail = format!("perms={};expires_at={}", join_perms(perms), db_time(expires_at));
+                    if let Some(hours) = connection_lifetime_hours {
+                        detail.push_str(&format!(";connection_lifetime_hours={}", hours));
+                    }
+                    if let Some(limit) = rate_limit.filter(|l| *l != RateLimit::DEFAULT) {
+                        detail.push_str(&format!(";rate_per_minute={};rate_burst={}", limit.per_minute, limit.burst));
+                    }
+                    detail
                 }),
                 ..Audit::new(action::TOKEN_ISSUED)
             },
@@ -878,12 +938,17 @@ impl Database {
             revoked_by: None,
             // To the microsecond, as `db_time` stores it, so this value is the stored one.
             expires_at: token.connection_lifetime_hours.map(|hours| (now + chrono::Duration::hours(hours.into())).trunc_subsecs(6)),
+            rate_limit: token.rate_limit,
         };
         tx.execute(
-            &format!("INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10)", CONNECTION_COLUMNS),
+            &format!(
+                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12)",
+                CONNECTION_COLUMNS
+            ),
             params![
                 connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
-                connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339(), connection.expires_at.map(db_time)
+                connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339(), connection.expires_at.map(db_time),
+                connection.rate_limit.map(|l| l.per_minute), connection.rate_limit.map(|l| l.burst)
             ],
         )?;
         audit::record(

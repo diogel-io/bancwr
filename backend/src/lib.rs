@@ -20,3 +20,4 @@ pub mod key_store;
 pub mod backup;
 pub mod audit;
 pub mod logs_api;
+pub mod rate_limit;

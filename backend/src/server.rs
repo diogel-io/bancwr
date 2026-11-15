@@ -61,6 +61,8 @@ pub struct Metrics {
     pub http_requests: u64,
     pub nip46_connections: usize,
     pub total_signatures: u64,
+    /// NIP-46 requests refused for a connection's rate limit since the bunker started (#101).
+    pub nip46_rate_limited: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -150,6 +152,7 @@ pub async fn get_metrics(
         http_requests: state.http_request_count(),
         nip46_connections: state.nip46_handler.connection_count().await,
         total_signatures: state.db.signature_count().unwrap_or(0),
+        nip46_rate_limited: state.nip46_handler.rate_limited_count(),
     })
 }
 

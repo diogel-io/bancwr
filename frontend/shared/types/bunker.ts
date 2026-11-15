@@ -61,6 +61,8 @@ export interface Metrics {
   http_requests: number
   nip46_connections: number
   total_signatures: number
+  /** NIP-46 requests refused for a connection's rate limit since the bunker started (#101). */
+  nip46_rate_limited: number
 }
 
 /** GET /api/bunker/config — read-only; the key is never returned, nor where it is stored. */
@@ -150,6 +152,9 @@ export interface Nip46Connection {
   revoked_by: string | null
   /** When it stops working (#98); null: until revoked. */
   expires_at: string | null
+  /** Its rate limit (#101): requests a minute, and how many may come at once. */
+  rate_per_minute: number
+  rate_burst: number
 }
 
 /** A connection token (#53), from GET /api/bunker/connections/tokens: never the secret. */
@@ -164,6 +169,9 @@ export interface Nip46Token {
   expires_at: string
   /** How long its connection lasts once the app connects (#98); null: until revoked. */
   connection_lifetime_hours: number | null
+  /** The rate limit of its connection (#101). */
+  rate_per_minute: number
+  rate_burst: number
   used_at: string | null
   revoked_at: string | null
 }
@@ -177,6 +185,9 @@ export interface IssueTokenRequest {
   expires_in_hours?: number
   /** How long the connection lasts once the app connects (#98), 1 to 8760; omitted: until revoked. */
   connection_lifetime_hours?: number
+  /** The connection's rate limit (#101): 1 to 600 a minute, burst 1 to 100; omitted: 60, burst 20. */
+  rate_per_minute?: number
+  rate_burst?: number
 }
 
 /** The token just issued: `uri` carries its secret and is shown once. */
@@ -188,6 +199,8 @@ export interface IssueTokenResponse {
   methods: EncryptionMethod[]
   expires_at: string
   connection_lifetime_hours: number | null
+  rate_per_minute: number
+  rate_burst: number
 }
 
 /** Where the bunker's own relays come from (#78): `environment` is NIP46_RELAYS, read-only here. */
