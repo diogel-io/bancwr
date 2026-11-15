@@ -15,7 +15,6 @@ registerEndpoint('/api/bunker/config', () => ({ pubkey: 'npub1test', key_storage
 registerEndpoint('/api/bunker/logs', () => [])
 registerEndpoint('/api/bunker/team', () => [])
 registerEndpoint('/api/bunker/metrics', () => ({ http_requests: 0, nip46_connections: 0, total_signatures: 0 }))
-registerEndpoint('/api/version', () => ({ version: '0.1.0' }))
 
 // One navbar on every page (#28), so the health indicator cannot be missing from one.
 describe('every page renders through AppNavbar', () => {

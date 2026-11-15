@@ -17,13 +17,7 @@ const open = ref(false)
       :ui="{ footer: 'lg:border-t lg:border-default' }"
     >
       <template #header="{ collapsed }">
-        <NuxtLink
-          to="/"
-          class="flex items-center gap-2 font-bold text-xl"
-        >
-          <DiogelLogo size="sm" />
-          <span v-if="!collapsed">Bancwr</span>
-        </NuxtLink>
+        <AppBrand :collapsed="collapsed" />
       </template>
 
       <template #default="{ collapsed }">
@@ -33,7 +27,6 @@ const open = ref(false)
       <template #footer="{ collapsed }">
         <div class="flex flex-col gap-3 w-full">
           <SignedInUser :collapsed="collapsed" />
-          <AppVersion :collapsed="collapsed" />
           <div
             class="flex items-center gap-2 w-full"
             :class="collapsed ? 'flex-col' : 'justify-between'"
