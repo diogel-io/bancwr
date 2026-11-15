@@ -371,7 +371,8 @@ Lost: anything since the backup, such as members added, roles changed and signat
 
 Members removed and roles lowered since the backup come back. Before you leave the bunker running,
 sign in as an administrator and, under **Team**, remove anyone who should no longer be there and
-correct any roles.
+set any role back with the member's role select. Making someone a viewer there revokes any
+connection a new token gave them since the restore.
 
 Sessions are not in the database, so a restore does not sign anyone out. Restarting the frontend
 does, as it always does. The role of everyone already signed in is read from the restored database

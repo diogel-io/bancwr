@@ -238,9 +238,13 @@ Only keys registered with the bunker can use it, each with one of three roles (#
 
 | Role | Can |
 |------|-----|
-| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer and a viewer can do. |
+| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members, and change their roles), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer and a viewer can do. |
 | Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46). |
 | Viewer | A dashboard with the bunker's health; the team list and each member's profile, read-only. A viewer never holds a NIP-46 connection. |
+
+An administrator changes a member's role from **Team** in one step. Making a member a viewer
+disconnects the apps connected for them, after asking; a new token is needed if they later sign
+again. The last administrator cannot be demoted, just as they cannot be removed.
 
 The API's route-by-role table is in [`backend/README.md`](backend/README.md#access-by-role-77).
 
