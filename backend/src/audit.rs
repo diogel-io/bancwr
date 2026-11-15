@@ -36,6 +36,12 @@ pub mod action {
     /// A NIP-46 app asked the bunker to decrypt (#97). Named as the NIP-46 methods are.
     pub const NIP44_DECRYPT: &str = "nip44_decrypt";
     pub const NIP04_DECRYPT: &str = "nip04_decrypt";
+    /// Identities (#103): one added with `bunker import-key --add`, renamed, and a member granted or
+    /// refused one.
+    pub const IDENTITY_ADDED: &str = "identity_added";
+    pub const IDENTITY_RENAMED: &str = "identity_renamed";
+    pub const IDENTITY_ACCESS_GRANTED: &str = "identity_access_granted";
+    pub const IDENTITY_ACCESS_REMOVED: &str = "identity_access_removed";
     /// A NIP-46 app was refused for going over its connection's rate limit (#101). Recorded at most
     /// once a minute per connection, however hard the app pushes.
     pub const CONNECTION_RATE_LIMITED: &str = "connection_rate_limited";
@@ -67,6 +73,8 @@ pub struct Audit<'a> {
     pub connection_id: Option<&'a str>,
     pub token_id: Option<&'a str>,
     pub client_pubkey: Option<&'a str>,
+    /// The identity it concerns (#103), hex. None: the primary, or no identity.
+    pub identity: Option<&'a str>,
     /// Fixed values: a revocation reason, permissions, a role change, counts. Never event content.
     pub detail: Option<String>,
 }
@@ -86,8 +94,8 @@ pub fn actor(pubkey: &str) -> Option<&str> {
 pub fn record(conn: &Connection, event: &Audit, now: DateTime<Utc>) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO audit_events
-            (id, action, timestamp, actor_pubkey, member_pubkey, member_name, connection_id, token_id, client_pubkey, detail)
-         VALUES (?1, ?2, ?3, ?4, ?5, (SELECT name FROM team_members WHERE pubkey = ?5), ?6, ?7, ?8, ?9)",
+            (id, action, timestamp, actor_pubkey, member_pubkey, member_name, connection_id, token_id, client_pubkey, detail, identity_pubkey)
+         VALUES (?1, ?2, ?3, ?4, ?5, (SELECT name FROM team_members WHERE pubkey = ?5), ?6, ?7, ?8, ?9, ?10)",
         params![
             Uuid::new_v4().to_string(),
             event.action,
@@ -98,6 +106,7 @@ pub fn record(conn: &Connection, event: &Audit, now: DateTime<Utc>) -> rusqlite:
             event.token_id,
             event.client_pubkey,
             event.detail,
+            event.identity,
         ],
     )?;
     Ok(())
@@ -241,6 +250,9 @@ pub struct ExportRow {
     pub client_pubkey: Option<String>,
     pub actor_pubkey: Option<String>,
     pub detail: Option<String>,
+    /// The identity (#103), hex: for a signature, the one that signed (the primary's when the row
+    /// names none); for an audit event, the one it concerns, if any.
+    pub identity_pubkey: Option<String>,
     /// Not exported: the row's id, and its insertion order within its table, which orders rows
     /// recorded in the same microsecond (one transaction's events) as they happened.
     #[serde(skip)]
@@ -397,6 +409,7 @@ impl Database {
             &Audit {
                 member: Some(&connection.for_pubkey),
                 connection_id: Some(&connection.id),
+                identity: connection.identity_pubkey.as_deref(),
                 token_id: Some(&connection.token_id),
                 client_pubkey: Some(&connection.client_pubkey),
                 detail: Some(format!("peer={}", peer)),
@@ -417,6 +430,7 @@ impl Database {
                 actor: actor.filter(|a| !a.is_empty()),
                 member: Some(&connection.for_pubkey),
                 connection_id: Some(&connection.id),
+                identity: connection.identity_pubkey.as_deref(),
                 token_id: Some(&connection.token_id),
                 client_pubkey: Some(&connection.client_pubkey),
                 detail: Some(detail),
@@ -435,6 +449,7 @@ impl Database {
             &Audit {
                 member: Some(&connection.for_pubkey),
                 connection_id: Some(&connection.id),
+                identity: connection.identity_pubkey.as_deref(),
                 token_id: Some(&connection.token_id),
                 client_pubkey: Some(&connection.client_pubkey),
                 detail: Some(format!("rate_per_minute={};burst={}", limit.per_minute, limit.burst)),
@@ -451,17 +466,18 @@ impl Database {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT ts, src, id, action, event_kind, event_id, member_pubkey, member_name, connection_id, token_id,
-                    client_pubkey, actor_pubkey, detail, seq
+                    client_pubkey, actor_pubkey, detail, seq, identity_pubkey
              FROM (
                  SELECT l.timestamp AS ts, 0 AS src, l.rowid AS seq, l.id AS id, 'signed' AS action, l.event_kind AS event_kind,
                         l.event_id AS event_id, l.member_pubkey AS member_pubkey, m.name AS member_name,
                         l.connection_id AS connection_id, NULL AS token_id, l.pubkey AS client_pubkey,
-                        NULL AS actor_pubkey, NULL AS detail
+                        NULL AS actor_pubkey, NULL AS detail,
+                        COALESCE(l.identity_pubkey, (SELECT pubkey FROM identities WHERE is_primary = 1)) AS identity_pubkey
                  FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
                  WHERE l.timestamp >= ?1 AND l.timestamp < ?2
                  UNION ALL
                  SELECT a.timestamp, 1, a.rowid, a.id, a.action, NULL, NULL, a.member_pubkey, a.member_name,
-                        a.connection_id, a.token_id, a.client_pubkey, a.actor_pubkey, a.detail
+                        a.connection_id, a.token_id, a.client_pubkey, a.actor_pubkey, a.detail, a.identity_pubkey
                  FROM audit_events a
                  WHERE a.timestamp >= ?1 AND a.timestamp < ?2
              )
@@ -490,6 +506,7 @@ impl Database {
                 actor_pubkey: row.get(11)?,
                 detail: row.get(12)?,
                 seq: row.get(13)?,
+                identity_pubkey: row.get(14)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -499,7 +516,8 @@ impl Database {
     pub fn audit_events(&self) -> anyhow::Result<Vec<ExportRow>> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT timestamp, id, action, member_pubkey, member_name, connection_id, token_id, client_pubkey, actor_pubkey, detail, rowid
+            "SELECT timestamp, id, action, member_pubkey, member_name, connection_id, token_id, client_pubkey, actor_pubkey, detail, rowid,
+                    identity_pubkey
              FROM audit_events ORDER BY timestamp, rowid",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -518,6 +536,7 @@ impl Database {
                 actor_pubkey: row.get(8)?,
                 detail: row.get(9)?,
                 seq: row.get(10)?,
+                identity_pubkey: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

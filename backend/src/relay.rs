@@ -10,6 +10,9 @@
 //! `RelayHandle::set_relays` applies it to the running client, without a restart. With NIP-46 on
 //! and no relays yet, the client still starts, so the first list saved takes effect at once.
 //!
+//! A bunker may hold several identities (#103). The subscription asks for requests to any of them,
+//! and each request is decrypted, handled and answered as the identity its `p` tag names.
+//!
 //! A request held for approval (#102) is not awaited here, which would stop every other request:
 //! the handler parks it and the relay sends its auth challenge, if any. The real answer is sent
 //! later through `RelayHandle::respond`, from the approval routes and the sweep.
@@ -41,13 +44,15 @@ pub struct RelayClient {
 #[derive(Clone)]
 pub struct RelayHandle {
     client: Client,
-    bunker: PublicKey,
+    /// Every identity the bunker signs as (#103): requests to any of them are answered.
+    identities: Vec<PublicKey>,
     /// Serialises changes, so two saves cannot interleave their adds and removes.
     changing: Arc<Mutex<()>>,
 }
 
 impl RelayHandle {
-    /// Sends `response` to `client`, encrypted as its request was, signed by the bunker.
+    /// Sends `response` to `client`, encrypted as its request was, signed by `signer`: the identity
+    /// the request was addressed to.
     pub async fn respond(&self, signer: &Signer, client: PublicKey, scheme: Scheme, response: &Nip46Response) -> anyhow::Result<()> {
         let response_json = serde_json::to_string(response)?;
         let encrypted = match scheme {
@@ -87,7 +92,7 @@ impl RelayHandle {
     /// to (the client's `subscribe` would refuse with no relays).
     async fn subscribe(&self) -> anyhow::Result<()> {
         let id = SubscriptionId::new(SUBSCRIPTION_ID);
-        let filter = Filter::new().kind(Kind::from(NIP46_KIND)).pubkey(self.bunker).since(Timestamp::now());
+        let filter = Filter::new().kind(Kind::from(NIP46_KIND)).pubkeys(self.identities.clone()).since(Timestamp::now());
         if self.client.relays().await.is_empty() {
             self.client.pool().save_subscription(id, filter).await;
             return Ok(());
@@ -106,7 +111,7 @@ impl RelayClient {
     /// list saved in the console.
     pub async fn new(relays: Vec<String>, state: AppState) -> anyhow::Result<Self> {
         let keys = state.signer.read().await.keys();
-        let bunker = keys.public_key();
+        let identities = state.keyring.public_keys().await;
         let client = Client::builder()
             .signer(keys)
             .opts(Options::new().automatic_authentication(true))
@@ -120,7 +125,7 @@ impl RelayClient {
         // So /api/bunker/status can report which relays are connected (#27).
         state.set_relay_pool(client.pool().clone()).await;
         // So a list saved in the console applies at once (#78).
-        let handle = RelayHandle { client: client.clone(), bunker, changing: Arc::new(Mutex::new(())) };
+        let handle = RelayHandle { client: client.clone(), identities, changing: Arc::new(Mutex::new(())) };
         state.set_relay_handle(handle.clone()).await;
 
         Ok(Self { client, state, handle })
@@ -140,16 +145,16 @@ impl RelayClient {
     pub async fn run(&self) -> anyhow::Result<()> {
         self.client.connect().await;
 
-        let pubkey = PublicKey::from_hex(&self.state.signer.read().await.public_key_hex())?;
-
-        info!("Subscribing to NIP-46 requests for pubkey: {}", pubkey.to_bech32()?);
+        for identity in &self.handle.identities {
+            info!("Subscribing to NIP-46 requests for: {}", identity.to_bech32()?);
+        }
         let mut notifications = self.client.notifications();
         self.handle.subscribe().await?;
 
         while let Ok(notification) = notifications.recv().await {
             match notification {
                 RelayPoolNotification::Event { event, .. } => {
-                    if let Err(e) = self.handle_nip46_request(*event, pubkey).await {
+                    if let Err(e) = self.handle_nip46_request(*event).await {
                         error!("Error handling NIP-46 request: {}", e);
                     }
                 }
@@ -163,21 +168,31 @@ impl RelayClient {
         Ok(())
     }
 
-    /// Answers one request. Only kind 24133 events from someone else, addressed to the bunker and
-    /// readable with its key, are requests: its own responses (the same kind) are ignored.
-    async fn handle_nip46_request(&self, event: Event, bunker: PublicKey) -> anyhow::Result<()> {
-        if event.kind != Kind::from(NIP46_KIND) || event.pubkey == bunker {
+    /// Answers one request. Only kind 24133 events from someone else, addressed to one of the
+    /// bunker's identities and readable with its key, are requests: the bunker's own responses (the
+    /// same kind) are ignored.
+    async fn handle_nip46_request(&self, event: Event) -> anyhow::Result<()> {
+        if event.kind != Kind::from(NIP46_KIND) || self.handle.identities.contains(&event.pubkey) {
             return Ok(());
         }
-        if !event.tags.public_keys().any(|p| *p == bunker) {
-            return Ok(());
+        // The identity addressed (#103): the first `p` tag that is one of the bunker's.
+        let mut addressed = None;
+        for p in event.tags.public_keys() {
+            if let Some(identity) = self.state.keyring.identity_of(p).await {
+                addressed = Some(identity);
+                break;
+            }
         }
+        let Some(identity) = addressed else {
+            return Ok(());
+        };
+        let Some(signer) = self.state.keyring.signer(identity.as_deref()).await else {
+            return Ok(());
+        };
         // NIP-04 ciphertext carries "?iv=" (as nostr-connect tells them apart).
         let nip04 = event.content.contains("?iv=");
-        let decrypted = {
-            let signer = self.state.signer.read().await;
-            if nip04 { signer.nip04_decrypt(&event.pubkey, &event.content) } else { signer.decrypt(&event.pubkey, &event.content) }
-        };
+        let decrypted = if nip04 { signer.nip04_decrypt(&event.pubkey, &event.content) } else { signer.decrypt(&event.pubkey, &event.content) };
+        drop(signer);
         let decrypted = match decrypted {
             Ok(decrypted) => decrypted,
             Err(e) => {
@@ -189,13 +204,15 @@ impl RelayClient {
         let request: Nip46Request = serde_json::from_str(&decrypted)?;
         let scheme = if nip04 { Scheme::Nip04 } else { Scheme::Nip44 };
 
-        let response = match self.state.nip46_handler.handle(request, event.pubkey, scheme).await {
+        let response = match self.state.nip46_handler.handle_for(request, event.pubkey, scheme, identity.clone()).await {
             Nip46Outcome::Reply(response) => response,
             Nip46Outcome::Held { notice: Some(notice), .. } => notice,
             // Held, and the console's address is unknown: the app just waits for the answer.
             Nip46Outcome::Held { notice: None, .. } => return Ok(()),
         };
-        let signer = self.state.signer.read().await;
+        let Some(signer) = self.state.keyring.signer(identity.as_deref()).await else {
+            return Ok(());
+        };
         self.handle.respond(&signer, event.pubkey, scheme, &response).await
     }
 }
@@ -210,8 +227,12 @@ pub async fn deliver(state: &AppState, replies: Vec<LaterReply>) {
         warn!("{} NIP-46 answers could not be sent: the relay client is not running", replies.len());
         return;
     };
-    let signer = state.signer.read().await;
     for reply in replies {
+        // Answered as the identity the request was addressed to (#103).
+        let Some(signer) = state.keyring.signer(reply.identity.as_deref()).await else {
+            warn!("A NIP-46 answer to {} could not be sent: its identity is not unlocked", reply.client_pubkey);
+            continue;
+        };
         if let Err(e) = handle.respond(&signer, reply.client_pubkey, reply.scheme, &reply.response).await {
             warn!("Failed to send a NIP-46 answer to {}: {}", reply.client_pubkey, e);
         }

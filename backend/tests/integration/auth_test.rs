@@ -45,6 +45,10 @@ const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/api/bunker/connections", roles: &[A, S], service: false },
     Route { method: "DELETE", path: "/api/bunker/connections/no-such-connection", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/approvals", roles: &[A, S], service: false },
+    Route { method: "GET", path: "/api/bunker/identities", roles: &[A, S], service: false },
+    Route { method: "PATCH", path: "/api/bunker/identities/{admin}", roles: &[A], service: false },
+    Route { method: "PUT", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
+    Route { method: "DELETE", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/approve", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/reject", roles: &[A], service: false },
 ];
@@ -63,6 +67,7 @@ fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> reqwest:
     let request = app.signed(route.method.parse().unwrap(), &path_of(app, route), identity);
     match (route.method, route.path) {
         ("POST", "/api/bunker/team") => request.json(&member_body()),
+        ("PATCH", path) if path.starts_with("/api/bunker/identities/") => request.json(&serde_json::json!({ "label": "x" })),
         ("PATCH", _) => request.json(&serde_json::json!({ "role": "signer" })),
         ("PUT", "/api/bunker/relays") => request.json(&serde_json::json!({ "relays": [] })),
         ("PUT", "/api/bunker/logs/retention") => request.json(&serde_json::json!({ "max_age_days": null, "max_rows": null })),
@@ -172,6 +177,8 @@ async fn an_administrator_reaches_every_route() {
         let expected = match route.method {
             "DELETE" | "PATCH" => StatusCode::NOT_FOUND,
             "POST" if route.path.contains("/approvals/") => StatusCode::NOT_FOUND,
+            // The administrator's key is no identity: 404 from the handler.
+            "PUT" if route.path.contains("/identities/") => StatusCode::NOT_FOUND,
             "POST" if route.path.ends_with("/tokens") => StatusCode::CONFLICT,
             _ => StatusCode::OK,
         };

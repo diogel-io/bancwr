@@ -7,12 +7,14 @@
 // cannot be shown again.
 import { renderSVG } from 'uqr'
 import { canSign } from '#shared/types/bunker'
-import type { EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
+import type { BunkerIdentity, EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
 import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
 
 const props = defineProps<{
   members: TeamMember[]
   self: string
+  /** The bunker's identities (#103). With more than one, the token says which it signs as. */
+  identities?: BunkerIdentity[]
   issue: (request: IssueTokenRequest) => Promise<IssueTokenResponse>
 }>()
 
@@ -23,6 +25,22 @@ const EXPIRY = [
 ]
 
 const forPubkey = ref(props.self)
+/** The identity it signs as (#103): a pubkey, or PRIMARY. A select item cannot be empty. */
+const PRIMARY = 'primary'
+const identity = ref(PRIMARY)
+// Only the identities the chosen member may use: an administrator every one, anyone else those
+// they are granted. The bunker refuses the rest (no_identity_access).
+const identityItems = computed(() => {
+  const member = props.members.find(m => m.pubkey === forPubkey.value)
+  const administrator = member?.role === 'administrator'
+  return (props.identities ?? [])
+    .filter(i => administrator || (i.members ?? []).includes(forPubkey.value))
+    .map(i => ({ label: i.label, value: i.is_primary ? PRIMARY : i.pubkey }))
+})
+const choosesIdentity = computed(() => (props.identities?.length ?? 0) > 1)
+watch(identityItems, (items) => {
+  if (!items.some(i => i.value === identity.value)) identity.value = items[0]?.value ?? PRIMARY
+}, { immediate: true })
 const label = ref('')
 const preset = ref<number | 'custom' | 'none'>(0)
 const custom = ref('')
@@ -85,6 +103,8 @@ const ERRORS: Record<string, string> = {
   invalid_lifetime: 'A connection can last 1 hour to 365 days, or until revoked.',
   invalid_rate_limit: 'A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.',
   invalid_approval_kinds: 'Only kinds the app may sign can need approval.',
+  no_identity_access: 'That member may not sign as this identity. Grant it on their team page first.',
+  invalid_identity: 'That is not one of this bunker\'s identities.',
   invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.'
 }
 
@@ -107,7 +127,8 @@ async function submit() {
       expires_in_hours: hours.value,
       ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {}),
       ...rateLimitRequest(),
-      ...(approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {})
+      ...(approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {}),
+      ...(identity.value !== PRIMARY ? { identity: identity.value } : {})
     })
     copied.value = false
   } catch (failure) {
@@ -203,6 +224,19 @@ function done() {
           id="issue-token-for"
           v-model="forPubkey"
           :items="memberItems"
+          class="w-full"
+        />
+      </UFormField>
+      <UFormField
+        v-if="choosesIdentity"
+        label="Sign as"
+        help="The identity the app signs as. Only those this member may use are offered."
+        data-testid="issue-token-identity"
+      >
+        <USelect
+          id="issue-token-identity"
+          v-model="identity"
+          :items="identityItems"
           class="w-full"
         />
       </UFormField>

@@ -24,6 +24,7 @@ use crate::approvals::{self, ApprovalQueue, Pending, QueueFull, Scheme};
 use crate::audit::action;
 use crate::db::{ClientMetadata, Database, Nip46Connection, RedeemRefusal};
 use crate::rate_limit::{self, Decision, RateLimiter};
+use crate::keyring::Keyring;
 use crate::signer::Signer;
 use chrono::Utc;
 use nostr::hashes::{sha256, Hash};
@@ -83,6 +84,10 @@ pub const ENCRYPTION_METHODS: [&str; 4] = ["nip44_encrypt", "nip44_decrypt", "ni
 /// Shown to a client that has not connected, or whose connection ended.
 pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token first";
 
+/// Shown when a connection's identity is not unlocked in this bunker (#103): it was added after
+/// the bunker started, which a restart fixes.
+pub const IDENTITY_UNAVAILABLE: &str = "This identity is not available in this bunker yet: it loads when the bunker restarts";
+
 /// Shown once to a client whose connection has just reached its expiry (#98). After that it is a
 /// revoked connection like any other, and gets `NOT_CONNECTED`.
 pub const EXPIRED: &str = "This connection has expired";
@@ -102,12 +107,14 @@ pub enum Nip46Outcome {
 pub struct LaterReply {
     pub client_pubkey: PublicKey,
     pub scheme: Scheme,
+    /// The identity the request was addressed to (#103), which answers it. None: the primary.
+    pub identity: Option<String>,
     pub response: Nip46Response,
 }
 
 impl LaterReply {
     fn to(pending: &Pending, response: Nip46Response) -> Self {
-        Self { client_pubkey: pending.client_pubkey, scheme: pending.scheme, response }
+        Self { client_pubkey: pending.client_pubkey, scheme: pending.scheme, identity: pending.connection.identity_pubkey.clone(), response }
     }
 }
 
@@ -120,7 +127,7 @@ pub enum ApprovalError {
     EventMismatch,
     /// The connection ended, or may no longer sign this kind: the request is cancelled, and this is
     /// the app's answer.
-    ConnectionEnded(LaterReply),
+    ConnectionEnded(Box<LaterReply>),
     /// It could not be recorded, so nothing was signed and the request still waits.
     Internal,
 }
@@ -154,7 +161,8 @@ pub fn expire_connections(db: &Database) -> Vec<Nip46Connection> {
 
 /// NIP-46 protocol handler
 pub struct Nip46Handler {
-    signer: Arc<RwLock<Signer>>,
+    /// Every identity this bunker signs as (#103): the primary, and any added beside it.
+    keyring: Arc<Keyring>,
     db: Database,
     limiter: RateLimiter,
     /// Requests refused for the rate limit since the bunker started (#101), for the metrics.
@@ -172,9 +180,15 @@ struct ApprovalSettings {
 }
 
 impl Nip46Handler {
+    /// A handler for a bunker with one identity, `signer`.
     pub fn new(signer: Arc<RwLock<Signer>>, db: Database) -> Self {
+        Self::with_keyring(Arc::new(Keyring::new(signer, Vec::new())), db)
+    }
+
+    /// A handler signing as every identity in `keyring` (#103).
+    pub fn with_keyring(keyring: Arc<Keyring>, db: Database) -> Self {
         Self {
-            signer,
+            keyring,
             db,
             limiter: RateLimiter::new(),
             rate_limited: AtomicU64::new(0),
@@ -259,14 +273,20 @@ impl Nip46Handler {
         }
     }
 
-    /// Handle incoming NIP-46 request
+    /// Handles a request addressed to the primary identity.
     pub async fn handle(&self, request: Nip46Request, client_pubkey: PublicKey, scheme: Scheme) -> Nip46Outcome {
+        self.handle_for(request, client_pubkey, scheme, None).await
+    }
+
+    /// Handles a request addressed to `identity` (#103; None: the primary), as the relay client
+    /// read it from the request's `p` tag. A connection answers only for its own identity.
+    pub async fn handle_for(&self, request: Nip46Request, client_pubkey: PublicKey, scheme: Scheme, identity: Option<String>) -> Nip46Outcome {
         info!("Handling NIP-46 request: method={}, id={}", request.method, request.id);
         if request.method == "connect" {
             // An app reconnecting after its connection expired (#98): mark that one `expired`
             // first, rather than `replaced`.
             expire_connections(&self.db);
-            return Nip46Outcome::Reply(self.handle_connect(request, client_pubkey).await);
+            return Nip46Outcome::Reply(self.handle_connect(request, client_pubkey, identity.as_deref()).await);
         }
 
         let connection = match self.db.active_nip46_connection(&client_pubkey.to_hex()) {
@@ -284,6 +304,11 @@ impl Nip46Handler {
             }
         };
 
+        // An app connected to one identity is not connected to another (#103).
+        if connection.identity_pubkey != identity {
+            return Nip46Outcome::Reply(Nip46Response::err(request.id, NOT_CONNECTED));
+        }
+
         if let Some(refusal) = self.rate_limit_refusal(&request, &connection) {
             return Nip46Outcome::Reply(refusal);
         }
@@ -292,7 +317,10 @@ impl Nip46Handler {
             return self.handle_sign_event(request, client_pubkey, &connection, scheme).await;
         }
         Nip46Outcome::Reply(match request.method.as_str() {
-            "get_public_key" => Nip46Response::ok(request.id, self.signer.read().await.public_key_hex()),
+            "get_public_key" => match self.keyring.signer(connection.identity_pubkey.as_deref()).await {
+                Some(signer) => Nip46Response::ok(request.id, signer.public_key_hex()),
+                None => Nip46Response::err(request.id, IDENTITY_UNAVAILABLE),
+            },
             "ping" => Nip46Response::ok(request.id, "pong"),
             // No relay change is proposed. An administrator can change the bunker's relays (#78),
             // but moving connected apps to the new list is out of its scope: an app on a removed
@@ -312,8 +340,10 @@ impl Nip46Handler {
     }
 
     /// `connect`: `[remote-signer-pubkey, secret, requested-perms?, client-metadata?]`.
-    async fn handle_connect(&self, request: Nip46Request, client_pubkey: PublicKey) -> Nip46Response {
-        let bunker = self.signer.read().await.public_key_hex();
+    async fn handle_connect(&self, request: Nip46Request, client_pubkey: PublicKey, identity: Option<&str>) -> Nip46Response {
+        let Some(bunker) = self.keyring.signer(identity).await.map(|signer| signer.public_key_hex()) else {
+            return Nip46Response::err(request.id, IDENTITY_UNAVAILABLE);
+        };
         if request.params.first().map(|p| p.trim().to_lowercase()) != Some(bunker) {
             return Nip46Response::err(request.id, "This connect is not addressed to this bunker");
         }
@@ -324,7 +354,7 @@ impl Nip46Handler {
         let requested = request.params.get(2).map(String::as_str);
         let metadata = request.params.get(3).map(|m| parse_metadata(m)).unwrap_or_default();
 
-        match self.db.redeem_nip46_token(&hash_secret(secret), &client_pubkey.to_hex(), requested, &metadata, Utc::now()) {
+        match self.db.redeem_nip46_token_for(&hash_secret(secret), identity, &client_pubkey.to_hex(), requested, &metadata, Utc::now()) {
             Ok(Ok(connection)) => {
                 info!("NIP-46 client {} connected for {} with {}", client_pubkey, connection.for_pubkey, connection.perms.join(","));
                 Nip46Response::ok(request.id, "ack")
@@ -339,6 +369,8 @@ impl Nip46Handler {
                     RedeemRefusal::MemberRemoved => "This connection token's member is no longer in the vault",
                     RedeemRefusal::MemberCannotSign => "This connection token's member is a viewer, who cannot sign",
                     RedeemRefusal::NothingGrantable => "None of the requested permissions are allowed by this connection token",
+                    RedeemRefusal::NoIdentityAccess => "This connection token's member may no longer sign as this identity",
+                    RedeemRefusal::OtherIdentity => "This connection token is for another identity",
                 })
             }
             Err(e) => {
@@ -351,7 +383,7 @@ impl Nip46Handler {
     /// sign_event: only kinds the connection was granted, and those that need approval (#102) only
     /// once an administrator approves.
     async fn handle_sign_event(&self, request: Nip46Request, client_pubkey: PublicKey, connection: &Nip46Connection, scheme: Scheme) -> Nip46Outcome {
-        let unsigned_event = match self.event_to_sign(&request).await {
+        let unsigned_event = match self.event_to_sign(&request, connection).await {
             Ok(event) => event,
             Err(response) => return Nip46Outcome::Reply(response),
         };
@@ -367,7 +399,7 @@ impl Nip46Handler {
 
     /// The event a `sign_event` asks for, as the bunker would sign it: its own key, with the id
     /// computed. Or the answer refusing it.
-    async fn event_to_sign(&self, request: &Nip46Request) -> Result<UnsignedEvent, Nip46Response> {
+    async fn event_to_sign(&self, request: &Nip46Request, connection: &Nip46Connection) -> Result<UnsignedEvent, Nip46Response> {
         let Some(unsigned_event_json) = request.params.first() else {
             return Err(Nip46Response::err(request.id.clone(), "Missing event to sign"));
         };
@@ -379,7 +411,10 @@ impl Nip46Handler {
             Ok(_) => return Err(Nip46Response::err(request.id.clone(), "Invalid event JSON: expected an object")),
             Err(e) => return Err(Nip46Response::err(request.id.clone(), format!("Invalid event JSON: {}", e))),
         };
-        template["pubkey"] = serde_json::Value::String(self.signer.read().await.public_key_hex());
+        let Some(identity) = self.keyring.signer(connection.identity_pubkey.as_deref()).await.map(|signer| signer.public_key_hex()) else {
+            return Err(Nip46Response::err(request.id.clone(), IDENTITY_UNAVAILABLE));
+        };
+        template["pubkey"] = serde_json::Value::String(identity);
         if let Some(object) = template.as_object_mut() {
             // Any id the client computed was for its own idea of the event; it is recomputed.
             object.remove("id");
@@ -433,18 +468,24 @@ impl Nip46Handler {
     /// Signs `unsigned_event` for the connection now, logging it as a signature.
     async fn sign_now(&self, request_id: String, client_pubkey: PublicKey, connection: &Nip46Connection, unsigned_event: UnsignedEvent) -> Nip46Response {
         let kind = unsigned_event.kind.as_u16();
-        match self.signer.read().await.sign_event(unsigned_event).await {
+        let Some(signer) = self.keyring.signer(connection.identity_pubkey.as_deref()).await else {
+            return Nip46Response::err(request_id, IDENTITY_UNAVAILABLE);
+        };
+        let signed = signer.sign_event(unsigned_event).await;
+        drop(signer);
+        match signed {
             Ok(signed_event) => {
                 let now = Utc::now();
                 if let Err(e) = self.db.touch_nip46_connection(&connection.id, now) {
                     warn!("Failed to record NIP-46 connection use: {}", e);
                 }
                 // The client asked; the member is who the connection signs for (diogel-io/workspace#38).
-                if let Err(e) = self.db.log_signing_event(
+                if let Err(e) = self.db.log_signing_event_for(
                     &signed_event.id.to_hex(),
                     &client_pubkey.to_hex(),
                     Some(&connection.for_pubkey),
                     Some(&connection.id),
+                    connection.identity_pubkey.as_deref(),
                     kind as u32,
                     now,
                 ) {
@@ -485,7 +526,7 @@ impl Nip46Handler {
             }
         };
         let Some(connection) = current else {
-            return Err(ApprovalError::ConnectionEnded(self.cancel(pending, now)));
+            return Err(ApprovalError::ConnectionEnded(Box::new(self.cancel(pending, now))));
         };
 
         let mut detail = pending.audit_detail();
@@ -589,8 +630,10 @@ impl Nip46Handler {
         };
         let peer_hex = peer.to_hex();
 
-        let signer = self.signer.read().await;
-        // The bunker's own key is allowed: NIP-51 private lists encrypt to oneself.
+        let Some(signer) = self.keyring.signer(connection.identity_pubkey.as_deref()).await else {
+            return Nip46Response::err(request.id, IDENTITY_UNAVAILABLE);
+        };
+        // The identity's own key is allowed: NIP-51 private lists encrypt to oneself.
         if peer_hex != signer.public_key_hex() {
             match self.db.is_nip46_client(&peer_hex) {
                 Ok(false) => {}

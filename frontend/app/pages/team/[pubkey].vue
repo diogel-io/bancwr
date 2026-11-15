@@ -2,9 +2,10 @@
 // A team member's Nostr profile (#77), read-only, for administrators and viewers: who the vault
 // says they are (name and role, from the bunker), and their kind 0 profile (picture, name, about,
 // NIP-05, links) read from their relays as the profile page reads one (#30, #62). Nothing here
-// edits or publishes. Reached from each row of the team list; the route takes an npub or hex.
+// edits or publishes, except which identities they may sign as (#103), for administrators of a
+// bunker with several. Reached from each row of the team list; the route takes an npub or hex.
 import { decode, npubEncode } from 'nostr-tools/nip19'
-import { ROLE_LABELS } from '#shared/types/bunker'
+import { ROLE_LABELS, canSign } from '#shared/types/bunker'
 import type { Role, TeamMember } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
 
@@ -32,6 +33,8 @@ const { data: member, error } = await useFetch<TeamMember>(`/api/bunker/team/by-
 })
 const notRegistered = computed(() => (error.value as { statusCode?: number } | null)?.statusCode === 404)
 const roleLabel = computed(() => member.value ? ROLE_LABELS[member.value.role as Role] ?? member.value.role : '')
+const auth = useAuth()
+const viewerIsAdministrator = computed(() => auth.state.value.status === 'signed-in' && auth.state.value.role === 'administrator')
 
 const profile = useMemberProfile()
 const { state, form, exists, searched } = profile
@@ -102,6 +105,13 @@ onMounted(() => {
               {{ member.npub ?? member.pubkey }}
             </p>
           </UCard>
+
+          <!-- Which identities they may sign as (#103): administrators, on a bunker with several. -->
+          <IdentitiesIdentityAccess
+            v-if="viewerIsAdministrator && canSign(member.role)"
+            :member="member.pubkey"
+            :administrator="member.role === 'administrator'"
+          />
 
           <div
             v-if="state === 'idle' || state === 'loading'"

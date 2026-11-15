@@ -115,10 +115,80 @@ fn restore() -> i32 {
     }
 }
 
+/// `--label <text>` or `--label=<text>` among the command's arguments.
+fn label_argument(args: &[String]) -> Option<String> {
+    args.iter().enumerate().find_map(|(i, arg)| match arg.strip_prefix("--label=") {
+        Some(value) => Some(value.to_string()),
+        None if arg == "--label" => args.get(i + 1).cloned(),
+        None => None,
+    })
+}
+
+/// `bunker import-key --add --label <label>` (#103): encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC)
+/// under BANCWR_ROOT_KEY_FILE and adds it as another identity, in the database beside the primary.
+/// A running bunker loads it when it restarts. Never prints the key. Returns the exit code.
+fn add_identity(args: &[String]) -> i32 {
+    let db_path = database_path();
+    let label = label_argument(args).map(|l| l.trim().to_string()).unwrap_or_default();
+    if label.is_empty() || label.chars().count() > bunker::db::MAX_IDENTITY_LABEL_CHARS {
+        eprintln!("Could not add the identity: give it a label of up to 100 characters with --label, such as --label \"Brand B\".");
+        return 1;
+    }
+    let result = key_store::RootKey::from_env().and_then(|root| {
+        let secret_key = key_store::read_plain_key()?;
+        Ok((key_store::encrypt(&root, &secret_key), Keys::new(secret_key).public_key()))
+    });
+    let (key_file, public_key) = match result {
+        Ok(added) => added,
+        Err(e) => {
+            eprintln!("Could not add the identity: {}", e.reason());
+            eprintln!("Detail: {}", e);
+            return 1;
+        }
+    };
+    // Never the primary: its key is the key file.
+    let primary = key_store::read_key_file(&key_store::key_path(&db_path)).ok().and_then(|text| key_store::recorded_public_key(&text).ok());
+    if primary == Some(public_key) {
+        eprintln!("Could not add the identity: that key is already this bunker's primary identity.");
+        return 1;
+    }
+    let added = Database::new(&db_path).and_then(|db| db.add_identity(&public_key.to_hex(), &label, &key_file, chrono::Utc::now()));
+    match added {
+        Ok(Ok(())) => {
+            println!("Added the identity \"{}\", encrypted at rest.", label);
+            println!("Public key: {}", public_key.to_bech32().unwrap_or_default());
+            println!(
+                "Next: remove BUNKER_NSEC_FILE and BUNKER_NSEC, delete every plain copy of the key, and \
+                 restart the bunker, which loads the identity then. Grant members the identity on their \
+                 team page."
+            );
+            0
+        }
+        Ok(Err(bunker::db::AddIdentityRefusal::AlreadyAnIdentity)) => {
+            eprintln!("Could not add the identity: that key is already one of this bunker's identities.");
+            1
+        }
+        Ok(Err(bunker::db::AddIdentityRefusal::IsAMember)) => {
+            eprintln!("Could not add the identity: that key is a team member's, and an identity's key can never sign in.");
+            1
+        }
+        Err(e) => {
+            eprintln!("Could not add the identity: the database could not be updated.");
+            eprintln!("Detail: {}", e);
+            1
+        }
+    }
+}
+
 /// Encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC) under BANCWR_ROOT_KEY_FILE into the key file. Never
-/// replaces an existing key file, and never prints the key. Returns the exit code.
+/// replaces an existing key file, and never prints the key. Returns the exit code. With `--add`,
+/// adds another identity instead (#103).
 fn import_key() -> i32 {
     let _ = dotenvy::dotenv();
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if args.iter().any(|a| a == "--add") {
+        return add_identity(&args);
+    }
     let db_path = database_path();
     let path = key_store::key_path(&db_path);
     let result = key_store::RootKey::from_env().and_then(|root| {
@@ -142,6 +212,45 @@ fn import_key() -> i32 {
             1
         }
     }
+}
+
+/// Why the bunker runs locked: fixed wording, the public key its key file records, and the error
+/// for the log.
+struct Locked {
+    reason: String,
+    public_key: Option<PublicKey>,
+    error: Option<String>,
+}
+
+/// Records the primary identity, then decrypts every identity added beside it (#103). Each must
+/// unlock under the root credential and may never be `BANCWR_ADMIN_PUBKEY`; otherwise the bunker
+/// stays locked, naming the identity by its label and never its key.
+fn unlock_identities(db: &Database, primary: SecretKey, config: &Config) -> Result<(SecretKey, Vec<Signer>), Locked> {
+    let primary_key = Keys::new(primary.clone()).public_key();
+    let locked = |reason: String, error: Option<String>| Locked { reason, public_key: Some(primary_key), error };
+    if let Err(e) = db.ensure_primary_identity(&primary_key.to_hex(), chrono::Utc::now()) {
+        return Err(locked("The bunker's database could not record its primary identity.".to_string(), Some(e.to_string())));
+    }
+    let stored = db.stored_identities().map_err(|e| locked("The bunker's identities could not be read from its database.".to_string(), Some(e.to_string())))?;
+    if stored.is_empty() {
+        return Ok((primary, Vec::new()));
+    }
+    let root = key_store::RootKey::from_env().map_err(|e| locked(e.reason().to_string(), Some(e.to_string())))?;
+    let mut others = Vec::with_capacity(stored.len());
+    for identity in stored {
+        match key_store::decrypt_identity(&root, &identity.pubkey, &identity.key_file) {
+            Ok(secret_key) => {
+                if config.check_admin_pubkey(&identity.pubkey).is_err() {
+                    return Err(locked(format!("The identity \"{}\" is BANCWR_ADMIN_PUBKEY, which can never be an identity's key.", identity.label), None));
+                }
+                others.push(Signer::new(secret_key));
+            }
+            Err(e) => {
+                return Err(locked(format!("The identity \"{}\" cannot be unlocked. {}", identity.label, e.reason()), Some(e.to_string())));
+            }
+        }
+    }
+    Ok((primary, others))
 }
 
 #[tokio::main]
@@ -197,15 +306,21 @@ async fn serve() -> anyhow::Result<()> {
     let port = config.port;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    let secret_key = match unlock {
-        Unlock::Unlocked(secret_key) => secret_key,
-        Unlock::Locked { reason, public_key, error } => {
+    // The primary key (#94), then every identity added beside it (#103), each under the same
+    // root credential. Any that does not unlock leaves the whole bunker locked, as the primary does.
+    let unlocked = match unlock {
+        Unlock::Unlocked(secret_key) => unlock_identities(&db, secret_key, &config),
+        Unlock::Locked { reason, public_key, error } => Err(Locked { reason: reason.to_string(), public_key, error: error.map(|e| e.to_string()) }),
+    };
+    let (secret_key, others) = match unlocked {
+        Ok(keys) => keys,
+        Err(Locked { reason, public_key, error }) => {
             match error {
                 Some(error) => error!("The bunker is locked and will not sign: {} ({})", reason, error),
                 None => error!("The bunker is locked and will not sign: {}", reason),
             }
             let state = LockedState {
-                reason: reason.to_string(),
+                reason,
                 pubkey: public_key.and_then(|key| key.to_bech32().ok()).unwrap_or_default(),
                 version: config.version.clone(),
                 nip46_enabled: config.nip46_enabled,
@@ -221,8 +336,11 @@ async fn serve() -> anyhow::Result<()> {
 
     let signer = Signer::new(secret_key);
     info!("Key decrypted. Public key: {}", signer.public_key_bech32());
+    for other in &others {
+        info!("Identity decrypted. Public key: {}", other.public_key_bech32());
+    }
 
-    let state = AppState::new(signer.clone(), db, config.clone());
+    let state = AppState::with_identities(signer.clone(), others, db, config.clone());
 
     // The log retention policy (#96) and connection lifetimes (#98): applied at start, then hourly.
     // Unset keeps everything. An expired connection is refused on its next request regardless;

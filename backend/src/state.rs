@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::signer::Signer;
 use crate::db::Database;
+use crate::keyring::Keyring;
 use crate::nip46::Nip46Handler;
 use crate::config::Config;
 use crate::relay::RelayHandle;
@@ -12,7 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Shared application state for both HTTP and NIP-46
 #[derive(Clone)]
 pub struct AppState {
+    /// The primary identity's signer: the key in `bunker-key.enc`.
     pub signer: Arc<RwLock<Signer>>,
+    /// Every identity this bunker signs as (#103), the primary included.
+    pub keyring: Arc<Keyring>,
     pub db: Arc<Database>,
     pub nip46_handler: Arc<Nip46Handler>,
     pub config: Arc<RwLock<Config>>,
@@ -29,8 +33,14 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(signer: Signer, db: Database, config: Config) -> Self {
+        Self::with_identities(signer, Vec::new(), db, config)
+    }
+
+    /// A bunker signing as `signer`, its primary identity, and `others` (#103).
+    pub fn with_identities(signer: Signer, others: Vec<Signer>, db: Database, config: Config) -> Self {
         let signer = Arc::new(RwLock::new(signer));
-        let nip46_handler = Arc::new(Nip46Handler::new(signer.clone(), db.clone()));
+        let keyring = Arc::new(Keyring::new(signer.clone(), others));
+        let nip46_handler = Arc::new(Nip46Handler::with_keyring(keyring.clone(), db.clone()));
         // Requests held for approval (#102): how long they wait, and where the console is.
         nip46_handler.configure_approvals(chrono::Duration::minutes(config.approval_timeout_minutes.into()), config.console_url.clone());
         let config = Arc::new(RwLock::new(config));
@@ -38,6 +48,7 @@ impl AppState {
 
         Self {
             signer,
+            keyring,
             db,
             nip46_handler,
             config,

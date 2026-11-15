@@ -91,6 +91,9 @@ pub struct IssueTokenRequest {
     /// Kinds held for an administrator's approval before signing (#102): each one of `kinds`.
     #[serde(default)]
     pub approval_kinds: Vec<u32>,
+    /// The identity the connection signs as (#103): npub or hex. The primary when omitted.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -110,6 +113,8 @@ pub struct IssueTokenResponse {
     pub rate_burst: u32,
     /// Kinds held for approval (#102).
     pub approval_kinds: Vec<u16>,
+    /// The identity the connection signs as (#103), hex.
+    pub identity_pubkey: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -129,6 +134,8 @@ pub struct TokenResponse {
     pub rate_burst: u32,
     /// Kinds held for approval (#102).
     pub approval_kinds: Vec<u16>,
+    /// The identity the connection signs as (#103), hex. Filled in by the route: None only before.
+    pub identity_pubkey: Option<String>,
     pub used_at: Option<String>,
     pub revoked_at: Option<String>,
 }
@@ -149,6 +156,7 @@ impl From<Nip46Token> for TokenResponse {
             rate_per_minute: limit.per_minute,
             rate_burst: limit.burst,
             approval_kinds: kinds(&t.approval_perms),
+            identity_pubkey: t.identity_pubkey,
             used_at: t.used_at.map(|v| v.to_rfc3339()),
             revoked_at: t.revoked_at.map(|v| v.to_rfc3339()),
         }
@@ -180,6 +188,8 @@ pub struct ConnectionResponse {
     pub rate_burst: u32,
     /// Kinds held for approval (#102).
     pub approval_kinds: Vec<u16>,
+    /// The identity it signs as (#103), hex. Filled in by the route: None only before.
+    pub identity_pubkey: Option<String>,
 }
 
 impl From<Nip46Connection> for ConnectionResponse {
@@ -204,6 +214,7 @@ impl From<Nip46Connection> for ConnectionResponse {
             rate_per_minute: limit.per_minute,
             rate_burst: limit.burst,
             approval_kinds: kinds(&c.approval_perms),
+            identity_pubkey: c.identity_pubkey,
         }
     }
 }
@@ -308,6 +319,16 @@ pub async fn issue_token(
         None if !caller_pubkey.is_empty() => caller_pubkey.clone(),
         None => return Err(api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "Say which member the connection is for.")),
     };
+    // The identity it signs as (#103): the primary unless another is named, and only one this
+    // bunker holds and the member may use.
+    let identity: Option<String> = match request.identity.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        None => None,
+        Some(value) => {
+            let invalid = || api_error(StatusCode::BAD_REQUEST, "invalid_identity", "That is not one of this bunker's identities.");
+            let key = PublicKey::parse(value).map_err(|_| invalid())?;
+            state.keyring.identity_of(&key).await.ok_or_else(invalid)?
+        }
+    };
     match state.db.find_member_by_pubkey(&for_pubkey).map_err(database_error)? {
         // Only a member who can sign: an administrator or a signer, never a viewer (#77).
         Some(member) if member.role().is_some_and(|role| role.can_sign()) => {}
@@ -319,6 +340,9 @@ pub async fn issue_token(
             ))
         }
         None => return Err(api_error(StatusCode::BAD_REQUEST, "not_registered", "Connections can only be issued for members of the vault.")),
+    }
+    if !state.db.may_use_identity(&for_pubkey, identity.as_deref()).map_err(database_error)? {
+        return Err(api_error(StatusCode::BAD_REQUEST, "no_identity_access", "That member may not sign as this identity. Grant it on their team page first."));
     }
 
     let secret = new_secret();
@@ -338,11 +362,16 @@ pub async fn issue_token(
                 connection_lifetime_hours: request.connection_lifetime_hours,
                 rate_limit,
                 approval_perms: approval_kinds.iter().map(|k| sign_permission(*k)).collect(),
+                identity_pubkey: identity.clone(),
             },
         )
         .map_err(database_error)?;
 
-    let bunker = state.signer.read().await.public_key_hex();
+    // The remote signer an app talks to is the identity's own key.
+    let bunker = match state.keyring.signer(identity.as_deref()).await {
+        Some(signer) => signer.public_key_hex(),
+        None => return Err(api_error(StatusCode::BAD_REQUEST, "invalid_identity", "That is not one of this bunker's identities.")),
+    };
     let relay_params: String = relays.iter().map(|r| format!("relay={}&", query_encode(r))).collect();
     info!("Issued NIP-46 connection token {} for {} with {}", token.id, for_pubkey, perms.join(","));
     Ok(Json(IssueTokenResponse {
@@ -356,6 +385,7 @@ pub async fn issue_token(
         rate_per_minute: RateLimit::effective(token.rate_limit).per_minute,
         rate_burst: RateLimit::effective(token.rate_limit).burst,
         approval_kinds,
+        identity_pubkey: bunker.clone(),
     }))
 }
 
@@ -363,7 +393,17 @@ pub async fn issue_token(
 /// GET /api/bunker/connections/tokens
 pub async fn list_tokens(State(state): State<AppState>) -> Result<Json<Vec<TokenResponse>>, ApiError> {
     let tokens = state.db.list_nip46_tokens().map_err(database_error)?;
-    Ok(Json(tokens.into_iter().map(Into::into).collect()))
+    let primary = state.signer.read().await.public_key_hex();
+    Ok(Json(
+        tokens
+            .into_iter()
+            .map(|token| {
+                let mut response: TokenResponse = token.into();
+                response.identity_pubkey.get_or_insert_with(|| primary.clone());
+                response
+            })
+            .collect(),
+    ))
 }
 
 /// Revoke an unused token
@@ -393,7 +433,17 @@ pub async fn list_connections(
     // Mark any that have expired (#98), so none is listed as active after its time.
     crate::nip46::expire_connections(&state.db);
     let connections = state.db.list_nip46_connections(scope).map_err(database_error)?;
-    Ok(Json(connections.into_iter().map(Into::into).collect()))
+    let primary = state.signer.read().await.public_key_hex();
+    Ok(Json(
+        connections
+            .into_iter()
+            .map(|connection| {
+                let mut response: ConnectionResponse = connection.into();
+                response.identity_pubkey.get_or_insert_with(|| primary.clone());
+                response
+            })
+            .collect(),
+    ))
 }
 
 /// Revoke a connection: an administrator any, anyone else only one made for their key (#31).

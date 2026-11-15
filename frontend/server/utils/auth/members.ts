@@ -7,10 +7,18 @@ import { bunkerServiceFetch } from '../bunker-service'
 
 /** The bunker's own pubkey, hex. It may never sign in (ADR rule 10). */
 export async function bunkerPubkey(event: H3Event): Promise<string> {
+  return (await bunkerPubkeys(event)).primary
+}
+
+/**
+ * The bunker's primary pubkey and every identity it holds (#103), hex. None of them may sign in:
+ * anyone the bunker signs for as one could otherwise sign in as it.
+ */
+export async function bunkerPubkeys(event: H3Event): Promise<{ primary: string, identities: string[] }> {
   const status = await bunkerServiceFetch<BunkerStatus>(event, '/api/bunker/status')
   const decoded = decode(status.pubkey)
   if (decoded.type !== 'npub') throw new Error('The bunker reported a pubkey that is not an npub')
-  return decoded.data
+  return { primary: decoded.data, identities: status.identities ?? [] }
 }
 
 /**

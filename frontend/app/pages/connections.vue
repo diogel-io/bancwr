@@ -9,6 +9,9 @@ const {
   pubkey, isAdministrator, connections, tokens, team, memberName, revoke, revokeToken, issue
 } = useConnections()
 
+// The identities (#103): named on each row, and chosen when issuing, only once there are several.
+const { list: identities, several, label: identityLabel } = useIdentities()
+
 const showEnded = ref(false)
 const actionError = ref<string>()
 
@@ -84,6 +87,7 @@ async function act(work: () => Promise<void>) {
               :connection="connection"
               :for-name="isAdministrator ? memberName(connection.for_pubkey) : undefined"
               :revoked-by-name="connection.revoked_by ? memberName(connection.revoked_by) : undefined"
+              :identity-label="several ? identityLabel(connection.identity_pubkey) : undefined"
               @revoke="act(() => revoke(connection.id))"
             />
           </ul>
@@ -116,6 +120,7 @@ async function act(work: () => Promise<void>) {
               :members="team.data.value ?? []"
               :self="pubkey"
               :issue="issue"
+              :identities="identities"
             />
           </UCard>
 
@@ -134,6 +139,7 @@ async function act(work: () => Promise<void>) {
                 :key="token.id"
                 :token="token"
                 :for-name="memberName(token.for_pubkey)"
+                :identity-label="several ? identityLabel(token.identity_pubkey) : undefined"
                 @revoke="act(() => revokeToken(token.id))"
               />
             </ul>

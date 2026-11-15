@@ -14,6 +14,8 @@ const props = defineProps<{
   forName?: string
   /** Who revoked it, as a name. */
   revokedByName?: string
+  /** The identity it signs as (#103), named only when the bunker has several. */
+  identityLabel?: string
 }>()
 const emit = defineEmits<{ revoke: [] }>()
 
@@ -129,6 +131,9 @@ function revoke() {
         </template>
         <template v-if="forName">
           · for {{ forName }}
+        </template>
+        <template v-if="identityLabel">
+          · <span data-testid="connection-identity">signs as {{ identityLabel }}</span>
         </template>
       </p>
       <p

@@ -36,7 +36,7 @@ pub const MAX_PAGE: usize = 500;
 pub const EXPORT_BATCH: usize = 1_000;
 
 /// The export's columns, in order: the CSV header, and the JSONL keys.
-pub const EXPORT_COLUMNS: [&str; 12] = [
+pub const EXPORT_COLUMNS: [&str; 13] = [
     "time",
     "source",
     "action",
@@ -49,6 +49,8 @@ pub const EXPORT_COLUMNS: [&str; 12] = [
     "client_pubkey",
     "actor_pubkey",
     "detail",
+    // Last, so the columns before #103 keep their places.
+    "identity_pubkey",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -192,7 +194,7 @@ pub async fn export_logs(
 
 /// One CSV record (RFC 4180), with CRLF.
 pub fn csv_line(row: &ExportRow) -> String {
-    let fields: [Option<String>; 12] = [
+    let fields: [Option<String>; 13] = [
         Some(row.time.clone()),
         Some(row.source.as_str().to_string()),
         Some(row.action.clone()),
@@ -205,6 +207,7 @@ pub fn csv_line(row: &ExportRow) -> String {
         row.client_pubkey.clone(),
         row.actor_pubkey.clone(),
         row.detail.clone(),
+        row.identity_pubkey.clone(),
     ];
     let mut line = fields.iter().map(|f| csv_field(f.as_deref().unwrap_or(""))).collect::<Vec<_>>().join(",");
     line.push_str("\r\n");

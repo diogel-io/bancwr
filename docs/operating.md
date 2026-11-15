@@ -477,6 +477,35 @@ to sign one of them waits under **Approvals** until an administrator decides.
   apps' requests included.
 - Which kinds need approval cannot be changed on an existing connection: issue a new token.
 
+## More than one identity
+
+One bunker can sign as several Nostr keys (#103). The key you imported first is the **primary**.
+
+1. Put the new key in a file the bunker's container can read, as you did for the first, and add it:
+
+   ```bash
+   podman compose run --rm -e BUNKER_NSEC_FILE=/run/secrets/brand_b bunker import-key --add --label "Brand B"
+   ```
+
+   It prints the new identity's npub, never its key. Then delete every plain copy of the key, as
+   after the first import.
+2. Restart the bunker: a new identity loads at start. Until then, **Config**, **Identities** shows it
+   as "Loads when the bunker restarts".
+3. Grant members the identities they may sign as, on their team page under **May sign as**.
+   Administrators may sign as every identity. When you add the first identity beside the primary,
+   every member who could sign keeps the primary.
+4. Issue connection tokens for the identity under **Connections**, **Sign as**.
+
+- Removing a member's grant disconnects their apps for that identity, and revokes their unused
+  tokens for it. Their other identities are untouched.
+- Every identity is encrypted under the same root credential, and every backup carries them all.
+  Restoring needs that credential, as it always has.
+- If an identity cannot be decrypted at start (its row altered, or the wrong credential), the
+  bunker stays locked and its status names the identity by its label. Nothing signs until it is
+  fixed: restore the database from a backup.
+- An identity cannot be removed yet. Rename it under **Config** if it is no longer used, and revoke
+  its connections.
+
 ## Apps that read and send private messages
 
 An app can be allowed to encrypt and decrypt with the brand's key (#97), which direct messages

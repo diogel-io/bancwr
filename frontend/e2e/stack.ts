@@ -94,6 +94,17 @@ export function up(): void {
     compose(['build'])
   }
   compose(['run', '--rm', '--no-deps', '-e', 'BUNKER_NSEC', 'bunker', 'import-key'])
+  // A second identity beside the primary (#103), as an operator adds one: through the same
+  // variable, so the key never appears in a command line.
+  if (process.env.E2E_BRAND_NSEC) {
+    const primary = process.env.BUNKER_NSEC
+    process.env.BUNKER_NSEC = process.env.E2E_BRAND_NSEC
+    try {
+      compose(['run', '--rm', '--no-deps', '-e', 'BUNKER_NSEC', 'bunker', 'import-key', '--add', '--label', 'e2e brand'])
+    } finally {
+      process.env.BUNKER_NSEC = primary
+    }
+  }
   compose(['up', '--detach', '--no-build'])
 }
 

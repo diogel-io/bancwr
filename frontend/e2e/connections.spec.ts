@@ -138,7 +138,8 @@ test('an app granted NIP-44 encrypts and decrypts as the brand, and each decrypt
   // The decrypt is in the export, with its peer and without the message.
   const today = new Date().toISOString().slice(0, 10)
   const csv = await (await page.request.get(`/api/bunker/logs/export?format=csv&from=${today}&to=${today}`)).text()
-  const decrypts = csv.split('\r\n').filter(l => l.includes(',audit,nip44_decrypt,') && l.endsWith(`peer=${friendPubkey}`))
+  // The identity column is last (#103), empty for the primary.
+  const decrypts = csv.split('\r\n').filter(l => l.includes(',audit,nip44_decrypt,') && l.endsWith(`peer=${friendPubkey},`))
   expect(decrypts).toHaveLength(1)
   expect(csv).not.toContain('hello brand')
   expect(csv).not.toContain(incoming)

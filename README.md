@@ -252,6 +252,21 @@ Connected apps are rate limited from this version. Apps connected before the upg
 limited to the default of 60 signing and encryption requests a minute with a burst of 20. An app
 that needs more, such as a bulk poster, needs a new token issued with a higher limit.
 
+### More than one identity (#103)
+
+One bunker can sign as several Nostr keys, for an agency or a brand with several accounts. The key
+imported first is the **primary**; add another on the host with
+
+```bash
+podman compose run --rm -e BUNKER_NSEC_FILE=/run/secrets/brand_b bunker import-key --add --label "Brand B"
+```
+
+then restart the bunker. Each identity is encrypted under the same root credential and travels in
+backups. Under **Config**, **Identities** lists them; on a member's team page, **May sign as** says
+which they may use, and a connection token is issued for one of them, which its app then signs as.
+With only one identity, nothing changes and none of this appears. See "More than one identity" in
+[`backend/README.md`](backend/README.md#more-than-one-identity-103).
+
 ### The key and backups
 
 The bunker's key is encrypted at rest (#94). `bunker backup` writes an encrypted archive of the
@@ -347,6 +362,9 @@ lists them all, with what each one means.
   which two instances cannot share (#100).
 - An app allowed to decrypt can read every encrypted message sent to the brand's key, from anyone.
   It cannot be limited to particular senders, though each decrypt is recorded.
+- Every identity a bunker holds is protected by the same root credential, in the same process: whoever
+  controls the host has them all (#103). Run separate bunkers for keys that must not share that fate.
+- An identity cannot be removed yet, only renamed.
 
 ## Security
 

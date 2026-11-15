@@ -17,13 +17,16 @@ const { data: logs } = await useFetch<LogEntry[]>('/api/bunker/logs', {
 const displayLogs = computed<LogEntry[]>(() => props.rows || logs.value || [])
 
 // Columns follow LogEntry. There is no status column: the backend logs successful signatures only.
-// Member is whom the signature was for; App is the key that asked (diogel-io/workspace#38).
-const columns: TableColumn<LogEntry>[] = [
+// Member is whom the signature was for; App is the key that asked (diogel-io/workspace#38). Signed
+// as names the identity (#103), only once the bunker has more than one.
+const { several, label: identityLabel } = useIdentities()
+const columns = computed<TableColumn<LogEntry>[]>(() => [
   { accessorKey: 'timestamp', header: 'Timestamp' },
   { accessorKey: 'event_kind', header: 'Event Kind' },
   { id: 'member', header: 'Member' },
+  ...(several.value ? [{ id: 'identity', header: 'Signed as' }] : []),
   { accessorKey: 'pubkey', header: 'App' }
-]
+])
 
 const formatDate = (date: string) => {
   return new Date(date).toLocaleString()
@@ -58,6 +61,9 @@ const member = (log: LogEntry) => {
   >
     <template #timestamp-cell="{ row }">
       {{ formatDate(row.original.timestamp) }}
+    </template>
+    <template #identity-cell="{ row }">
+      <span data-testid="log-identity">{{ identityLabel(row.original.identity_pubkey) }}</span>
     </template>
     <template #member-cell="{ row }">
       <span :title="row.original.member_pubkey ? npubOf(row.original.member_pubkey) : undefined">
