@@ -524,8 +524,14 @@ Before allowing an app to read encrypted messages:
   retention policy if the log should not grow without limit.
 - Revoking the app's connection stops it at once.
 
-No app can encrypt or decrypt with the key of another app connected to the bunker. That protects
-what apps and the bunker send each other.
+No app can encrypt or decrypt with the key of another app that has connected to the bunker, or
+that has sent it any request, even one that was refused. That protects what apps and the bunker
+send each other.
+
+A connection token that an app presents but that is refused, for example because it is for another
+identity or the app asks only for permissions the token does not allow, is used up: it shows as
+used, with no connection, and the audit log has a `token_revoked` event with
+`reason=connect_refused`. Issue a new token.
 
 ## The signing log and audit events
 

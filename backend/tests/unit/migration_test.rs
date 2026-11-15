@@ -639,3 +639,27 @@ fn migrating_to_103_leaves_a_single_key_bunker_as_it_was() {
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert!(db.active_nip46_connection(client).unwrap().is_some());
 }
+
+#[test]
+fn migrating_to_14_adds_the_nip46_senders_table_and_keeps_connected_apps_refused_as_peers() {
+    // As #103 left it: version 13, one token and its connection, no record of senders.
+    let file = database_before_101();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    Connection::open(file.path()).unwrap().execute_batch("DROP TABLE nip46_senders; PRAGMA user_version = 13;").unwrap();
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(columns(&file, "nip46_senders"), vec!["pubkey".to_string(), "first_seen_at".to_string()]);
+    let client = "cc00000000000000000000000000000000000000000000000000000000000003";
+    assert!(db.is_nip46_client(client).unwrap(), "a key that connected before is still refused");
+    let sender = "dd00000000000000000000000000000000000000000000000000000000000004";
+    assert!(!db.is_nip46_client(sender).unwrap());
+    db.record_nip46_sender(sender, chrono::Utc::now()).unwrap();
+
+    // Re-running it keeps what it recorded.
+    drop(db);
+    Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 13;").unwrap();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert!(db.is_nip46_client(sender).unwrap());
+}

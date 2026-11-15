@@ -30,6 +30,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("limit NIP-46 request rates", nip46_rate_limit),
     ("hold chosen kinds for approval", nip46_approval_perms),
     ("hold several identities", identities),
+    ("record the senders of NIP-46 requests", nip46_senders),
 ];
 
 /// The version a fully migrated database is at.
@@ -526,6 +527,20 @@ fn identities(tx: &Transaction) -> anyhow::Result<()> {
             ("audit_events", "identity_pubkey", "TEXT"),
         ],
     )
+}
+
+/// 14. Every key that has sent the bunker a NIP-46 request, connected or not, with when it first
+///     did. The encryption methods refuse each as a peer, as they refuse the key of any app that
+///     has connected (`Database::is_nip46_client`). It starts empty: keys that connected before
+///     are still refused through their connections.
+fn nip46_senders(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS nip46_senders (
+            pubkey TEXT PRIMARY KEY,
+            first_seen_at TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
 }
 
 /// Adds each `(table, column, type)` the table does not have yet, so a migration that adds columns

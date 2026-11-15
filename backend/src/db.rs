@@ -681,6 +681,63 @@ pub enum RedeemRefusal {
     OtherIdentity,
 }
 
+impl RedeemRefusal {
+    /// Whether this refusal comes after the secret matched a live token, which it then uses up: a
+    /// `connect` refused for its identity, its member or its permissions can never be redeemed
+    /// later, with these parameters or any others. Unknown, used, revoked and expired tokens are
+    /// left as they are.
+    pub fn uses_up_token(self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// The `refusal=` value recorded when the token is used up.
+    fn reason(self) -> Option<&'static str> {
+        match self {
+            RedeemRefusal::UnknownSecret | RedeemRefusal::Used | RedeemRefusal::Revoked | RedeemRefusal::Expired => None,
+            RedeemRefusal::MemberRemoved => Some("member_removed"),
+            RedeemRefusal::MemberCannotSign => Some("member_cannot_sign"),
+            RedeemRefusal::NothingGrantable => Some("nothing_grantable"),
+            RedeemRefusal::NoIdentityAccess => Some("no_identity_access"),
+            RedeemRefusal::OtherIdentity => Some("other_identity"),
+        }
+    }
+}
+
+/// Why a live token's `connect` is refused for its identity or its member (#77, #103), if it is.
+fn member_refusal(conn: &Connection, token: &Nip46Token, identity: Option<&str>) -> rusqlite::Result<Option<RedeemRefusal>> {
+    if token.identity_pubkey.as_deref() != identity {
+        return Ok(Some(RedeemRefusal::OtherIdentity));
+    }
+    let role: Option<String> =
+        conn.query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![token.for_pubkey], |row| row.get(0)).optional()?;
+    let Some(role) = role else { return Ok(Some(RedeemRefusal::MemberRemoved)) };
+    if !role.parse::<Role>().is_ok_and(|role| role.can_sign()) {
+        return Ok(Some(RedeemRefusal::MemberCannotSign));
+    }
+    if !may_use_identity(conn, &token.for_pubkey, token.identity_pubkey.as_deref())? {
+        return Ok(Some(RedeemRefusal::NoIdentityAccess));
+    }
+    Ok(None)
+}
+
+/// Marks `token` used by a `connect` from `client_pubkey` that was refused for `refusal`, inside
+/// the caller's transaction, and records it as `token_revoked`, `reason=connect_refused`.
+fn use_up_refused_token(conn: &Connection, token: &Nip46Token, client_pubkey: &str, refusal: RedeemRefusal, now: DateTime<Utc>) -> rusqlite::Result<()> {
+    conn.execute("UPDATE nip46_tokens SET used_at = ?2 WHERE id = ?1 AND used_at IS NULL", params![token.id, now.to_rfc3339()])?;
+    audit::record(
+        conn,
+        &Audit {
+            member: Some(&token.for_pubkey),
+            token_id: Some(&token.id),
+            client_pubkey: Some(client_pubkey),
+            identity: token.identity_pubkey.as_deref(),
+            detail: Some(format!("reason=connect_refused;refusal={}", refusal.reason().unwrap_or("other"))),
+            ..Audit::new(action::TOKEN_REVOKED)
+        },
+        now,
+    )
+}
+
 /// The permissions granted: the token's, or those of them the client asked for. A request that
 /// names none (or is empty) gets all of the token's. Only permissions the token holds are ever
 /// granted.
@@ -944,7 +1001,9 @@ impl Database {
     /// Connects `client_pubkey` with the token whose secret hashes to `secret_hash`, in one
     /// transaction: the token is checked (unused, unrevoked, unexpired, its member still in the
     /// vault), marked used, any earlier active connection of the client is replaced, and the new
-    /// connection is stored with the granted permissions.
+    /// connection is stored with the granted permissions. A live token refused for its identity,
+    /// its member or the permissions asked for is marked used all the same, and recorded as
+    /// `token_revoked`, `reason=connect_refused` (`RedeemRefusal::uses_up_token`).
     pub fn redeem_nip46_token(
         &self,
         secret_hash: &str,
@@ -986,24 +1045,19 @@ impl Database {
         if token.expires_at <= now {
             return Ok(Err(RedeemRefusal::Expired));
         }
-        if token.identity_pubkey.as_deref() != identity {
-            return Ok(Err(RedeemRefusal::OtherIdentity));
-        }
-        let role: Option<String> = tx
-            .query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![token.for_pubkey], |row| row.get(0))
-            .optional()?;
-        let Some(role) = role else { return Ok(Err(RedeemRefusal::MemberRemoved)) };
-        if !role.parse::<Role>().is_ok_and(|role| role.can_sign()) {
-            return Ok(Err(RedeemRefusal::MemberCannotSign));
-        }
-        if !may_use_identity(&tx, &token.for_pubkey, token.identity_pubkey.as_deref())? {
-            return Ok(Err(RedeemRefusal::NoIdentityAccess));
-        }
+        // From here the secret matched a live token: a refusal uses it up, in this transaction.
         let perms = grant(&token.perms, requested_perms);
-        let perms_granted = perms.clone();
-        if perms.is_empty() {
-            return Ok(Err(RedeemRefusal::NothingGrantable));
+        let refusal = match member_refusal(&tx, &token, identity)? {
+            Some(refusal) => Some(refusal),
+            None if perms.is_empty() => Some(RedeemRefusal::NothingGrantable),
+            None => None,
+        };
+        if let Some(refusal) = refusal {
+            use_up_refused_token(&tx, &token, client_pubkey, refusal, now)?;
+            tx.commit()?;
+            return Ok(Err(refusal));
         }
+        let perms_granted = perms.clone();
 
         tx.execute("UPDATE nip46_tokens SET used_at = ?2 WHERE id = ?1", params![token.id, now.to_rfc3339()])?;
         let replaced: Vec<(String, String)> = {
@@ -1159,12 +1213,26 @@ impl Database {
         Ok(ended)
     }
 
-    /// Whether `pubkey` is the key of any NIP-46 app that has connected, active or not (#97). The
-    /// traffic between those apps and the bunker is encrypted with the bunker's key, so the
+    /// Whether `pubkey` is the key of any NIP-46 app: one that has connected, active or not (#97),
+    /// or that has sent the bunker any NIP-46 request, connected or not (`record_nip46_sender`).
+    /// The traffic between those apps and the bunker is encrypted with the bunker's key, so the
     /// encryption methods refuse them as a peer.
     pub fn is_nip46_client(&self, pubkey: &str) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM nip46_connections WHERE client_pubkey = ?1)", params![pubkey], |row| row.get(0))?)
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM nip46_connections WHERE client_pubkey = ?1)
+                 OR EXISTS(SELECT 1 FROM nip46_senders WHERE pubkey = ?1)",
+            params![pubkey],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Records `pubkey` (hex) as the sender of a NIP-46 request, the first time it sends one; later
+    /// requests change nothing. Called for every request the bunker reads, before it is handled.
+    pub fn record_nip46_sender(&self, pubkey: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.execute("INSERT OR IGNORE INTO nip46_senders (pubkey, first_seen_at) VALUES (?1, ?2)", params![pubkey, db_time(now)])?;
+        Ok(())
     }
 
     pub fn touch_nip46_connection(&self, id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {

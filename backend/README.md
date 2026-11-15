@@ -297,7 +297,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `action` | When | `detail` |
 |----------|------|----------|
 | `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…`, then `;connection_lifetime_hours=…` when it has one, and `;rate_per_minute=…;rate_burst=…` when its rate limit is not the default (#101) |
-| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore, or their grant of its identity being removed (#103) | `reason=revoked`, `member_removed`, `role_changed`, `restored` or `access_removed` |
+| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore, or their grant of its identity being removed (#103), or is used up by a `connect` that was refused (no actor; the app's key in `client_pubkey`) | `reason=revoked`, `member_removed`, `role_changed`, `restored` or `access_removed`; for a refused `connect`, `reason=connect_refused;refusal=…`: `other_identity`, `member_removed`, `member_cannot_sign`, `no_identity_access` or `nothing_grantable` |
 | `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
 | `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored`, `expired` or `access_removed` (#103) |
 | `member_added`, `member_removed` | Team changes | `role=…` |
@@ -441,6 +441,12 @@ POST /api/bunker/connections/tokens
 - The token's permissions are stored as NIP-46 writes them: `sign_event:<kind>` for each kind, and
   each method by its name. If the app asks for permissions in `connect`, it gets those of them the
   token allows, and is refused if that leaves nothing.
+- A `connect` with the token's secret that is refused for another reason than the token itself
+  (it is addressed to another identity, the member is gone, is a viewer or may no longer use the
+  identity, or nothing it asks for is allowed) **uses the token up**: the answer ends
+  `. The token is now used up: ask an administrator for a new one`, the token is listed as used,
+  with no connection, and it is recorded as `token_revoked`, `reason=connect_refused`. Issue a new
+  one. An unknown, used, revoked or expired token is left as it is.
 - The token is valid for 1 hour to 7 days (24 hours by default), and **for one connection only**.
 - `connection_lifetime_hours` (#98), 1 to 8,760 (365 days), is how long the connection lasts,
   counted from when the app connects; anything else is `400 {"error":"invalid_lifetime"}`. Omitted,
@@ -493,8 +499,10 @@ it gets `Forbidden: this connection may not call <method>`, and nothing is encry
 recorded.
 
 The other party may be anyone, or the bunker's own key (NIP-51 private lists encrypt to oneself),
-but never the key of a NIP-46 app that has connected to this bunker, active or not:
-`Forbidden: <method> is not allowed with a NIP-46 app key`. The traffic between apps and the bunker
+but never the key of a NIP-46 app: one that has connected to this bunker, active or not, or that
+has sent it any NIP-46 request, whether or not it ever connected:
+`Forbidden: <method> is not allowed with a NIP-46 app key`. The bunker records the key of every
+request it reads, before handling it (migration 14). The traffic between apps and the bunker
 is encrypted with the bunker's key, so without this an app could read another app's requests and
 answers, or write some of its own.
 
