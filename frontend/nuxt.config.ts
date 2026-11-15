@@ -15,6 +15,9 @@ export default defineNuxtConfig({
         // NUXT_SITE_ORIGIN: the https origin users reach Bancwr on, which sign-in events must name.
         // Never taken from the request's Host header (#11).
         siteOrigin: '',
+        // NUXT_SESSION_STORE_DIR: the directory live sessions are kept in, so a restart signs
+        // nobody out (#100). compose.yaml mounts ./sessions there. Empty keeps them in memory.
+        sessionStoreDir: '',
         public: {
             // NUXT_PUBLIC_PROFILE_RELAYS: comma-separated relays the profile page reads and publishes
             // through, besides the member's own NIP-65 write relays (#30). Empty means the defaults

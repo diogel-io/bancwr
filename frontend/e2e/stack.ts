@@ -54,24 +54,28 @@ export function compose(args: string[], options: { capture?: boolean } = {}): st
 
 /**
  * The run's throwaway key storage (#94): a data directory and a root credential, at a path fixed by
- * the port so `test:e2e:stack:down` finds them from another process. Sets E2E_DATA_DIR and
- * E2E_ROOT_KEY_FILE, which compose.e2e.yaml needs even to stop the stack.
+ * the port so `test:e2e:stack:down` finds them from another process. Sets E2E_DATA_DIR,
+ * E2E_ROOT_KEY_FILE and E2E_SESSIONS_DIR (#100), which compose.e2e.yaml needs even to stop the stack.
  */
-export function keyStorage(): { dir: string, data: string, rootKey: string } {
+export function keyStorage(): { dir: string, data: string, rootKey: string, sessions: string } {
   const dir = join(tmpdir(), `bancwr-e2e-${process.env.E2E_PORT || DEFAULT_PORT}`)
-  const paths = { dir, data: join(dir, 'data'), rootKey: join(dir, 'root_key') }
+  const paths = { dir, data: join(dir, 'data'), rootKey: join(dir, 'root_key'), sessions: join(dir, 'sessions') }
   process.env.E2E_DATA_DIR = paths.data
   process.env.E2E_ROOT_KEY_FILE = paths.rootKey
+  process.env.E2E_SESSIONS_DIR = paths.sessions
   return paths
 }
 
 /** A fresh, empty key storage: a world-writable data directory and a random root credential. */
 function prepareKeyStorage(): void {
-  const { dir, data, rootKey } = keyStorage()
+  const { dir, data, rootKey, sessions } = keyStorage()
   rmSync(dir, { recursive: true, force: true })
-  mkdirSync(data, { recursive: true })
-  // The bunker runs as UID 65532 (#16), which differs from this user under Docker and Podman.
-  chmodSync(data, 0o777)
+  // The frontend's session store (#100), beside the bunker's data, removed with it.
+  for (const path of [data, sessions]) {
+    mkdirSync(path, { recursive: true })
+    // Both containers run as UID 65532 (#16), which differs from this user under Docker and Podman.
+    chmodSync(path, 0o777)
+  }
   // Throwaway, and readable by the container's user. A deployment's is 0400, owned by UID 65532.
   writeFileSync(rootKey, `${randomBytes(32).toString('hex')}\n`, { mode: 0o644 })
 }
@@ -107,6 +111,27 @@ export function down(): void {
   keyStorage()
   compose(['down', '--volumes', '--remove-orphans'])
   rmSync(keyStorage().dir, { recursive: true, force: true })
+}
+
+/**
+ * Restarts the frontend container, as an upgrade or a host reboot would (#100), and waits until it
+ * answers again. Only for a stack this run started: an external one (E2E_BASE_URL) is not ours.
+ */
+export async function restartFrontend(timeoutMs = 60_000): Promise<void> {
+  compose(['restart', 'frontend'])
+  const deadline = Date.now() + timeoutMs
+  let last = 'no response'
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl()}/api/auth/session`)
+      if (response.status === 401) return
+      last = `HTTP ${response.status}`
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error)
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  throw new Error(`The frontend did not answer after a restart within ${timeoutMs} ms (last: ${last}).`)
 }
 
 /**

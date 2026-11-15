@@ -147,7 +147,7 @@ extension's connected sites first.
 
 There is no field for an nsec: Bancwr never asks for a private key. A key that signs in but is not
 registered sees a page with its npub, to send to an administrator. Signing out ends the session
-everywhere it was copied, and restarting the frontend signs everyone out.
+everywhere it was copied. A session lasts 12 hours, and restarting the frontend keeps it (#100).
 
 ### Connecting apps (NIP-46)
 
@@ -208,6 +208,30 @@ sudo chown -R 65532:65532 ./data
 ```
 
 A new installation needs the same step before the first start.
+
+### Upgrading: sessions (#100)
+
+Live sign-in sessions are kept in `./sessions`, so restarting or upgrading the frontend no longer
+signs everyone out. The frontend runs as UID 65532 and refuses to start if it cannot write there,
+with a message saying so. Create the directory and hand it over once, before starting the new
+image:
+
+```bash
+mkdir -p -m 700 sessions
+podman unshare chown 65532:65532 sessions
+```
+
+With Docker instead of rootless Podman:
+
+```bash
+mkdir -p -m 700 sessions
+sudo chown 65532:65532 sessions
+```
+
+Everyone signs in once more after this upgrade, because the sessions of the old version were in
+its memory. The directory holds one small file per session, named by a hash of its id, never the
+id itself. It is not part of backups and needs none: emptying it only signs everyone out (see
+[Sign-in sessions](docs/operating.md#sign-in-sessions)).
 
 ### The key and backups
 
@@ -300,8 +324,8 @@ lists them all, with what each one means.
 - A restore brings back members removed and roles lowered since the backup. It revokes every
   connected app and unused token, but the team needs checking by hand
   ([docs/operating.md](docs/operating.md#what-a-restore-keeps-and-what-it-revokes)).
-- Sessions live in the frontend's memory, so restarting the frontend signs everyone out, and only
-  one frontend instance is supported (#100).
+- Only one frontend instance is supported: live sessions are kept in its `./sessions` directory,
+  which two instances cannot share (#100).
 - An app allowed to decrypt can read every encrypted message sent to the brand's key, from anyone.
   It cannot be limited to particular senders, though each decrypt is recorded.
 

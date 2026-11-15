@@ -74,14 +74,17 @@ fix the cause and restart the bunker.
 
    ```bash
    chmod 400 secrets/bancwr_root_key secrets/bancwr_backup_key secrets/bunker_nsec
-   mkdir -p -m 700 data
+   mkdir -p -m 700 data sessions
 
    # Rootless Podman
-   podman unshare chown -R 65532:65532 secrets data
+   podman unshare chown -R 65532:65532 secrets data sessions
 
    # Docker
-   sudo chown -R 65532:65532 secrets data
+   sudo chown -R 65532:65532 secrets data sessions
    ```
+
+   `sessions` is the frontend's, for live sign-in sessions (see [Sign-in sessions](#sign-in-sessions)).
+   The frontend refuses to start if it cannot write there.
 
 4. Import the key, once. This mounts the plain key for this one command only:
 
@@ -190,6 +193,30 @@ plain key again.
 
 Keep the backup passphrase as well, apart from both the root credential and the backups. Without
 it, a backup cannot be opened.
+
+## Sign-in sessions
+
+The frontend keeps live sign-in sessions in `./sessions` (#100), so restarting or upgrading it
+signs nobody out. A session still ends after 12 hours, or when its member signs out, which removes
+it at once, before the frontend answers, so a copy of the cookie stops working too.
+
+Each session is one small file, named by the SHA-256 of its id. The id itself is never written,
+and the cookie that carries it is sealed with `NUXT_SESSION_PASSWORD`, so a copy of the directory
+is no way to sign in. It holds the signed-in member's public key and when the session ends.
+
+- **Backups.** `./sessions` is not part of a backup and needs none. A lost or emptied directory
+  only means signing in again.
+- **Sign everyone out.** Stop the frontend, empty the directory, and start it again:
+
+  ```bash
+  podman compose stop frontend
+  find sessions -type f -delete     # with Docker: sudo find sessions -type f -delete
+  podman compose start frontend
+  ```
+
+  With rootless Podman, if the files are not yours on the host, run the `find` under
+  `podman unshare`.
+- **`NUXT_SESSION_PASSWORD`.** Changing it also signs everyone out: no earlier cookie can be read.
 
 ## Backing up the bunker
 

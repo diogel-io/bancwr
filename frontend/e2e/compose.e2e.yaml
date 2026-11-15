@@ -55,6 +55,11 @@ services:
       # A second in-process relay as the indexer (#62).
       - NUXT_PUBLIC_INDEXER_RELAYS=ws://127.0.0.1:${E2E_INDEXER_PORT:-7778}
       - NUXT_PUBLIC_BLOSSOM_SERVER=https://blossom.e2e.test
+      # Live sessions (#100), in a throwaway directory per run so a restart keeps them, as
+      # compose.yaml's ./sessions does. stack.ts makes it world-writable, as it does the data.
+      - NUXT_SESSION_STORE_DIR=/sessions
+    volumes:
+      - ${E2E_SESSIONS_DIR:?stack.ts sets E2E_SESSIONS_DIR}:/sessions:Z
     ports:
       # 3100, not 3000 or 3001, so the suite can run beside `pnpm dev` and the quickstart compose.
       - "${E2E_PORT:-3100}:3000"

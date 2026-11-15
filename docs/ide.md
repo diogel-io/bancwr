@@ -48,6 +48,10 @@ npub of the person who will sign in as the first administrator. It must not be t
 The frontend defaults to the local backend at `http://localhost:3000`, so `NUXT_API_BASE` does not
 need to be set for this setup.
 
+Without `NUXT_SESSION_STORE_DIR`, the frontend keeps sign-in sessions in memory, so restarting it
+signs you out. To keep them across restarts, as compose does, add
+`NUXT_SESSION_STORE_DIR=.data/sessions` to `frontend/.env`; `.data` is ignored by Git.
+
 ## Import the bunker key once
 
 The backend does not run with a plain `nsec`. It encrypts the key into `backend/data/` and uses a
