@@ -456,6 +456,27 @@ default is 60 signing and encryption requests a minute with a burst of 20, and t
 - Each token and connection shows its limit. A limit cannot be changed: issue a new token.
 - Apps connected before the upgrade are limited to the default.
 
+## Apps that need approval
+
+A brand often wants a person to check what a bot or a member's app posts before it goes out (#102).
+When issuing a token under **Connections**, tick the kinds under **Needs approval**: each request
+to sign one of them waits under **Approvals** until an administrator decides.
+
+- Each request shows the note or event exactly as it will be signed, who it is for and which app
+  asked. **Approve and sign** signs it and sends it to the app, which publishes it. **Reject** signs
+  nothing and tells the app why, with your note if you give one. Either is recorded in the audit
+  log with who decided.
+- A request nobody decides times out after 30 minutes, or `BANCWR_APPROVAL_TIMEOUT_MINUTES` (1 to
+  1,440) in `.env`, and nothing is signed. The dashboard's **Waiting for approval** shows how many
+  are waiting.
+- Apps differ in how long they wait. An app that gives up sooner never receives the signed event,
+  even if you approve it later: approve promptly, or set the app's own timeout longer if it has one.
+- Requests waiting are lost when the bunker restarts, and their apps get no answer. They are kept
+  only in memory so their content is never written to disk.
+- Signers see their own requests waiting, and cannot decide them. Any administrator can, their own
+  apps' requests included.
+- Which kinds need approval cannot be changed on an existing connection: issue a new token.
+
 ## Apps that read and send private messages
 
 An app can be allowed to encrypt and decrypt with the brand's key (#97), which direct messages
