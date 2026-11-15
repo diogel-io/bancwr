@@ -11,6 +11,37 @@ pub enum ConfigError {
     InvalidAdminPubkey,
     #[error("BANCWR_ADMIN_PUBKEY is the bunker's own public key, which can never be registered; set it to the first administrator's key")]
     AdminPubkeyIsBunkerKey,
+    #[error("BANCWR_APPROVAL_TIMEOUT_MINUTES must be a whole number of minutes from 1 to 1440")]
+    InvalidApprovalTimeout,
+    #[error("BANCWR_CONSOLE_URL must be an https:// address, or http:// on localhost, with no path")]
+    InvalidConsoleUrl,
+}
+
+/// How long a request waiting for approval (#102) waits, by default and at most.
+pub const DEFAULT_APPROVAL_TIMEOUT_MINUTES: u32 = 30;
+pub const MAX_APPROVAL_TIMEOUT_MINUTES: u32 = 1440;
+
+/// BANCWR_APPROVAL_TIMEOUT_MINUTES: unset or blank is the default, anything else 1 to 1440.
+pub fn approval_timeout_minutes(value: Option<String>) -> Result<u32, ConfigError> {
+    match value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        None => Ok(DEFAULT_APPROVAL_TIMEOUT_MINUTES),
+        Some(v) => v.parse::<u32>().ok().filter(|m| (1..=MAX_APPROVAL_TIMEOUT_MINUTES).contains(m)).ok_or(ConfigError::InvalidApprovalTimeout),
+    }
+}
+
+/// BANCWR_CONSOLE_URL (#102): the console's origin, so a request held for approval can point the
+/// app at it. Unset or blank is none. A trailing slash is dropped.
+pub fn console_url(value: Option<String>) -> Result<Option<String>, ConfigError> {
+    let Some(v) = value.map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    let local = |rest: &str| ["localhost", "127.0.0.1", "[::1]"].iter().any(|h| rest == *h || rest.starts_with(&format!("{}:", h)));
+    let ok = match (v.strip_prefix("https://"), v.strip_prefix("http://")) {
+        (Some(rest), _) => !rest.is_empty() && !rest.contains('/'),
+        (None, Some(rest)) => local(rest),
+        _ => false,
+    };
+    if ok { Ok(Some(v)) } else { Err(ConfigError::InvalidConsoleUrl) }
 }
 
 /// The version reported when BANCWR_VERSION is unset or blank, as under `cargo run`. Matches the
@@ -45,6 +76,11 @@ pub struct Config {
     /// identity on /api/bunker/* (#25). Required to start (#11, `require_proxy_secret`); optional
     /// here only so tests can build the router without it.
     pub proxy_secret: Option<String>,
+    /// BANCWR_APPROVAL_TIMEOUT_MINUTES (#102): how long a request held for approval waits.
+    pub approval_timeout_minutes: u32,
+    /// BANCWR_CONSOLE_URL (#102): the console's origin, for the `auth_url` of a held request. Compose
+    /// sets it from NUXT_SITE_ORIGIN. None: no `auth_url` is sent.
+    pub console_url: Option<String>,
 }
 
 impl Config {
@@ -88,6 +124,9 @@ impl Config {
             _ => None,
         };
 
+        let approval_timeout_minutes = approval_timeout_minutes(env::var("BANCWR_APPROVAL_TIMEOUT_MINUTES").ok())?;
+        let console_url = console_url(env::var("BANCWR_CONSOLE_URL").ok())?;
+
         Ok(Config {
             port,
             db_path,
@@ -96,6 +135,8 @@ impl Config {
             version,
             admin_pubkey,
             proxy_secret,
+            approval_timeout_minutes,
+            console_url,
         })
     }
 }

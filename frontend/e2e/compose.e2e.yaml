@@ -27,6 +27,9 @@ services:
       # e2e-host names from inside the container.
       - NIP46_ENABLED=true
       - NIP46_RELAYS=ws://e2e-host:${E2E_RELAY_PORT:-7777}
+      # Where a request held for approval points the app (#102): the console, as the browser
+      # reaches it.
+      - BANCWR_CONSOLE_URL=http://localhost:${E2E_PORT:-3100}
     extra_hosts:
       - "e2e-host:host-gateway"
     # A throwaway directory per run, removed by stack.ts afterwards: `import-key` writes the key file

@@ -48,6 +48,8 @@ async fn the_real_health_route_passes() {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: Some("s".repeat(32)),
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = bunker::state::AppState::new(
         bunker::signer::Signer::new(keys.secret_key().clone()),

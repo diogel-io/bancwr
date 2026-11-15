@@ -20,14 +20,14 @@ describe('AppSidebar', () => {
     signInAs('administrator')
     const component = await mountSuspended(AppSidebar)
 
-    for (const label of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections']) {
+    for (const label of ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections', 'Approvals']) {
       expect(component.text()).toContain(label)
     }
-    expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile', '/follows', '/relays', '/connections'])
+    expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile', '/follows', '/relays', '/connections', '/approvals'])
   })
 
-  it('offers signers the dashboard, profile, follows, relays and connections, and viewers the dashboard and team (#77)', async () => {
-    const expected: Record<string, string[]> = { signer: ['/', '/profile', '/follows', '/relays', '/connections'], viewer: ['/', '/team'] }
+  it('offers signers the dashboard, profile, follows, relays, connections and approvals (#102), and viewers the dashboard and team (#77)', async () => {
+    const expected: Record<string, string[]> = { signer: ['/', '/profile', '/follows', '/relays', '/connections', '/approvals'], viewer: ['/', '/team'] }
     for (const role of ['signer', 'viewer'] as Role[]) {
       signInAs(role)
       const component = await mountSuspended(AppSidebar)

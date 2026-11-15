@@ -121,3 +121,28 @@ fn test_proxy_secret_is_required_to_start() {
 
     env::remove_var("BANCWR_PROXY_SECRET");
 }
+
+#[test]
+fn the_approval_timeout_defaults_to_30_minutes_and_must_be_1_to_1440() {
+    use bunker::config::approval_timeout_minutes;
+    assert_eq!(approval_timeout_minutes(None).unwrap(), 30);
+    assert_eq!(approval_timeout_minutes(Some("  ".into())).unwrap(), 30);
+    assert_eq!(approval_timeout_minutes(Some("1".into())).unwrap(), 1);
+    assert_eq!(approval_timeout_minutes(Some(" 1440 ".into())).unwrap(), 1440);
+    for bad in ["0", "1441", "-5", "ten", "1.5"] {
+        assert!(approval_timeout_minutes(Some(bad.into())).is_err(), "{}", bad);
+    }
+}
+
+#[test]
+fn the_console_url_is_an_https_origin_or_http_on_this_machine() {
+    use bunker::config::console_url;
+    assert_eq!(console_url(None).unwrap(), None);
+    assert_eq!(console_url(Some("".into())).unwrap(), None);
+    assert_eq!(console_url(Some("https://bancwr.example/".into())).unwrap().as_deref(), Some("https://bancwr.example"));
+    assert_eq!(console_url(Some("https://bancwr.example:8443".into())).unwrap().as_deref(), Some("https://bancwr.example:8443"));
+    assert_eq!(console_url(Some("http://localhost:3001".into())).unwrap().as_deref(), Some("http://localhost:3001"));
+    for bad in ["http://bancwr.example", "bancwr.example", "https://bancwr.example/console", "ftp://x", "https://"] {
+        assert!(console_url(Some(bad.into())).is_err(), "{}", bad);
+    }
+}

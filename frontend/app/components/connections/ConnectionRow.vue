@@ -118,6 +118,10 @@ function revoke() {
             :title="connection.expires_at ? exact(connection.expires_at) : undefined"
             data-testid="connection-end"
           >{{ connectionEnd(connection.expires_at) }}</span>
+          <template v-if="connection.approval_kinds?.length">
+            ·
+            <span data-testid="connection-approval">needs approval: {{ connection.approval_kinds.map(kindLabel).join(', ') }}</span>
+          </template>
           <template v-if="connection.rate_per_minute">
             ·
             <span data-testid="connection-rate-limit">limited to {{ rateLimitLabel(connection.rate_per_minute, connection.rate_burst) }}</span>

@@ -14,7 +14,7 @@ test('shows the bunker as healthy, with its public key', async ({ page, bunkerNp
 })
 
 test('shows the metrics from the live bunker', async ({ page }) => {
-  for (const label of ['Total Signatures', 'NIP-46 Connections', 'HTTP Requests', 'Requests refused (rate limit)']) {
+  for (const label of ['Total Signatures', 'NIP-46 Connections', 'HTTP Requests', 'Requests refused (rate limit)', 'Waiting for approval']) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
 

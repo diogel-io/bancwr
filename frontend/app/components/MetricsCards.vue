@@ -29,6 +29,12 @@ const cards = computed(() => [
     label: 'Requests refused (rate limit)',
     icon: 'i-lucide-gauge',
     value: metrics.value?.nip46_rate_limited ?? 0
+  },
+  {
+    // Requests held for an administrator's approval right now (#102).
+    label: 'Waiting for approval',
+    icon: 'i-lucide-shield-check',
+    value: metrics.value?.approvals_pending ?? 0
   }
 ])
 </script>
@@ -37,7 +43,7 @@ const cards = computed(() => [
   <ForbiddenNotice v-if="isForbidden(error)" />
   <div
     v-else
-    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"
+    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
   >
     <UCard
       v-for="card in cards"

@@ -16,6 +16,11 @@
 //! Each connection is rate limited (#101, `rate_limit.rs`): the methods that use the key for the
 //! app count, checked once the connection is found and before anything else, so a refused request
 //! signs, decrypts and records nothing.
+//!
+//! A connection's kinds may need an administrator's approval (#102, `approvals.rs`): a
+//! `sign_event` for one is held rather than signed, answered at once with an auth challenge, and
+//! answered for real once it is approved, rejected, timed out or its connection ends.
+use crate::approvals::{self, ApprovalQueue, Pending, QueueFull, Scheme};
 use crate::audit::action;
 use crate::db::{ClientMetadata, Database, Nip46Connection, RedeemRefusal};
 use crate::rate_limit::{self, Decision, RateLimiter};
@@ -25,8 +30,9 @@ use nostr::hashes::{sha256, Hash};
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 use tracing::{info, warn};
 
 /// NIP-46 JSON-RPC request
@@ -46,6 +52,11 @@ pub struct Nip46Response {
 }
 
 impl Nip46Response {
+    /// The NIP-46 auth challenge: the app shows `url` and keeps waiting for the same request id.
+    pub fn auth_url(id: String, url: impl Into<String>) -> Self {
+        Self { id, result: Some("auth_url".to_string()), error: Some(url.into()) }
+    }
+
     fn ok(id: String, result: impl Into<String>) -> Self {
         Self { id, result: Some(result.into()), error: None }
     }
@@ -75,6 +86,44 @@ pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token 
 /// Shown once to a client whose connection has just reached its expiry (#98). After that it is a
 /// revoked connection like any other, and gets `NOT_CONNECTED`.
 pub const EXPIRED: &str = "This connection has expired";
+
+/// What `Nip46Handler::handle` decided about a request.
+#[derive(Debug)]
+pub enum Nip46Outcome {
+    /// Answer it now.
+    Reply(Nip46Response),
+    /// Held for approval (#102): send `notice`, the auth challenge, when there is one. The real
+    /// answer comes later, as a `Reply`.
+    Held { pending_id: Uuid, notice: Option<Nip46Response> },
+}
+
+/// An answer to send later (#102), to `client_pubkey`, encrypted as its request was.
+#[derive(Debug)]
+pub struct LaterReply {
+    pub client_pubkey: PublicKey,
+    pub scheme: Scheme,
+    pub response: Nip46Response,
+}
+
+impl LaterReply {
+    fn to(pending: &Pending, response: Nip46Response) -> Self {
+        Self { client_pubkey: pending.client_pubkey, scheme: pending.scheme, response }
+    }
+}
+
+/// Why `Nip46Handler::approve` did not sign.
+#[derive(Debug)]
+pub enum ApprovalError {
+    /// No such request is waiting: unknown, or already decided.
+    NotFound,
+    /// The administrator approved another event than the one waiting.
+    EventMismatch,
+    /// The connection ended, or may no longer sign this kind: the request is cancelled, and this is
+    /// the app's answer.
+    ConnectionEnded(LaterReply),
+    /// It could not be recorded, so nothing was signed and the request still waits.
+    Internal,
+}
 
 /// The error a client over its rate limit gets (#101).
 pub fn rate_limited_message(limit: rate_limit::RateLimit, retry_after_secs: u64) -> String {
@@ -110,11 +159,51 @@ pub struct Nip46Handler {
     limiter: RateLimiter,
     /// Requests refused for the rate limit since the bunker started (#101), for the metrics.
     rate_limited: AtomicU64,
+    /// Requests held for approval (#102).
+    approvals: ApprovalQueue,
+    approval_settings: Mutex<ApprovalSettings>,
+}
+
+/// How long a held request waits, and where the console is, for its auth challenge (#102).
+#[derive(Debug, Clone)]
+struct ApprovalSettings {
+    timeout: chrono::Duration,
+    console_url: Option<String>,
 }
 
 impl Nip46Handler {
     pub fn new(signer: Arc<RwLock<Signer>>, db: Database) -> Self {
-        Self { signer, db, limiter: RateLimiter::new(), rate_limited: AtomicU64::new(0) }
+        Self {
+            signer,
+            db,
+            limiter: RateLimiter::new(),
+            rate_limited: AtomicU64::new(0),
+            approvals: ApprovalQueue::new(),
+            approval_settings: Mutex::new(ApprovalSettings {
+                timeout: chrono::Duration::minutes(crate::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES.into()),
+                console_url: None,
+            }),
+        }
+    }
+
+    /// Sets how long a held request waits, and the console's origin for its auth challenge
+    /// (#102). `AppState::new` sets them from the config; tests shorten the timeout.
+    pub fn configure_approvals(&self, timeout: chrono::Duration, console_url: Option<String>) {
+        *self.approval_settings.lock().unwrap_or_else(|p| p.into_inner()) = ApprovalSettings { timeout, console_url };
+    }
+
+    fn approval_settings(&self) -> ApprovalSettings {
+        self.approval_settings.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Requests waiting for approval, for /api/bunker/metrics.
+    pub fn approvals_pending(&self) -> usize {
+        self.approvals.len()
+    }
+
+    /// Requests waiting for approval, oldest first: all, or those for `for_pubkey`.
+    pub fn pending_approvals(&self, for_pubkey: Option<&str>) -> Vec<Pending> {
+        self.approvals.list(for_pubkey)
     }
 
     /// Requests refused for the rate limit since the bunker started (#101).
@@ -159,14 +248,25 @@ impl Nip46Handler {
         })
     }
 
-    /// Handle incoming NIP-46 request
+    /// Handles a request that arrived encrypted with NIP-44, and returns what to answer now: for a
+    /// request held for approval (#102), its auth challenge (whether or not the relay would send
+    /// one). For tests, and callers that never hold; the relay client uses `handle`.
     pub async fn handle_request(&self, request: Nip46Request, client_pubkey: PublicKey) -> Nip46Response {
+        let id = request.id.clone();
+        match self.handle(request, client_pubkey, Scheme::Nip44).await {
+            Nip46Outcome::Reply(response) => response,
+            Nip46Outcome::Held { pending_id, notice } => notice.unwrap_or_else(|| Nip46Response::auth_url(id, format!("/approvals/{}", pending_id))),
+        }
+    }
+
+    /// Handle incoming NIP-46 request
+    pub async fn handle(&self, request: Nip46Request, client_pubkey: PublicKey, scheme: Scheme) -> Nip46Outcome {
         info!("Handling NIP-46 request: method={}, id={}", request.method, request.id);
         if request.method == "connect" {
             // An app reconnecting after its connection expired (#98): mark that one `expired`
             // first, rather than `replaced`.
             expire_connections(&self.db);
-            return self.handle_connect(request, client_pubkey).await;
+            return Nip46Outcome::Reply(self.handle_connect(request, client_pubkey).await);
         }
 
         let connection = match self.db.active_nip46_connection(&client_pubkey.to_hex()) {
@@ -176,20 +276,22 @@ impl Nip46Handler {
                 // refusal ends it and says why.
                 let client = client_pubkey.to_hex();
                 let expired = expire_connections(&self.db).into_iter().any(|c| c.client_pubkey == client);
-                return Nip46Response::err(request.id, if expired { EXPIRED } else { NOT_CONNECTED });
+                return Nip46Outcome::Reply(Nip46Response::err(request.id, if expired { EXPIRED } else { NOT_CONNECTED }));
             }
             Err(e) => {
                 warn!("Failed to read the NIP-46 connection of {}: {}", client_pubkey, e);
-                return Nip46Response::err(request.id, "Internal error");
+                return Nip46Outcome::Reply(Nip46Response::err(request.id, "Internal error"));
             }
         };
 
         if let Some(refusal) = self.rate_limit_refusal(&request, &connection) {
-            return refusal;
+            return Nip46Outcome::Reply(refusal);
         }
 
-        match request.method.as_str() {
-            "sign_event" => self.handle_sign_event(request, client_pubkey, &connection).await,
+        if request.method == "sign_event" {
+            return self.handle_sign_event(request, client_pubkey, &connection, scheme).await;
+        }
+        Nip46Outcome::Reply(match request.method.as_str() {
             "get_public_key" => Nip46Response::ok(request.id, self.signer.read().await.public_key_hex()),
             "ping" => Nip46Response::ok(request.id, "pong"),
             // No relay change is proposed. An administrator can change the bunker's relays (#78),
@@ -206,7 +308,7 @@ impl Nip46Handler {
             }
             "nip04_encrypt" | "nip04_decrypt" | "nip44_encrypt" | "nip44_decrypt" => self.handle_crypto(request, &connection).await,
             _ => Nip46Response::err(request.id, format!("Unknown method: {}", request.method)),
-        }
+        })
     }
 
     /// `connect`: `[remote-signer-pubkey, secret, requested-perms?, client-metadata?]`.
@@ -246,33 +348,91 @@ impl Nip46Handler {
         }
     }
 
-    /// sign_event: only kinds the connection was granted.
-    async fn handle_sign_event(&self, request: Nip46Request, client_pubkey: PublicKey, connection: &Nip46Connection) -> Nip46Response {
+    /// sign_event: only kinds the connection was granted, and those that need approval (#102) only
+    /// once an administrator approves.
+    async fn handle_sign_event(&self, request: Nip46Request, client_pubkey: PublicKey, connection: &Nip46Connection, scheme: Scheme) -> Nip46Outcome {
+        let unsigned_event = match self.event_to_sign(&request).await {
+            Ok(event) => event,
+            Err(response) => return Nip46Outcome::Reply(response),
+        };
+        let kind = unsigned_event.kind.as_u16();
+        if !connection.perms.contains(&sign_permission(kind)) {
+            return Nip46Outcome::Reply(Nip46Response::err(request.id, format!("Forbidden: this connection may not sign kind {}", kind)));
+        }
+        if connection.needs_approval(kind) {
+            return self.hold(request, client_pubkey, connection, scheme, unsigned_event);
+        }
+        Nip46Outcome::Reply(self.sign_now(request.id, client_pubkey, connection, unsigned_event).await)
+    }
+
+    /// The event a `sign_event` asks for, as the bunker would sign it: its own key, with the id
+    /// computed. Or the answer refusing it.
+    async fn event_to_sign(&self, request: &Nip46Request) -> Result<UnsignedEvent, Nip46Response> {
         let Some(unsigned_event_json) = request.params.first() else {
-            return Nip46Response::err(request.id, "Missing event to sign");
+            return Err(Nip46Response::err(request.id.clone(), "Missing event to sign"));
         };
         // NIP-46 defines the parameter as `{kind, content, tags, created_at}`, with no pubkey, and
         // nostr-tools sends exactly that; some clients add a pubkey. Either way the event is signed
         // as the bunker's key, so the bunker's key is what goes in (#31 found the strict parse).
         let mut template: serde_json::Value = match serde_json::from_str(unsigned_event_json) {
             Ok(value @ serde_json::Value::Object(_)) => value,
-            Ok(_) => return Nip46Response::err(request.id, "Invalid event JSON: expected an object"),
-            Err(e) => return Nip46Response::err(request.id, format!("Invalid event JSON: {}", e)),
+            Ok(_) => return Err(Nip46Response::err(request.id.clone(), "Invalid event JSON: expected an object")),
+            Err(e) => return Err(Nip46Response::err(request.id.clone(), format!("Invalid event JSON: {}", e))),
         };
         template["pubkey"] = serde_json::Value::String(self.signer.read().await.public_key_hex());
         if let Some(object) = template.as_object_mut() {
             // Any id the client computed was for its own idea of the event; it is recomputed.
             object.remove("id");
         }
-        let unsigned_event: UnsignedEvent = match serde_json::from_value(template) {
+        let mut unsigned_event: UnsignedEvent = match serde_json::from_value(template) {
             Ok(ev) => ev,
-            Err(e) => return Nip46Response::err(request.id, format!("Invalid event JSON: {}", e)),
+            Err(e) => return Err(Nip46Response::err(request.id.clone(), format!("Invalid event JSON: {}", e))),
         };
-        let kind = unsigned_event.kind.as_u16();
-        if !connection.perms.contains(&sign_permission(kind)) {
-            return Nip46Response::err(request.id, format!("Forbidden: this connection may not sign kind {}", kind));
-        }
+        unsigned_event.id = None;
+        unsigned_event.ensure_id();
+        Ok(unsigned_event)
+    }
 
+    /// Parks a `sign_event` for approval (#102), recording it first: if that fails, or the queue
+    /// is full, it is refused and nothing waits.
+    fn hold(&self, request: Nip46Request, client_pubkey: PublicKey, connection: &Nip46Connection, scheme: Scheme, event: UnsignedEvent) -> Nip46Outcome {
+        let settings = self.approval_settings();
+        let now = Utc::now();
+        let Some(event_id) = event.id else {
+            return Nip46Outcome::Reply(Nip46Response::err(request.id, "Internal error"));
+        };
+        let pending = Pending {
+            id: Uuid::new_v4(),
+            request_id: request.id.clone(),
+            client_pubkey,
+            scheme,
+            connection: connection.clone(),
+            event,
+            event_id,
+            requested_at: now,
+            expires_at: now + settings.timeout,
+        };
+        let (pending_id, detail) = (pending.id, pending.audit_detail());
+        if let Err(full) = self.approvals.hold(pending) {
+            warn!("NIP-46 connection {} asked to sign kind {}, but {} too many requests are waiting", connection.id, event_kind(&detail), match full {
+                QueueFull::Connection => "it has",
+                QueueFull::Bunker => "the bunker has",
+            });
+            return Nip46Outcome::Reply(Nip46Response::err(request.id, approvals::QUEUE_FULL));
+        }
+        if let Err(e) = self.db.record_approval(action::APPROVAL_REQUESTED, connection, None, detail, now) {
+            warn!("Failed to record a request for approval from {}, so it is refused: {}", connection.client_pubkey, e);
+            self.approvals.take(pending_id);
+            return Nip46Outcome::Reply(Nip46Response::err(request.id, "Internal error"));
+        }
+        info!("NIP-46 connection {} for {} asked to sign; held for approval as {}", connection.id, connection.for_pubkey, pending_id);
+        let notice = settings.console_url.map(|console| Nip46Response::auth_url(request.id, format!("{}/approvals/{}", console, pending_id)));
+        Nip46Outcome::Held { pending_id, notice }
+    }
+
+    /// Signs `unsigned_event` for the connection now, logging it as a signature.
+    async fn sign_now(&self, request_id: String, client_pubkey: PublicKey, connection: &Nip46Connection, unsigned_event: UnsignedEvent) -> Nip46Response {
+        let kind = unsigned_event.kind.as_u16();
         match self.signer.read().await.sign_event(unsigned_event).await {
             Ok(signed_event) => {
                 let now = Utc::now();
@@ -290,9 +450,123 @@ impl Nip46Handler {
                 ) {
                     warn!("Failed to log signing event: {}", e);
                 }
-                Nip46Response::ok(request.id, signed_event.as_json())
+                Nip46Response::ok(request_id, signed_event.as_json())
             }
-            Err(e) => Nip46Response::err(request.id, format!("Signing error: {}", e)),
+            Err(e) => Nip46Response::err(request_id, format!("Signing error: {}", e)),
+        }
+    }
+}
+
+/// The kind in an approval's audit detail, for a log line.
+fn event_kind(detail: &str) -> &str {
+    detail.split(';').find_map(|part| part.strip_prefix("kind=")).unwrap_or("?")
+}
+
+impl Nip46Handler {
+    /// Approves the waiting request `id` (#102), if `event_id` is the event waiting: the connection
+    /// is checked again, then the event is signed, logged and recorded as `approval_approved` by
+    /// `actor`. Returns the app's answer, to send.
+    pub async fn approve(&self, id: Uuid, event_id: &str, actor: Option<&str>, note: Option<&str>) -> Result<LaterReply, ApprovalError> {
+        let waiting = self.approvals.get(id).ok_or(ApprovalError::NotFound)?;
+        if !waiting.event_id.to_hex().eq_ignore_ascii_case(event_id.trim()) {
+            return Err(ApprovalError::EventMismatch);
+        }
+        let pending = self.approvals.take(id).ok_or(ApprovalError::NotFound)?;
+        let now = Utc::now();
+        let note = approvals::clean_note(note);
+
+        // Still active, still for a member who may sign, and still allowed this kind.
+        let current = match self.db.active_nip46_connection(&pending.client_pubkey.to_hex()) {
+            Ok(current) => current.filter(|c| c.id == pending.connection.id && c.perms.contains(&sign_permission(pending.kind()))),
+            Err(e) => {
+                warn!("Failed to read the NIP-46 connection of {} to approve {}: {}", pending.client_pubkey, id, e);
+                self.put_back(pending);
+                return Err(ApprovalError::Internal);
+            }
+        };
+        let Some(connection) = current else {
+            return Err(ApprovalError::ConnectionEnded(self.cancel(pending, now)));
+        };
+
+        let mut detail = pending.audit_detail();
+        if let Some(note) = &note {
+            detail.push_str(&format!(";note={}", note));
+        }
+        if let Err(e) = self.db.record_approval(action::APPROVAL_APPROVED, &connection, actor, detail, now) {
+            warn!("Failed to record the approval of {}, so nothing was signed: {}", id, e);
+            self.put_back(pending);
+            return Err(ApprovalError::Internal);
+        }
+        info!("Approval {} for NIP-46 connection {} approved; signing kind {}", id, connection.id, pending.kind());
+        let response = self.sign_now(pending.request_id.clone(), pending.client_pubkey, &connection, pending.event.clone()).await;
+        Ok(LaterReply::to(&pending, response))
+    }
+
+    /// Rejects the waiting request `id` (#102), recorded as `approval_rejected` by `actor`. Returns
+    /// the app's answer, to send, or None when no such request is waiting.
+    pub fn reject(&self, id: Uuid, actor: Option<&str>, note: Option<&str>) -> Result<LaterReply, ApprovalError> {
+        let pending = self.approvals.take(id).ok_or(ApprovalError::NotFound)?;
+        let now = Utc::now();
+        let note = approvals::clean_note(note);
+        let mut detail = pending.audit_detail();
+        if let Some(note) = &note {
+            detail.push_str(&format!(";note={}", note));
+        }
+        if let Err(e) = self.db.record_approval(action::APPROVAL_REJECTED, &pending.connection, actor, detail, now) {
+            warn!("Failed to record the rejection of {}: {}", id, e);
+            self.put_back(pending);
+            return Err(ApprovalError::Internal);
+        }
+        info!("Approval {} for NIP-46 connection {} rejected", id, pending.connection.id);
+        let response = Nip46Response::err(pending.request_id.clone(), approvals::rejected_message(note.as_deref()));
+        Ok(LaterReply::to(&pending, response))
+    }
+
+    /// Ends every request past its expiry, and every request whose connection has ended (#102).
+    /// Each is recorded, and the answers are returned, to send. Called every few seconds
+    /// (`main.rs`).
+    pub fn sweep_approvals(&self, now: chrono::DateTime<Utc>) -> Vec<LaterReply> {
+        let timeout = self.approval_settings().timeout;
+        let mut replies = Vec::new();
+        for pending in self.approvals.take_expired(now) {
+            let detail = format!("{};timeout_seconds={}", pending.audit_detail(), timeout.num_seconds());
+            if let Err(e) = self.db.record_approval(action::APPROVAL_EXPIRED, &pending.connection, None, detail, now) {
+                warn!("Failed to record that approval {} timed out: {}", pending.id, e);
+            }
+            warn!("Approval {} for NIP-46 connection {} timed out; nothing was signed", pending.id, pending.connection.id);
+            replies.push(LaterReply::to(&pending, Nip46Response::err(pending.request_id.clone(), approvals::timed_out_message(timeout))));
+        }
+        let waiting = self.approvals.list(None);
+        let mut ended = std::collections::HashSet::new();
+        for pending in &waiting {
+            match self.db.active_nip46_connection_at(&pending.client_pubkey.to_hex(), now) {
+                Ok(Some(c)) if c.id == pending.connection.id => {}
+                Ok(_) => {
+                    ended.insert(pending.id);
+                }
+                Err(e) => warn!("Failed to check the connection of approval {}: {}", pending.id, e),
+            }
+        }
+        for pending in self.approvals.take_where(|p| ended.contains(&p.id)) {
+            replies.push(self.cancel(pending, now));
+        }
+        replies
+    }
+
+    /// Cancels `pending`, whose connection has ended: recorded as `approval_cancelled`.
+    fn cancel(&self, pending: Pending, now: chrono::DateTime<Utc>) -> LaterReply {
+        let detail = format!("{};reason=connection_ended", pending.audit_detail());
+        if let Err(e) = self.db.record_approval(action::APPROVAL_CANCELLED, &pending.connection, None, detail, now) {
+            warn!("Failed to record that approval {} was cancelled: {}", pending.id, e);
+        }
+        info!("Approval {} cancelled: NIP-46 connection {} has ended", pending.id, pending.connection.id);
+        LaterReply::to(&pending, Nip46Response::err(pending.request_id.clone(), approvals::CONNECTION_ENDED))
+    }
+
+    /// Returns a request taken for a decision that could not be recorded, so it still waits.
+    fn put_back(&self, pending: Pending) {
+        if self.approvals.hold(pending).is_err() {
+            warn!("An approval could not be put back in the queue, which is full");
         }
     }
 }

@@ -240,6 +240,17 @@ async fn serve() -> anyhow::Result<()> {
         }
     });
 
+    // Requests held for approval (#102) that time out, or whose connection ended, are answered
+    // within a few seconds.
+    let approvals_state = state.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(std::time::Duration::from_secs(bunker::approvals_api::SWEEP_SECONDS));
+        loop {
+            every.tick().await;
+            bunker::approvals_api::sweep(&approvals_state).await;
+        }
+    });
+
     info!("HTTP API listening on http://{}", addr);
 
     let http_state = state.clone();

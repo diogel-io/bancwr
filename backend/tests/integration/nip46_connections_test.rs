@@ -2,7 +2,8 @@
 // standard NIP-46 client (rust-nostr's nostr-connect) connects with it through a relay, learns the
 // bunker's key and signs a granted kind; a kind outside the grant is refused; the connection is
 // listed for its member and survives a restart. Plus who may issue, list and revoke, and the
-// encryption methods (#97) over the same client, connection lifetimes (#98) and rate limits (#101).
+// encryption methods (#97) over the same client, connection lifetimes (#98), rate limits (#101), and
+// approval before signing (#102): approved, rejected and timed out, over the relay.
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -188,6 +189,8 @@ async fn issuing_is_validated_and_refused_with_nip46_off() {
         (json!({ "label": "x", "kinds": [1], "connection_lifetime_hours": 0 }), "invalid_lifetime"),
         (json!({ "label": "x", "kinds": [1], "connection_lifetime_hours": 8761 }), "invalid_lifetime"),
         (json!({ "label": "x", "kinds": [1], "rate_per_minute": 0 }), "invalid_rate_limit"),
+        (json!({ "label": "x", "kinds": [1], "approval_kinds": [7] }), "invalid_approval_kinds"),
+        (json!({ "label": "x", "kinds": [1], "approval_kinds": [70000] }), "invalid_approval_kinds"),
         (json!({ "label": "x", "kinds": [1], "rate_per_minute": 601 }), "invalid_rate_limit"),
         (json!({ "label": "x", "kinds": [1], "rate_burst": 0 }), "invalid_rate_limit"),
         (json!({ "label": "x", "kinds": [1], "rate_burst": 101 }), "invalid_rate_limit"),
@@ -653,4 +656,176 @@ async fn a_standard_nip46_client_past_its_burst_is_refused_over_the_relay_and_co
     let metrics: Value = app.signed(Method::GET, "/api/bunker/metrics", &admin).send().await.unwrap().json().await.unwrap();
     assert_eq!(metrics["nip46_rate_limited"], 1);
     assert_eq!(metrics["total_signatures"], 2);
+}
+
+/// Records each `auth_url` a client is sent (#102).
+#[derive(Debug, Clone, Default)]
+struct SeenAuthUrls(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl AuthUrlHandler for SeenAuthUrls {
+    fn on_auth_url(&self, auth_url: Url) -> BoxedFuture<'_, Result<()>> {
+        let seen = self.0.clone();
+        Box::pin(async move {
+            seen.lock().unwrap().push(auth_url.to_string());
+            Ok(())
+        })
+    }
+}
+
+/// A standard client connected with a token allowing kinds 1 and 7, of which 1 needs approval.
+async fn gated_client(app: &common::TestApp) -> (NostrConnect, SeenAuthUrls, PublicKey) {
+    let admin = app.admin.public_key().to_hex();
+    let res = issue(app, &admin, json!({ "label": "Social bot", "kinds": [1, 7], "approval_kinds": [1] })).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let token: IssueTokenResponse = res.json().await.unwrap();
+    assert_eq!(token.approval_kinds, vec![1]);
+    let mut client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(20), None).unwrap();
+    let seen = SeenAuthUrls::default();
+    client.auth_url_handler(seen.clone());
+    let bunker = client.get_public_key().await.unwrap();
+    (client, seen, bunker)
+}
+
+/// The one request waiting, once it is.
+async fn waiting(app: &common::TestApp) -> bunker::approvals_api::ApprovalResponse {
+    let admin = app.admin.public_key().to_hex();
+    for _ in 0..50 {
+        let mut listed: Vec<bunker::approvals_api::ApprovalResponse> =
+            app.signed(Method::GET, "/api/bunker/approvals", &admin).send().await.unwrap().json().await.unwrap();
+        if let Some(request) = listed.pop() {
+            return request;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no request is waiting for approval")
+}
+
+async fn spawn_relay_app() -> (MockRelay, common::TestApp) {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_bunker_relay_client(&app, &relay.url()).await;
+    (relay, app)
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_waits_for_approval_and_gets_the_event_once_approved() {
+    let (_relay, app) = spawn_relay_app().await;
+    app.state.nip46_handler.configure_approvals(chrono::Duration::minutes(30), Some("https://console.example".to_string()));
+    let admin = app.admin.public_key().to_hex();
+    let (client, seen, bunker) = gated_client(&app).await;
+
+    // A reaction does not need approval.
+    assert!(client.sign_event(EventBuilder::reaction_extended(EventId::all_zeros(), bunker, None, "+").build(bunker)).await.is_ok());
+
+    let signing = tokio::spawn(async move { client.sign_event(EventBuilder::text_note("launch day").build(bunker)).await });
+    let request = waiting(&app).await;
+    assert_eq!((request.kind, request.content.as_str(), request.member_name.as_deref()), (1, "launch day", Some("Admin")));
+    assert_eq!(app.db.signature_count().unwrap(), 1, "only the reaction so far");
+    // The client was told where the request waits.
+    for _ in 0..20 {
+        if !seen.0.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen.0.lock().unwrap().clone(), vec![format!("https://console.example/approvals/{}", request.id)]);
+
+    let res = app
+        .signed(Method::POST, &format!("/api/bunker/approvals/{}/approve", request.id), &admin)
+        .json(&json!({ "event_id": request.event_id, "note": "Go" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let event = signing.await.unwrap().expect("signed once approved");
+    assert_eq!(event.id.to_hex(), request.event_id);
+    assert_eq!(event.pubkey, app.bunker.public_key());
+    assert!(event.verify().is_ok());
+    assert_eq!(app.db.signature_count().unwrap(), 2);
+
+    // Decided once.
+    let again = app.signed(Method::POST, &format!("/api/bunker/approvals/{}/approve", request.id), &admin).json(&json!({ "event_id": request.event_id })).send().await.unwrap();
+    assert_eq!(again.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_is_told_when_its_request_is_rejected() {
+    let (_relay, app) = spawn_relay_app().await;
+    let admin = app.admin.public_key().to_hex();
+    let (client, _, bunker) = gated_client(&app).await;
+
+    let signing = tokio::spawn(async move { client.sign_event(EventBuilder::text_note("off brand").build(bunker)).await });
+    let request = waiting(&app).await;
+    // Approving another event than the one shown is refused, and it still waits.
+    let stale = app
+        .signed(Method::POST, &format!("/api/bunker/approvals/{}/approve", request.id), &admin)
+        .json(&json!({ "event_id": EventId::all_zeros().to_hex() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+    let res = app
+        .signed(Method::POST, &format!("/api/bunker/approvals/{}/reject", request.id), &admin)
+        .json(&json!({ "note": "Not today" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let error = signing.await.unwrap().expect_err("rejected").to_string();
+    assert!(error.contains("Rejected by an administrator: Not today"), "{}", error);
+    assert_eq!(app.db.signature_count().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_is_told_when_its_request_times_out() {
+    let (_relay, app) = spawn_relay_app().await;
+    app.state.nip46_handler.configure_approvals(chrono::Duration::seconds(1), None);
+    let admin = app.admin.public_key().to_hex();
+    let (client, _, bunker) = gated_client(&app).await;
+
+    let signing = tokio::spawn(async move { client.sign_event(EventBuilder::text_note("nobody looked").build(bunker)).await });
+    let request = waiting(&app).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    bunker::approvals_api::sweep(&app.state).await;
+
+    let error = signing.await.unwrap().expect_err("timed out").to_string();
+    assert!(error.contains("Approval timed out after 1 second: nothing was signed"), "{}", error);
+    assert_eq!(app.db.signature_count().unwrap(), 0);
+    let late = app.signed(Method::POST, &format!("/api/bunker/approvals/{}/approve", request.id), &admin).json(&json!({ "event_id": request.event_id })).send().await.unwrap();
+    assert_eq!(late.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_signer_sees_only_their_own_requests_waiting_and_cannot_decide_them() {
+    let (_relay, app) = spawn_relay_app().await;
+    let signer = app.register(Role::Signer);
+    let admin = app.admin.public_key().to_hex();
+    let token: IssueTokenResponse = issue(&app, &admin, json!({ "for_pubkey": signer.public_key().to_hex(), "label": "Bot", "kinds": [1], "approval_kinds": [1] }))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(20), None).unwrap();
+    let bunker = client.get_public_key().await.unwrap();
+    let _signing = tokio::spawn(async move { client.sign_event(EventBuilder::text_note("mine").build(bunker)).await });
+    let request = waiting(&app).await;
+
+    let own: Vec<bunker::approvals_api::ApprovalResponse> =
+        app.signed(Method::GET, "/api/bunker/approvals", &signer.public_key().to_hex()).send().await.unwrap().json().await.unwrap();
+    assert_eq!(own.len(), 1);
+    let other = app.register(Role::Signer);
+    let none: Vec<bunker::approvals_api::ApprovalResponse> =
+        app.signed(Method::GET, "/api/bunker/approvals", &other.public_key().to_hex()).send().await.unwrap().json().await.unwrap();
+    assert!(none.is_empty());
+    let refused = app
+        .signed(Method::POST, &format!("/api/bunker/approvals/{}/approve", request.id), &signer.public_key().to_hex())
+        .json(&json!({ "event_id": request.event_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    let listed = connections(&app, &admin).await;
+    assert_eq!(listed[0].approval_kinds, vec![1]);
 }

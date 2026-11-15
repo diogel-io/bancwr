@@ -63,6 +63,8 @@ pub struct Metrics {
     pub total_signatures: u64,
     /// NIP-46 requests refused for a connection's rate limit since the bunker started (#101).
     pub nip46_rate_limited: u64,
+    /// NIP-46 requests waiting for an administrator's approval now (#102).
+    pub approvals_pending: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -153,6 +155,7 @@ pub async fn get_metrics(
         nip46_connections: state.nip46_handler.connection_count().await,
         total_signatures: state.db.signature_count().unwrap_or(0),
         nip46_rate_limited: state.nip46_handler.rate_limited_count(),
+        approvals_pending: state.nip46_handler.approvals_pending(),
     })
 }
 
@@ -423,7 +426,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays))
         // NIP-46 connection tokens (#53), only for a member who can sign (#77).
         .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
-        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token));
+        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
+        // Deciding requests held for approval (#102): administrators only.
+        .route("/api/bunker/approvals/:id/approve", post(crate::approvals_api::approve))
+        .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject));
     // Administrators and viewers read the team (#77).
     let team_read = Router::new().route("/api/bunker/team", get(get_team));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
@@ -433,7 +439,9 @@ pub fn create_router(state: AppState) -> Router {
     let signer = Router::new()
         .route("/api/bunker/connections", get(crate::connections_api::list_connections))
         .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection))
-        .route("/api/bunker/logs/mine", get(get_my_logs));
+        .route("/api/bunker/logs/mine", get(get_my_logs))
+        // Requests held for approval (#102): administrators see all, signers their own.
+        .route("/api/bunker/approvals", get(crate::approvals_api::list_approvals));
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no

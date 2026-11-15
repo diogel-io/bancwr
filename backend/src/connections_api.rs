@@ -88,6 +88,9 @@ pub struct IssueTokenRequest {
     pub rate_per_minute: Option<u32>,
     #[serde(default)]
     pub rate_burst: Option<u32>,
+    /// Kinds held for an administrator's approval before signing (#102): each one of `kinds`.
+    #[serde(default)]
+    pub approval_kinds: Vec<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -105,6 +108,8 @@ pub struct IssueTokenResponse {
     /// The connection's rate limit in force (#101).
     pub rate_per_minute: u32,
     pub rate_burst: u32,
+    /// Kinds held for approval (#102).
+    pub approval_kinds: Vec<u16>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -122,6 +127,8 @@ pub struct TokenResponse {
     /// The connection's rate limit in force (#101).
     pub rate_per_minute: u32,
     pub rate_burst: u32,
+    /// Kinds held for approval (#102).
+    pub approval_kinds: Vec<u16>,
     pub used_at: Option<String>,
     pub revoked_at: Option<String>,
 }
@@ -141,6 +148,7 @@ impl From<Nip46Token> for TokenResponse {
             connection_lifetime_hours: t.connection_lifetime_hours,
             rate_per_minute: limit.per_minute,
             rate_burst: limit.burst,
+            approval_kinds: kinds(&t.approval_perms),
             used_at: t.used_at.map(|v| v.to_rfc3339()),
             revoked_at: t.revoked_at.map(|v| v.to_rfc3339()),
         }
@@ -170,6 +178,8 @@ pub struct ConnectionResponse {
     /// Its rate limit in force (#101).
     pub rate_per_minute: u32,
     pub rate_burst: u32,
+    /// Kinds held for approval (#102).
+    pub approval_kinds: Vec<u16>,
 }
 
 impl From<Nip46Connection> for ConnectionResponse {
@@ -193,6 +203,7 @@ impl From<Nip46Connection> for ConnectionResponse {
             expires_at: c.expires_at.map(|v| v.to_rfc3339()),
             rate_per_minute: limit.per_minute,
             rate_burst: limit.burst,
+            approval_kinds: kinds(&c.approval_perms),
         }
     }
 }
@@ -276,6 +287,21 @@ pub async fn issue_token(
             "A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.",
         )
     })?;
+    let mut approval_kinds: Vec<u16> = Vec::new();
+    for kind in &request.approval_kinds {
+        match u16::try_from(*kind).ok().filter(|k| kinds.contains(k)) {
+            Some(kind) if !approval_kinds.contains(&kind) => approval_kinds.push(kind),
+            Some(_) => {}
+            None => {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_approval_kinds",
+                    "Only kinds the app may sign can need approval.",
+                ))
+            }
+        }
+    }
+    approval_kinds.sort_unstable();
 
     let for_pubkey = match request.for_pubkey.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
         Some(key) => canonical_pubkey(key).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "That is not a valid npub or hex key."))?,
@@ -308,7 +334,11 @@ pub async fn issue_token(
             &perms,
             now,
             now + Duration::hours(hours.into()),
-            TokenOptions { connection_lifetime_hours: request.connection_lifetime_hours, rate_limit },
+            TokenOptions {
+                connection_lifetime_hours: request.connection_lifetime_hours,
+                rate_limit,
+                approval_perms: approval_kinds.iter().map(|k| sign_permission(*k)).collect(),
+            },
         )
         .map_err(database_error)?;
 
@@ -325,6 +355,7 @@ pub async fn issue_token(
         connection_lifetime_hours: token.connection_lifetime_hours,
         rate_per_minute: RateLimit::effective(token.rate_limit).per_minute,
         rate_burst: RateLimit::effective(token.rate_limit).burst,
+        approval_kinds,
     }))
 }
 

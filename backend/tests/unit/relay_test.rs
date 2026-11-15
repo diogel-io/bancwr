@@ -20,6 +20,8 @@ async fn test_relay_client_new() {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let client = RelayClient::new(relays, state).await;
@@ -41,6 +43,8 @@ async fn test_relay_client_empty_relays() {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let client = RelayClient::new(relays, state).await;
@@ -66,6 +70,8 @@ mod set_relays {
             version: "0.0.0".to_string(),
             admin_pubkey: None,
             proxy_secret: None,
+            approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+            console_url: None,
         };
         (AppState::new(Signer::new(keys.secret_key().clone()), Database::new(":memory:").unwrap(), config), keys)
     }

@@ -33,6 +33,8 @@ async fn setup_app_with_bunker_key() -> (String, reqwest::Client, String) {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);

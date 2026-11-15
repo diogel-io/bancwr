@@ -567,6 +567,8 @@ pub struct Nip46Token {
     pub connection_lifetime_hours: Option<u32>,
     /// The rate limit of a connection made with it (#101). None: `RateLimit::DEFAULT`.
     pub rate_limit: Option<RateLimit>,
+    /// Which of its `sign_event:<kind>` permissions need an administrator's approval (#102).
+    pub approval_perms: Vec<String>,
     pub used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -594,6 +596,9 @@ pub struct Nip46Connection {
     pub expires_at: Option<DateTime<Utc>>,
     /// How fast it may use the bunker's key (#101), copied from its token. None: `RateLimit::DEFAULT`.
     pub rate_limit: Option<RateLimit>,
+    /// Which of its `sign_event:<kind>` permissions are held for an administrator's approval
+    /// (#102): the token's, of those it was granted.
+    pub approval_perms: Vec<String>,
 }
 
 impl Nip46Connection {
@@ -601,15 +606,23 @@ impl Nip46Connection {
     pub fn effective_rate_limit(&self) -> RateLimit {
         RateLimit::effective(self.rate_limit)
     }
+
+    /// Whether signing `kind` waits for an administrator's approval (#102).
+    pub fn needs_approval(&self, kind: u16) -> bool {
+        self.approval_perms.contains(&crate::nip46::sign_permission(kind))
+    }
 }
 
 /// What a token gives the connection made with it, beyond its permissions.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenOptions {
     /// How long the connection lasts once made (#98). None: until revoked.
     pub connection_lifetime_hours: Option<u32>,
     /// How fast it may use the bunker's key (#101). None: `RateLimit::DEFAULT`.
     pub rate_limit: Option<RateLimit>,
+    /// Which kinds are held for an administrator's approval (#102), as `sign_event:<kind>`. Each
+    /// must be among the token's perms. Empty: none.
+    pub approval_perms: Vec<String>,
 }
 
 /// Unverified client metadata from `connect` (NIP-46 "Client metadata").
@@ -650,6 +663,11 @@ fn join_perms(perms: &[String]) -> String {
     perms.join(",")
 }
 
+/// An optional perms column: NULL when there are none.
+fn optional_perms(perms: &[String]) -> Option<String> {
+    (!perms.is_empty()).then(|| join_perms(perms))
+}
+
 fn split_perms(perms: &str) -> Vec<String> {
     perms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect()
 }
@@ -669,8 +687,8 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
 const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
 const TOKEN_COLUMNS: &str =
-    "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours, rate_per_minute, rate_burst";
-const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst";
+    "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours, rate_per_minute, rate_burst, approval_perms";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst, approval_perms";
 
 /// A stored rate limit (#101): both columns NULL is none, so the default; one NULL takes the
 /// default's part, as issuing does. Values were checked when the token was issued.
@@ -701,6 +719,7 @@ fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
         revoked_at: parse_optional_time(row.get(8)?)?,
         connection_lifetime_hours: row.get(9)?,
         rate_limit: stored_rate_limit(row.get(10)?, row.get(11)?),
+        approval_perms: split_perms(&row.get::<_, Option<String>>(12)?.unwrap_or_default()),
     })
 }
 
@@ -721,6 +740,7 @@ fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection>
         revoked_by: row.get(12)?,
         expires_at: parse_optional_time(row.get(13)?)?,
         rate_limit: stored_rate_limit(row.get(14)?, row.get(15)?),
+        approval_perms: split_perms(&row.get::<_, Option<String>>(16)?.unwrap_or_default()),
     })
 }
 
@@ -773,7 +793,7 @@ impl Database {
         expires_at: DateTime<Utc>,
         options: TokenOptions,
     ) -> anyhow::Result<Nip46Token> {
-        let TokenOptions { connection_lifetime_hours, rate_limit } = options;
+        let TokenOptions { connection_lifetime_hours, rate_limit, approval_perms } = options;
         let token = Nip46Token {
             id: Uuid::new_v4().to_string(),
             for_pubkey: for_pubkey.to_string(),
@@ -784,6 +804,7 @@ impl Database {
             expires_at,
             connection_lifetime_hours,
             rate_limit,
+            approval_perms: approval_perms.clone(),
             used_at: None,
             revoked_at: None,
         };
@@ -791,11 +812,12 @@ impl Database {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO nip46_tokens
-                (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, connection_lifetime_hours, rate_per_minute, rate_burst)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, connection_lifetime_hours, rate_per_minute, rate_burst,
+                 approval_perms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339(),
-                connection_lifetime_hours, rate_limit.map(|l| l.per_minute), rate_limit.map(|l| l.burst)
+                connection_lifetime_hours, rate_limit.map(|l| l.per_minute), rate_limit.map(|l| l.burst), optional_perms(&approval_perms)
             ],
         )?;
         audit::record(
@@ -811,6 +833,9 @@ impl Database {
                     }
                     if let Some(limit) = rate_limit.filter(|l| *l != RateLimit::DEFAULT) {
                         detail.push_str(&format!(";rate_per_minute={};rate_burst={}", limit.per_minute, limit.burst));
+                    }
+                    if !approval_perms.is_empty() {
+                        detail.push_str(&format!(";approval={}", join_perms(&approval_perms)));
                     }
                     detail
                 }),
@@ -894,6 +919,7 @@ impl Database {
             return Ok(Err(RedeemRefusal::MemberCannotSign));
         }
         let perms = grant(&token.perms, requested_perms);
+        let perms_granted = perms.clone();
         if perms.is_empty() {
             return Ok(Err(RedeemRefusal::NothingGrantable));
         }
@@ -939,16 +965,17 @@ impl Database {
             // To the microsecond, as `db_time` stores it, so this value is the stored one.
             expires_at: token.connection_lifetime_hours.map(|hours| (now + chrono::Duration::hours(hours.into())).trunc_subsecs(6)),
             rate_limit: token.rate_limit,
+            approval_perms: token.approval_perms.iter().filter(|p| perms_granted.contains(p)).cloned().collect(),
         };
         tx.execute(
             &format!(
-                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12)",
+                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12, ?13)",
                 CONNECTION_COLUMNS
             ),
             params![
                 connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
                 connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339(), connection.expires_at.map(db_time),
-                connection.rate_limit.map(|l| l.per_minute), connection.rate_limit.map(|l| l.burst)
+                connection.rate_limit.map(|l| l.per_minute), connection.rate_limit.map(|l| l.burst), optional_perms(&connection.approval_perms)
             ],
         )?;
         audit::record(
@@ -958,9 +985,15 @@ impl Database {
                 connection_id: Some(&connection.id),
                 token_id: Some(&connection.token_id),
                 client_pubkey: Some(client_pubkey),
-                detail: Some(match connection.expires_at {
-                    Some(expires_at) => format!("perms={};expires_at={}", join_perms(&connection.perms), db_time(expires_at)),
-                    None => format!("perms={}", join_perms(&connection.perms)),
+                detail: Some({
+                    let mut detail = match connection.expires_at {
+                        Some(expires_at) => format!("perms={};expires_at={}", join_perms(&connection.perms), db_time(expires_at)),
+                        None => format!("perms={}", join_perms(&connection.perms)),
+                    };
+                    if !connection.approval_perms.is_empty() {
+                        detail.push_str(&format!(";approval={}", join_perms(&connection.approval_perms)));
+                    }
+                    detail
                 }),
                 ..Audit::new(action::CONNECTION_CREATED)
             },

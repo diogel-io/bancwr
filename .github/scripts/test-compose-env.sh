@@ -39,9 +39,11 @@ if [[ ${#with_compose[@]} -eq 0 ]]; then
 fi
 
 # The frontend reads NUXT_*; the bunker everything else. BANCWR_PROXY_SECRET reaches both, as
-# NUXT_PROXY_SECRET on the frontend.
+# NUXT_PROXY_SECRET on the frontend, and NUXT_SITE_ORIGIN reaches the bunker as BANCWR_CONSOLE_URL
+# (#102).
 targets() {
   case "$1" in
+    NUXT_SITE_ORIGIN) echo "frontend $1"; echo "bunker BANCWR_CONSOLE_URL" ;;
     NUXT_*) echo "frontend $1" ;;
     BANCWR_PROXY_SECRET) echo "bunker $1"; echo "frontend NUXT_PROXY_SECRET" ;;
     *) echo "bunker $1" ;;

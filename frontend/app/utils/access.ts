@@ -26,7 +26,10 @@ export const ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = {
   '/profile': SIGNS,
   '/follows': SIGNS,
   '/relays': SIGNS,
-  '/connections': SIGNS
+  '/connections': SIGNS,
+  // Requests waiting for approval (#102): administrators decide, signers see their own.
+  '/approvals': SIGNS,
+  '/approvals/[id]': SIGNS
 }
 
 /** Page names, for the permission-denied page. */
@@ -39,7 +42,9 @@ export const PAGE_TITLES: Readonly<Record<string, string>> = {
   '/profile': 'your profile',
   '/connections': 'connected apps',
   '/follows': 'follows',
-  '/relays': 'default relays'
+  '/relays': 'default relays',
+  '/approvals': 'approvals',
+  '/approvals/[id]': 'approvals'
 }
 
 function normalise(path: string): string {

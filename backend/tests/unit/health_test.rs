@@ -33,6 +33,8 @@ fn bare_state(db: Database, nip46_enabled: bool, relay_urls: Vec<String>) -> App
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     AppState::new(Signer::new(keys.secret_key().clone()), db, config)
 }

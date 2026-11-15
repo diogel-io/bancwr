@@ -35,7 +35,7 @@ async function expectRefused(page: Page, path: string, title: string, roleLabel:
 test.describe('admin', () => {
   test('is offered every page, and sees the whole dashboard', async ({ page }) => {
     await page.goto('/')
-    await expectSidebar(page, ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections'])
+    await expectSidebar(page, ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections', 'Approvals'])
     await expect(page.getByText('Total Signatures')).toBeVisible()
     await expect(page.getByText('Recent Activity')).toBeVisible()
   })
@@ -60,9 +60,9 @@ test.describe('signer', () => {
     expect(retention.status()).toBe(403)
   })
 
-  test('is offered the dashboard, their profile, follows, relays and connections', async ({ page }) => {
+  test('is offered the dashboard, their profile, follows, relays, connections and approvals', async ({ page }) => {
     await page.goto('/')
-    await expectSidebar(page, ['Dashboard', 'Profile', 'Follows', 'Relays', 'Connections'])
+    await expectSidebar(page, ['Dashboard', 'Profile', 'Follows', 'Relays', 'Connections', 'Approvals'])
   })
 
   test('sees the health, their connected apps and their own signatures, and nothing it would be refused', async ({ page }) => {

@@ -27,6 +27,9 @@ const emit = defineEmits<{ revoke: [] }>()
         <template v-if="token.connection_lifetime_hours">
           · connection lasts {{ lifetimeLabel(token.connection_lifetime_hours) }}
         </template>
+        <template v-if="token.approval_kinds?.length">
+          · <span data-testid="token-approval">needs approval: {{ token.approval_kinds.map(kindLabel).join(', ') }}</span>
+        </template>
         <template v-if="token.rate_per_minute">
           · <span data-testid="token-rate-limit">limited to {{ rateLimitLabel(token.rate_per_minute, token.rate_burst) }}</span>
         </template>
