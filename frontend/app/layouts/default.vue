@@ -14,7 +14,7 @@ const open = ref(false)
       collapsible
       resizable
       class="bg-[var(--bancwr-sidebar-bg)] border-e border-[var(--bancwr-sidebar-border)]"
-      :ui="{ footer: 'lg:border-t lg:border-default' }"
+      :ui="{ header: 'h-auto min-h-(--ui-header-height)', footer: 'lg:border-t lg:border-default' }"
     >
       <template #header="{ collapsed }">
         <AppBrand :collapsed="collapsed" />

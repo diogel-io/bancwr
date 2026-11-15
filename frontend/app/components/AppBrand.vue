@@ -35,7 +35,8 @@ const summary = computed(() => `Bancwr ${version.value}`)
     to="/"
     class="flex items-center gap-3"
   >
-    <DiogelLogo size="md" />
+    <!-- Porwr's size: the artwork has wide margins, so a smaller box reads as a small mark. -->
+    <DiogelLogo size="lg" />
     <span class="min-w-0">
       <span class="block font-bold text-xl leading-tight">Bancwr</span>
       <span
