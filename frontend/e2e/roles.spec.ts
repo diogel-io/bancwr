@@ -122,7 +122,7 @@ test.describe('viewer', () => {
     expect(refused).toEqual([])
   })
 
-  test('reads the team and a member\'s profile, but cannot add or remove members', async ({ page }) => {
+  test('reads the team and a member\'s profile, but cannot add or remove members or change a role', async ({ page }) => {
     const refused = watchRefusals(page)
     await page.goto('/team')
     await expect(page.getByRole('heading', { name: 'Team', exact: true })).toBeVisible()
@@ -132,6 +132,7 @@ test.describe('viewer', () => {
     await expect(page.getByRole('button', { name: 'Add Member' })).toHaveCount(0)
     await expect(page.getByLabel('Pubkey')).toHaveCount(0)
     await expect(page.getByRole('button', { name: /^Remove / })).toHaveCount(0)
+    await expect(page.getByRole('combobox', { name: /^Role of / })).toHaveCount(0)
 
     await page.getByRole('link', { name: 'View e2e signer\'s profile' }).click()
     await expect(page).toHaveURL(/\/team\/npub1/)
@@ -146,6 +147,10 @@ test.describe('viewer', () => {
     // And the bunker refuses a change outright.
     const added = await page.request.post('/api/bunker/team', { data: { name: 'Nope', pubkey: 'npub1nope', role: 'viewer' } })
     expect(added.status()).toBe(403)
+    const team = await (await page.request.get('/api/bunker/team')).json() as { id: string, name: string }[]
+    const signer = team.find(member => member.name === 'e2e signer')!
+    const changed = await page.request.patch(`/api/bunker/team/${signer.id}`, { data: { role: 'viewer' } })
+    expect(changed.status()).toBe(403)
   })
 
   for (const [path, title] of [

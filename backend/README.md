@@ -104,7 +104,7 @@ its group:
 | `GET /api/bunker/logs/export`; `GET`, `PUT /api/bunker/logs/retention` | yes | | | |
 | `GET /api/bunker/logs/mine` | own | own | | |
 | `GET /api/bunker/team` | yes | | yes | |
-| `POST /api/bunker/team`; `DELETE /api/bunker/team/:id` | yes | | | |
+| `POST /api/bunker/team`; `DELETE`, `PATCH /api/bunker/team/:id` | yes | | | |
 | `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | yes | yes |
 | `GET`, `PUT /api/bunker/relays` | yes | | | |
 | `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
@@ -172,10 +172,13 @@ bunker's own key cannot be registered.
 `GET /api/bunker/team/by-pubkey/:pubkey` returns one member by npub or hex, or 404
 `{"error":"not_registered"}`.
 
-There is no endpoint to change a member's role: remove them and add them again. Wherever a role does
-change (today only the `BANCWR_ADMIN_PUBKEY` bootstrap, which promotes), `Database::change_member_role`
-applies the rule that a member who becomes a viewer loses their NIP-46 connections (`role_changed`)
-and unused tokens (#77).
+`PATCH /api/bunker/team/:id` with `{"role":"administrator"|"signer"|"viewer"}` changes a member's
+role in place (#99). A role that is not one of the three is 400, an id that is not a UUID is 400, an
+unknown member is 404, and demoting the only administrator is 409. Setting the role a member already
+has is 200 and changes nothing. A member who becomes a viewer loses their NIP-46 connections
+(`role_changed`) and unused tokens (#77); a member who keeps a role that signs keeps them. The change
+and any revocations are recorded with the administrator who made them, in one transaction
+(`Database::change_member_role_as`, which the `BANCWR_ADMIN_PUBKEY` bootstrap also uses to promote).
 
 ### Your own signatures (#77)
 `GET /api/bunker/logs/mine` (administrators and signers) returns the caller's own 20 most recent
@@ -294,7 +297,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
 | `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored` or `expired` |
 | `member_added`, `member_removed` | Team changes | `role=…` |
-| `member_role_changed` | A role changes (today the `BANCWR_ADMIN_PUBKEY` bootstrap) | `from=…;to=…` |
+| `member_role_changed` | An administrator changes a role (#99), or the `BANCWR_ADMIN_PUBKEY` bootstrap promotes | `from=…;to=…` |
 | `relays_changed` | An administrator saves the bunker relays | `relays=…` |
 | `retention_changed` | An administrator sets the retention policy | `max_age_days=…;max_rows=…` |
 | `logs_pruned` | The policy deleted rows | `signatures=…;audit_events=…` |

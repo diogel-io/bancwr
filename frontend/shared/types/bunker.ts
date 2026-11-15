@@ -110,7 +110,12 @@ export interface AddTeamMemberRequest {
   role: Role
 }
 
-/** POST /api/bunker/team */
+/** PATCH /api/bunker/team/:id (#99). */
+export interface ChangeRoleRequest {
+  role: Role
+}
+
+/** POST /api/bunker/team, DELETE and PATCH /api/bunker/team/:id */
 export interface TeamOperationResponse {
   success: boolean
   message: string

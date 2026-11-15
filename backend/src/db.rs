@@ -350,6 +350,19 @@ impl Database {
         row.map(team_member_from_row).transpose()
     }
 
+    /// The member with this id, if any: the id the console addresses a member by (#99).
+    pub fn find_member_by_id(&self, id: Uuid) -> anyhow::Result<Option<TeamMember>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let row = conn
+            .query_row(
+                "SELECT id, name, pubkey, role, created_at FROM team_members WHERE id = ?1",
+                params![id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        row.map(team_member_from_row).transpose()
+    }
+
     /// How many members hold the administrator role.
     pub fn administrator_count(&self) -> anyhow::Result<u64> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
@@ -377,9 +390,9 @@ impl Database {
         Ok(SeedOutcome::Added)
     }
 
-    /// Changes a member's role: the one place a stored role changes after the member is added
-    /// (today only the first-administrator bootstrap promotes; the console has no role editor, so
-    /// a member is removed and added again). `pubkey` must be canonical hex.
+    /// Changes a member's role: the one place a stored role changes after the member is added.
+    /// An administrator changes it from the team page (`PATCH /api/bunker/team/:id`, #99), and the
+    /// first-administrator bootstrap promotes. `pubkey` must be canonical hex.
     ///
     /// A member who becomes a viewer cannot sign (#77): in the same transaction, their active
     /// NIP-46 connections are revoked (`role_changed`) and their unused tokens with them. The only

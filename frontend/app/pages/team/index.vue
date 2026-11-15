@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// The vault's members (#24). Administrators add and remove them; viewers read the list (#77), with
-// no add or remove controls, which the bunker would refuse them anyway (#25). Each row links to the
-// member's read-only profile (team/[pubkey].vue).
+// The vault's members (#24). Administrators add and remove them and change their roles (#99);
+// viewers read the list (#77), with none of those controls, which the bunker would refuse them anyway
+// (#25). Each row links to the member's read-only profile (team/[pubkey].vue).
 import { useFetch, ref, reactive, useToast, computed } from '#imports'
 import { ROLE_LABELS, ROLES } from '#shared/types/bunker'
 import type { AddTeamMemberRequest, TeamMember } from '#shared/types/bunker'

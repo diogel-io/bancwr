@@ -37,6 +37,7 @@ const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/api/bunker/team", roles: &[A, V], service: false },
     Route { method: "POST", path: "/api/bunker/team", roles: &[A], service: false },
     Route { method: "DELETE", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
+    Route { method: "PATCH", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
     Route { method: "GET", path: LOOKUP, roles: &[A, V], service: true },
     Route { method: "GET", path: "/api/bunker/connections/tokens", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/connections/tokens", roles: &[A], service: false },
@@ -59,6 +60,7 @@ fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> reqwest:
     let request = app.signed(route.method.parse().unwrap(), &path_of(app, route), identity);
     match (route.method, route.path) {
         ("POST", "/api/bunker/team") => request.json(&member_body()),
+        ("PATCH", _) => request.json(&serde_json::json!({ "role": "signer" })),
         ("PUT", "/api/bunker/relays") => request.json(&serde_json::json!({ "relays": [] })),
         ("PUT", "/api/bunker/logs/retention") => request.json(&serde_json::json!({ "max_age_days": null, "max_rows": null })),
         ("POST", "/api/bunker/connections/tokens") => {
@@ -160,10 +162,10 @@ async fn an_administrator_reaches_every_route() {
     let admin = app.admin.public_key().to_hex();
     for route in ROUTES {
         let status = request_for(&app, route, &admin).send().await.unwrap().status();
-        // DELETE of an unknown id is 404 from the handler, and a token with NIP-46 off is 409:
-        // either way the guard let it through.
+        // DELETE or PATCH of an unknown id is 404 from the handler, and a token with NIP-46 off
+        // is 409: either way the guard let it through.
         let expected = match route.method {
-            "DELETE" => StatusCode::NOT_FOUND,
+            "DELETE" | "PATCH" => StatusCode::NOT_FOUND,
             "POST" if route.path.ends_with("/tokens") => StatusCode::CONFLICT,
             _ => StatusCode::OK,
         };
@@ -202,7 +204,38 @@ async fn a_viewer_reads_the_team_but_cannot_change_it() {
     let admin_id = app.db.find_member_by_pubkey(&app.admin.public_key().to_hex()).unwrap().unwrap().id;
     let removed = app.signed(Method::DELETE, &format!("/api/bunker/team/{}", admin_id), &viewer).send().await.unwrap();
     assert_eq!(removed.status(), StatusCode::FORBIDDEN);
+    let viewer_id = app.db.find_member_by_pubkey(&viewer).unwrap().unwrap().id;
+    let promoted = app
+        .signed(Method::PATCH, &format!("/api/bunker/team/{}", viewer_id), &viewer)
+        .json(&serde_json::json!({ "role": "administrator" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(promoted.status(), StatusCode::FORBIDDEN, "a viewer cannot promote themselves (#99)");
     assert_eq!(app.db.get_team_members().unwrap().len(), 2, "nothing changed");
+    assert_eq!(app.db.find_member_by_pubkey(&viewer).unwrap().unwrap().role(), Some(V));
+}
+
+#[tokio::test]
+async fn a_demoted_administrator_loses_administration_on_the_next_request() {
+    // The role is read from the registry on every request (T4), so a role changed through the
+    // route (#99) applies at once.
+    let app = common::spawn(true).await;
+    let second_admin = app.register(Role::Administrator).public_key().to_hex();
+    assert_eq!(app.signed(Method::GET, "/api/bunker/metrics", &second_admin).send().await.unwrap().status(), StatusCode::OK);
+
+    let id = app.db.find_member_by_pubkey(&second_admin).unwrap().unwrap().id;
+    let changed = app
+        .signed(Method::PATCH, &format!("/api/bunker/team/{}", id), &app.admin.public_key().to_hex())
+        .json(&serde_json::json!({ "role": "signer" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+
+    let res = app.signed(Method::GET, "/api/bunker/metrics", &second_admin).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body(res).await["error"], "forbidden");
 }
 
 #[tokio::test]
