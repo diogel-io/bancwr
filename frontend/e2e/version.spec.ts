@@ -12,11 +12,11 @@ test('the bunker and the frontend report the version they are running', async ({
   expect(frontend.version).toBe(VERSION)
 })
 
-test('the sidebar footer shows both versions', async ({ page }) => {
+test('the sidebar header shows the release version under the name', async ({ page }) => {
   await page.goto('/')
-  const versions = page.getByRole('group', { name: /^Bunker / })
 
-  await expect(versions).toContainText(`Bunker ${VERSION}`)
-  await expect(versions).toContainText(`Frontend ${VERSION}`)
-  await expect(versions).not.toContainText('differ')
+  await expect(page.getByTestId('app-version')).toHaveText(`V ${VERSION}`)
+  // One version now (#124): the footer's bunker and frontend lines are gone.
+  await expect(page.getByText(`Bunker ${VERSION}`)).toHaveCount(0)
+  await expect(page.getByText(`Frontend ${VERSION}`)).toHaveCount(0)
 })

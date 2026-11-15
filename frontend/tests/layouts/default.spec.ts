@@ -3,9 +3,8 @@ import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import DefaultLayout from '~/layouts/default.vue'
 
 describe('default layout', () => {
-  // The sidebar footer shows both versions (#35).
+  // The sidebar header shows the bunker's version (#124).
   registerEndpoint('/api/bunker/status', () => ({ status: 'healthy', pubkey: 'npub1test', version: '0.1.0' }))
-  registerEndpoint('/api/version', () => ({ version: '0.1.0' }))
 
   it('links to this repository, not the pre-transfer path', async () => {
     const component = await mountSuspended(DefaultLayout)
@@ -17,10 +16,11 @@ describe('default layout', () => {
     expect(hrefs.some(href => href?.includes('threenine'))).toBe(false)
   })
 
-  it('shows the running versions in the sidebar footer', async () => {
+  it('shows one version under the name in the sidebar header, and none in the footer', async () => {
     const component = await mountSuspended(DefaultLayout)
 
-    expect(component.text()).toContain('Bunker 0.1.0')
-    expect(component.text()).toContain('Frontend 0.1.0')
+    expect(component.find('[data-testid="app-version"]').text()).toBe('V 0.1.0')
+    expect(component.text()).not.toContain('Bunker 0.1.0')
+    expect(component.text()).not.toContain('Frontend 0.1.0')
   })
 })

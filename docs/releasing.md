@@ -37,8 +37,11 @@ Each image reports its own `BANCWR_VERSION` (#35):
   container probes.
 - **Frontend:** `GET /api/version` on the frontend, for example
   `curl -s http://localhost:3001/api/version`.
-- **Dashboard:** the sidebar footer shows both, and warns when they differ, which means the two
-  containers were not updated together.
+- **Dashboard:** the sidebar header shows the bunker's version under the product name, as
+  `V 0.1.0` (#124). Both images are released under one version, so the dashboard shows one.
+
+To check that the two containers were updated together, compare the bunker's and the frontend's
+versions from the two endpoints above.
 
 `0.0.0` means an unversioned build: `cargo run`, `pnpm dev`, or an image built without the build
 argument.

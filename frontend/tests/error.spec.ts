@@ -5,9 +5,8 @@ import { signInAs } from './helpers/session'
 import ErrorPage from '~/error.vue'
 
 describe('error page', () => {
-  // The default layout's footer asks for both versions (#35).
+  // The default layout's header asks for the bunker's version (#124).
   registerEndpoint('/api/bunker/status', () => ({ status: 'healthy', pubkey: 'npub1test', version: '0.1.0' }))
-  registerEndpoint('/api/version', () => ({ version: '0.1.0' }))
 
   it('says which page the role cannot open, names the role, and links to the dashboard (#26)', async () => {
     signInAs('signer')
