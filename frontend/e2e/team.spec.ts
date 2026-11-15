@@ -63,7 +63,7 @@ test('keeps a member when removal is cancelled', async ({ page }) => {
 })
 
 test('offers exactly the three roles (#77)', async ({ page }) => {
-  await page.getByRole('combobox').click()
+  await page.getByTestId('add-member').getByRole('combobox').click()
   await expect(page.getByRole('option')).toHaveText(['Admin', 'Signer', 'Viewer'])
 })
 
@@ -106,10 +106,47 @@ test('rejects a pubkey that is not an npub', async ({ page }) => {
   await expect(memberRow(page, name)).toHaveCount(0)
 })
 
+test('changes a member\'s role in one step, asking only before making them a viewer (#99)', async ({ page }) => {
+  const name = uniqueName('Dana')
+  await addMember(page, name, randomNpub(), 'Signer')
+  await expect(memberRow(page, name)).toBeVisible()
+  const role = page.getByRole('combobox', { name: `Role of ${name}` })
+
+  // Up to Admin: no question.
+  let asked = false
+  page.once('dialog', () => { asked = true })
+  await chooseRole(page, name, 'Admin')
+  await expect(page.getByText(`${name} is now Admin`, { exact: true })).toBeVisible()
+  expect(asked).toBe(false)
+  await expect(role).toContainText('Admin')
+
+  // Down to Viewer: cancelled, nothing changes.
+  page.once('dialog', dialog => dialog.dismiss())
+  await chooseRole(page, name, 'Viewer')
+  await expect(role).toContainText('Admin')
+
+  // Down to Viewer, confirmed: stored by the bunker, so it survives a reload.
+  let message = ''
+  page.once('dialog', (dialog) => {
+    message = dialog.message()
+    return dialog.accept()
+  })
+  await chooseRole(page, name, 'Viewer')
+  await expect(page.getByText(`${name} is now Viewer`, { exact: true })).toBeVisible()
+  expect(message).toContain(`Make ${name} a viewer?`)
+  await page.reload()
+  await expect(page.getByRole('combobox', { name: `Role of ${name}` })).toContainText('Viewer')
+})
+
+async function chooseRole(page: Page, name: string, role: string) {
+  await page.getByRole('combobox', { name: `Role of ${name}` }).click()
+  await page.getByRole('option', { name: role, exact: true }).click()
+}
+
 async function addMember(page: Page, name: string, pubkey: string, role: string) {
   await page.getByLabel('Name').fill(name)
   await page.getByLabel('Pubkey').fill(pubkey)
-  await page.getByRole('combobox').click()
+  await page.getByTestId('add-member').getByRole('combobox').click()
   await page.getByRole('option', { name: role, exact: true }).click()
   await page.getByRole('button', { name: 'Add Member' }).click()
 }
