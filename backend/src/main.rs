@@ -49,7 +49,8 @@ fn backup_failed(action: &str, error: &backup::BackupError) -> i32 {
 }
 
 /// Writes an encrypted archive of the database and the key file to standard output, under
-/// BANCWR_BACKUP_KEY_FILE. Safe while the bunker runs. Returns the exit code.
+/// BANCWR_BACKUP_KEY_FILE and tagged under BANCWR_ROOT_KEY_FILE. Safe while the bunker runs.
+/// Returns the exit code.
 fn backup() -> i32 {
     use std::io::{IsTerminal, Write};
     let _ = dotenvy::dotenv();
@@ -58,9 +59,12 @@ fn backup() -> i32 {
     }
     let db_path = database_path();
     let result = backup::Passphrase::from_env().and_then(|passphrase| {
+        let root = key_store::RootKey::from_env().map_err(backup::BackupError::RootKey)?;
         let (contents, counts) =
             backup::snapshot(std::path::Path::new(&db_path), &key_store::key_path(&db_path), chrono::Utc::now())?;
-        let archive = backup::seal(&passphrase, &contents, backup::Cost::DEFAULT)?;
+        // The archive is tagged under the root credential, so it must be the one the key is under.
+        key_store::decrypt(&root, &contents.key_file).map_err(backup::BackupError::RootKey)?;
+        let archive = backup::seal(&passphrase, &root, &contents, backup::Cost::DEFAULT)?;
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(&archive).and_then(|_| stdout.flush()).map_err(backup::BackupError::WriteArchive)?;
         Ok((contents, counts))
@@ -80,8 +84,8 @@ fn backup() -> i32 {
 }
 
 /// Restores an archive from standard input into an empty data directory, then revokes every NIP-46
-/// connection and unused token. Checks the whole archive, and that BANCWR_ROOT_KEY_FILE decrypts
-/// its key, before writing anything. Returns the exit code.
+/// connection and unused token. Checks the whole archive, that BANCWR_ROOT_KEY_FILE decrypts its
+/// key, and that the archive verifies under it, before writing anything. Returns the exit code.
 fn restore() -> i32 {
     use std::io::{IsTerminal, Read};
     let _ = dotenvy::dotenv();
@@ -92,10 +96,13 @@ fn restore() -> i32 {
     let result = backup::Passphrase::from_env().and_then(|passphrase| {
         let mut archive = Vec::new();
         std::io::stdin().lock().read_to_end(&mut archive).map_err(backup::BackupError::ReadArchive)?;
-        let contents = backup::open(&passphrase, &archive)?;
-        backup::place(&contents, key_store::RootKey::from_env(), std::path::Path::new(&db_path), &key_store::key_path(&db_path))?;
+        let root = key_store::RootKey::from_env().map_err(backup::BackupError::RootKey)?;
+        let contents = backup::open(&passphrase, &root, &archive)?;
+        backup::place(&contents, Ok(root), std::path::Path::new(&db_path), &key_store::key_path(&db_path))?;
         let db = Database::new(&db_path).map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
-        let revoked = db.revoke_all_for_restore(chrono::Utc::now()).map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
+        let revoked = db
+            .revoke_all_for_restore(contents.created_at, chrono::Utc::now())
+            .map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
         let members = db.get_team_members().map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?.len();
         Ok((contents, revoked, members))
     });

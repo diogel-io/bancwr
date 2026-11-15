@@ -26,6 +26,9 @@ chacha20poly1305 = "0.10"
 zeroize = "1"
 # Backup archives (#95): the passphrase's key derivation. Already in the lock file through nostr.
 scrypt = { version = "0.11", default-features = false }
+# Backup archives: the tag under the root credential. Both already in the lock file through scrypt.
+hmac = "0.12"
+sha2 = "0.10"
 # Streams a log export (#96). Already in the lock file through axum and nostr.
 futures-util = { version = "0.3", default-features = false }
 

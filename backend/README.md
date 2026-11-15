@@ -44,12 +44,15 @@ the member lookup that sign-in needs answer; every other route answers `503`. Un
 standard output, safe while the bunker runs. `bunker restore` reads one from standard input into an
 empty data directory and revokes every NIP-46 connection and unused token (#95). Both read the
 backup passphrase, 16 characters or more and not the root credential, from the file
-`BANCWR_BACKUP_KEY_FILE` names; `restore` also needs the root credential, and checks that it
-decrypts the archived key before writing anything:
+`BANCWR_BACKUP_KEY_FILE` names, and the root credential from `BANCWR_ROOT_KEY_FILE`: an archive is
+encrypted under the passphrase and authenticated under the root credential. `restore` checks that
+the root credential decrypts the archived key and verifies the archive, and that its database holds
+only tables and indexes, before writing anything:
 
 ```bash
 (umask 077; openssl rand -base64 24 > secrets/bancwr_backup_key)
-BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key cargo run -- backup > bancwr.bcwr
+BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key \
+  cargo run -- backup > bancwr.bcwr
 BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key \
   DATABASE_PATH=restored/bancwr.db cargo run -- restore < bancwr.bcwr
 ```
@@ -306,7 +309,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `retention_changed` | An administrator sets the retention policy | `max_age_days=…;max_rows=…` |
 | `logs_pruned` | The policy deleted rows | `signatures=…;audit_events=…` |
 | `logs_exported` | An administrator exports | `format=…;from=…;to=…` |
-| `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…` |
+| `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…;backup_created_at=…`, when the restored backup was taken (RFC 3339, UTC) |
 | `nip44_decrypt`, `nip04_decrypt` | A NIP-46 app asks the bunker to decrypt (#97) | `peer=…`: the hex key of the other party |
 | `approval_requested` | A `sign_event` of a kind that needs approval is held (#102) | `request=…;kind=…;event_id=…` |
 | `approval_approved`, `approval_rejected` | An administrator decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;note=…` when given |
