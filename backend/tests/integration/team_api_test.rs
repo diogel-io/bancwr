@@ -369,3 +369,75 @@ async fn test_the_team_by_role() {
     assert_eq!(res.status(), StatusCode::OK, "an administrator adds a viewer");
     assert_eq!(app.db.get_team_members().unwrap().len(), 4);
 }
+
+/// The team, by name: (id, role).
+async fn team_roles(address: &str, client: &reqwest::Client) -> Vec<(String, String)> {
+    let team: Vec<Value> = client.get(format!("{}/api/bunker/team", address)).send().await.unwrap().json().await.unwrap();
+    team.iter().map(|m| (m["id"].as_str().unwrap().to_string(), m["role"].as_str().unwrap().to_string())).collect()
+}
+
+async fn change_role(address: &str, client: &reqwest::Client, id: &str, role: &str) -> reqwest::Response {
+    client
+        .patch(format!("{}/api/bunker/team/{}", address, id))
+        .json(&serde_json::json!({ "role": role }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_change_a_members_role_in_one_step() {
+    // #99: no more removing and adding again.
+    let (address, client) = setup_app().await;
+    assert_eq!(add(&address, &client, &new_npub(), "administrator").await.status(), StatusCode::OK);
+    assert_eq!(add(&address, &client, &new_npub(), "signer").await.status(), StatusCode::OK);
+    let (id, _) = team_roles(&address, &client).await.into_iter().find(|(_, role)| role == "signer").unwrap();
+    let role_of = |team: Vec<(String, String)>, id: &str| team.into_iter().find(|(i, _)| i == id).unwrap().1;
+
+    for role in ["viewer", "administrator", "signer"] {
+        let res = change_role(&address, &client, &id, role).await;
+        assert_eq!(res.status(), StatusCode::OK, "to {}", role);
+        assert_eq!(res.json::<Value>().await.unwrap()["success"], true);
+        assert_eq!(role_of(team_roles(&address, &client).await, &id), role);
+    }
+
+    // The same role again changes nothing, and is not an error.
+    assert_eq!(change_role(&address, &client, &id, "signer").await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_change_role_refuses_what_is_not_a_role_or_a_member() {
+    let (address, client) = setup_app().await;
+    assert_eq!(add(&address, &client, &new_npub(), "signer").await.status(), StatusCode::OK);
+    let (id, _) = team_roles(&address, &client).await.remove(0);
+
+    // The older names (#77) and anything else are not roles.
+    for role in ["admin", "user", "owner", ""] {
+        assert_eq!(change_role(&address, &client, &id, role).await.status(), StatusCode::BAD_REQUEST, "{:?}", role);
+    }
+    assert_eq!(team_roles(&address, &client).await[0].1, "signer", "unchanged");
+
+    let unknown = uuid::Uuid::new_v4().to_string();
+    assert_eq!(change_role(&address, &client, &unknown, "viewer").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(change_role(&address, &client, "0", "viewer").await.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_the_last_administrator_cannot_be_demoted() {
+    // Demoting the only administrator would lock everyone out of administration, as removing them
+    // would (#25, #99).
+    let (address, client) = setup_app().await;
+    assert_eq!(add(&address, &client, &new_npub(), "administrator").await.status(), StatusCode::OK);
+    let (admin_id, _) = team_roles(&address, &client).await.remove(0);
+
+    for role in ["signer", "viewer"] {
+        let res = change_role(&address, &client, &admin_id, role).await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert!(res.text().await.unwrap().contains("last administrator"));
+    }
+    assert_eq!(team_roles(&address, &client).await[0].1, "administrator", "unchanged");
+
+    // A second administrator makes the first demotable.
+    assert_eq!(add(&address, &client, &new_npub(), "administrator").await.status(), StatusCode::OK);
+    assert_eq!(change_role(&address, &client, &admin_id, "signer").await.status(), StatusCode::OK);
+}

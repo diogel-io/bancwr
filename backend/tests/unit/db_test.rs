@@ -459,3 +459,14 @@ fn a_members_own_logs_are_only_theirs() {
     assert_eq!(mine, vec!["a2", "a1"], "newest first; never by the client key");
     assert_eq!(db.get_recent_logs_for_member(&alice, 1).unwrap().len(), 1);
 }
+
+#[test]
+fn a_member_is_found_by_id_and_an_unknown_id_finds_nobody() {
+    // The id the console addresses a member by, for changing their role (#99).
+    let db = Database::new(":memory:").unwrap();
+    let alice = new_pubkey();
+    let id = db.add_team_member("Alice", &alice, Role::Signer).unwrap();
+    let found = db.find_member_by_id(id).unwrap().unwrap();
+    assert_eq!((found.name.as_str(), found.pubkey.as_str(), found.role()), ("Alice", alice.as_str(), Some(Role::Signer)));
+    assert!(db.find_member_by_id(uuid::Uuid::new_v4()).unwrap().is_none());
+}

@@ -1,7 +1,7 @@
 use crate::health::{Check, Overall};
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
-use crate::db::RemoveOutcome;
+use crate::db::{RemoveOutcome, RoleChangeOutcome};
 use crate::proxy_auth::{Access, Guard};
 use axum::{
     extract::{Path, State},
@@ -101,6 +101,12 @@ impl From<crate::db::TeamMember> for TeamMemberResponse {
 pub struct AddTeamMemberRequest {
     pub name: String,
     pub pubkey: String,
+    pub role: String,
+}
+
+/// The body of `PATCH /api/bunker/team/:id` (#99).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ChangeRoleRequest {
     pub role: String,
 }
 
@@ -324,6 +330,55 @@ pub async fn remove_team_member(
     }
 }
 
+/// Change a team member's role
+/// PATCH /api/bunker/team/:id
+///
+/// One of the three roles of #77, as `add_team_member` takes them. A member who becomes a viewer
+/// loses their NIP-46 connections and unused tokens (`role_changed`), and the change is recorded
+/// with who made it, all in one transaction (`Database::change_member_role_as`). The only
+/// administrator is never demoted (409), for the reason they are never removed (#99).
+pub async fn change_team_member_role(
+    State(state): State<AppState>,
+    who: Option<axum::Extension<crate::proxy_auth::Caller>>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<ChangeRoleRequest>,
+) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
+    let role: Role = request
+        .role
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid role".to_string()))?;
+
+    let member = match state.db.find_member_by_id(id) {
+        Ok(Some(member)) => member,
+        Ok(None) => return Err((StatusCode::NOT_FOUND, "Team member not found".to_string())),
+        Err(e) => {
+            error!("Failed to look up team member {}: {}", id, e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()));
+        }
+    };
+
+    let (by, _) = crate::connections_api::caller(who);
+    match state.db.change_member_role_as(&member.pubkey, role, crate::audit::actor(&by)) {
+        Ok(RoleChangeOutcome::Changed) => {
+            info!("Changed the role of team member {} to {}", id, role);
+            Ok(Json(TeamOperationResponse {
+                success: true,
+                message: "Role changed".to_string(),
+            }))
+        }
+        // Removed between the lookup and the change.
+        Ok(RoleChangeOutcome::NotFound) => Err((StatusCode::NOT_FOUND, "Team member not found".to_string())),
+        Ok(RoleChangeOutcome::LastAdministrator) => Err((
+            StatusCode::CONFLICT,
+            "Cannot demote the last administrator".to_string(),
+        )),
+        Err(e) => {
+            error!("Failed to change the role of team member {}: {}", id, e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()))
+        }
+    }
+}
+
 /// Creates the Axum router with all routes
 pub fn create_router(state: AppState) -> Router {
     // Enforcement is on when BANCWR_PROXY_SECRET is set. main.rs refuses to start without it (#11),
@@ -357,9 +412,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/metrics", get(get_metrics))
         // Read-only (#42): the signing key is encrypted at rest and set with `bunker import-key` (#94).
         .route("/api/bunker/config", get(get_config))
-        // Reading the team is TeamReader's; changing it stays the administrator's (#77).
+        // Reading the team is TeamReader's; changing it, a role included (#99), stays the
+        // administrator's (#77).
         .route("/api/bunker/team", post(add_team_member))
-        .route("/api/bunker/team/:id", delete(remove_team_member))
+        .route("/api/bunker/team/:id", delete(remove_team_member).patch(change_team_member_role))
         // The bunker's own NIP-46 relays (#78): NIP46_RELAYS when set, otherwise the console's list.
         .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays))
         // NIP-46 connection tokens (#53), only for a member who can sign (#77).
