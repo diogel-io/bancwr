@@ -73,6 +73,8 @@ async fn test_api_metrics() {
     // The status call is counted.
     assert!(after["http_requests"].as_u64().unwrap() > before["http_requests"].as_u64().unwrap());
     assert_eq!(after["total_signatures"], 0);
+    // Requests refused for a connection's rate limit (#101), since the bunker started.
+    assert_eq!(after["nip46_rate_limited"], 0);
 }
 
 #[tokio::test]

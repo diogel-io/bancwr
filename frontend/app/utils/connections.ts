@@ -74,6 +74,23 @@ export function lifetimeLabel(hours: number): string {
   return `${hours} hour${hours === 1 ? '' : 's'}`
 }
 
+/** The bunker's default rate limit (#101), used when a token is issued without one. */
+export const DEFAULT_RATE_LIMIT = { perMinute: 60, burst: 20 }
+
+/** Rate limits for a new token (#101). The first is the default, which sends nothing. */
+export const RATE_LIMITS: { label: string, value: number, perMinute: number, burst: number }[] = [
+  { label: 'Default: 60 a minute (burst 20)', value: 0, ...DEFAULT_RATE_LIMIT },
+  { label: '10 a minute (burst 5)', value: 1, perMinute: 10, burst: 5 },
+  { label: '30 a minute (burst 10)', value: 2, perMinute: 30, burst: 10 },
+  { label: '120 a minute (burst 40)', value: 3, perMinute: 120, burst: 40 },
+  { label: '600 a minute (burst 100)', value: 4, perMinute: 600, burst: 100 }
+]
+
+/** "60 a minute (burst 20)": a connection's rate limit (#101). */
+export function rateLimitLabel(perMinute: number, burst: number): string {
+  return `${perMinute} a minute (burst ${burst})`
+}
+
 /** When an active connection stops working (#98): "ends in 6 days", or that it has no limit. */
 export function connectionEnd(expiresAt: string | null, now = Date.now()): string {
   if (!expiresAt) return 'no time limit'

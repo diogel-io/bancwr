@@ -11,9 +11,10 @@
 //! Viewers hold no connections (#77): a token is only issued for an administrator or a signer.
 //!
 //! A token's secret is returned once, in the creation response, and only its hash is kept.
-use crate::db::{Nip46Connection, Nip46Token};
+use crate::db::{Nip46Connection, Nip46Token, TokenOptions};
 use crate::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS};
 use crate::proxy_auth::Caller;
+use crate::rate_limit::RateLimit;
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
 use axum::{
@@ -81,6 +82,12 @@ pub struct IssueTokenRequest {
     /// revoked.
     #[serde(default)]
     pub connection_lifetime_hours: Option<u32>,
+    /// The connection's rate limit (#101): requests a minute, 1 to 600, and burst, 1 to 100. Each
+    /// defaults on its own, to 60 and 20 (`RateLimit::DEFAULT`).
+    #[serde(default)]
+    pub rate_per_minute: Option<u32>,
+    #[serde(default)]
+    pub rate_burst: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -95,6 +102,9 @@ pub struct IssueTokenResponse {
     pub expires_at: String,
     /// How long the connection lasts once the app connects (#98). None: until revoked.
     pub connection_lifetime_hours: Option<u32>,
+    /// The connection's rate limit in force (#101).
+    pub rate_per_minute: u32,
+    pub rate_burst: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -109,12 +119,16 @@ pub struct TokenResponse {
     pub expires_at: String,
     /// How long the connection lasts once the app connects (#98). None: until revoked.
     pub connection_lifetime_hours: Option<u32>,
+    /// The connection's rate limit in force (#101).
+    pub rate_per_minute: u32,
+    pub rate_burst: u32,
     pub used_at: Option<String>,
     pub revoked_at: Option<String>,
 }
 
 impl From<Nip46Token> for TokenResponse {
     fn from(t: Nip46Token) -> Self {
+        let limit = RateLimit::effective(t.rate_limit);
         Self {
             id: t.id,
             for_pubkey: t.for_pubkey,
@@ -125,6 +139,8 @@ impl From<Nip46Token> for TokenResponse {
             created_at: t.created_at.to_rfc3339(),
             expires_at: t.expires_at.to_rfc3339(),
             connection_lifetime_hours: t.connection_lifetime_hours,
+            rate_per_minute: limit.per_minute,
+            rate_burst: limit.burst,
             used_at: t.used_at.map(|v| v.to_rfc3339()),
             revoked_at: t.revoked_at.map(|v| v.to_rfc3339()),
         }
@@ -151,10 +167,14 @@ pub struct ConnectionResponse {
     pub revoked_by: Option<String>,
     /// When it stops working (#98). None: until revoked.
     pub expires_at: Option<String>,
+    /// Its rate limit in force (#101).
+    pub rate_per_minute: u32,
+    pub rate_burst: u32,
 }
 
 impl From<Nip46Connection> for ConnectionResponse {
     fn from(c: Nip46Connection) -> Self {
+        let limit = c.effective_rate_limit();
         Self {
             id: c.id,
             client_pubkey: c.client_pubkey,
@@ -171,6 +191,8 @@ impl From<Nip46Connection> for ConnectionResponse {
             revoked_reason: c.revoked_reason,
             revoked_by: c.revoked_by,
             expires_at: c.expires_at.map(|v| v.to_rfc3339()),
+            rate_per_minute: limit.per_minute,
+            rate_burst: limit.burst,
         }
     }
 }
@@ -247,6 +269,13 @@ pub async fn issue_token(
             return Err(api_error(StatusCode::BAD_REQUEST, "invalid_lifetime", "A connection can last 1 hour to 365 days, or until revoked."));
         }
     }
+    let rate_limit = RateLimit::from_parts(request.rate_per_minute, request.rate_burst).map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_rate_limit",
+            "A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.",
+        )
+    })?;
 
     let for_pubkey = match request.for_pubkey.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
         Some(key) => canonical_pubkey(key).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "That is not a valid npub or hex key."))?,
@@ -271,7 +300,7 @@ pub async fn issue_token(
     let perms: Vec<String> = kinds.iter().map(|k| sign_permission(*k)).chain(methods.iter().cloned()).collect();
     let token = state
         .db
-        .create_nip46_token_with_lifetime(
+        .create_nip46_token_with(
             &hash_secret(&secret),
             &for_pubkey,
             &caller_pubkey,
@@ -279,7 +308,7 @@ pub async fn issue_token(
             &perms,
             now,
             now + Duration::hours(hours.into()),
-            request.connection_lifetime_hours,
+            TokenOptions { connection_lifetime_hours: request.connection_lifetime_hours, rate_limit },
         )
         .map_err(database_error)?;
 
@@ -294,6 +323,8 @@ pub async fn issue_token(
         methods,
         expires_at: token.expires_at.to_rfc3339(),
         connection_lifetime_hours: token.connection_lifetime_hours,
+        rate_per_minute: RateLimit::effective(token.rate_limit).per_minute,
+        rate_burst: RateLimit::effective(token.rate_limit).burst,
     }))
 }
 

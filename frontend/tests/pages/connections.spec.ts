@@ -16,7 +16,7 @@ const other = 'b'.repeat(64)
 const connection = (over: Partial<Nip46Connection> = {}): Nip46Connection => ({
   id: 'c1', client_pubkey: 'c'.repeat(64), for_pubkey: me, client_name: 'Damus', client_url: 'https://damus.io', client_image: null,
   metadata_verified: false, kinds: [1, 7], methods: [], connected_at: new Date(Date.now() - 3_600_000).toISOString(),
-  last_used_at: new Date(Date.now() - 120_000).toISOString(), revoked_at: null, revoked_reason: null, revoked_by: null, expires_at: null, ...over
+  last_used_at: new Date(Date.now() - 120_000).toISOString(), revoked_at: null, revoked_reason: null, revoked_by: null, expires_at: null, rate_per_minute: 60, rate_burst: 20, ...over
 })
 
 const state = vi.hoisted(() => ({
@@ -46,7 +46,7 @@ registerEndpoint('/api/bunker/connections/tokens', {
       return { error: 'nip46_disabled', message: 'off' }
     }
     state.issued.push(await readBody(event))
-    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], connection_lifetime_hours: null, expires_at: new Date(Date.now() + 86_400_000).toISOString() }
+    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], connection_lifetime_hours: null, rate_per_minute: 60, rate_burst: 20, expires_at: new Date(Date.now() + 86_400_000).toISOString() }
   }
 })
 registerEndpoint('/api/bunker/connections/c1', {
@@ -147,7 +147,7 @@ describe('Connections page', () => {
 
   it('shows an administrator whom each app is for, and unused tokens', async () => {
     state.connections = [connection({ for_pubkey: other })]
-    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bob\'s laptop', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null } satisfies Nip46Token]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bob\'s laptop', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null, rate_per_minute: 60, rate_burst: 20 } satisfies Nip46Token]
     const component = await mount('administrator')
     await flushPromises()
     expect(component.find('[data-connection="c1"]').text()).toContain('for Bob')
@@ -210,7 +210,7 @@ describe('Connections page', () => {
 
   it('lists the methods a token and a connection allow', async () => {
     state.connections = [connection({ methods: ['nip44_encrypt', 'nip44_decrypt'] })]
-    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Reader', kinds: [], methods: ['nip44_decrypt'], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null } satisfies Nip46Token]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Reader', kinds: [], methods: ['nip44_decrypt'], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null, rate_per_minute: 60, rate_burst: 20 } satisfies Nip46Token]
     const component = await mount('administrator')
     await flushPromises()
     expect(component.find('[data-testid="connection-methods"]').text()).toContain('Encrypt messages (NIP-44)')
@@ -235,13 +235,45 @@ describe('Connections page', () => {
     expect(state.issued[0]).toMatchObject({ label: 'Contractor', connection_lifetime_hours: 720 })
   })
 
+  it('issues a token with a rate limit, and the default sends none (#101)', async () => {
+    const component = await mount('administrator')
+    const form = component.find('[data-testid="issue-token"]')
+    await form.find('input[maxlength="100"]').setValue('Phone')
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(1))
+    expect(state.issued[0]).not.toHaveProperty('rate_per_minute')
+    expect(state.issued[0]).not.toHaveProperty('rate_burst')
+
+    await component.find('[data-testid="issued-token"]').findAll('button').find(b => b.text() === 'Done')!.trigger('click')
+    await flushPromises()
+    const again = component.find('[data-testid="issue-token"]')
+    await again.find('input[maxlength="100"]').setValue('Bot')
+    await again.find('#issue-token-rate-limit').trigger('click')
+    await flushPromises()
+    const option = [...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === '10 a minute (burst 5)') as HTMLElement
+    option.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await vi.waitFor(() => expect(again.find('#issue-token-rate-limit').text()).toContain('10 a minute'))
+    await again.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(2))
+    expect(state.issued[1]).toMatchObject({ label: 'Bot', rate_per_minute: 10, rate_burst: 5 })
+  })
+
+  it('shows the rate limit of each token and active connection (#101)', async () => {
+    state.connections = [connection({ id: 'c1', rate_per_minute: 30, rate_burst: 10 })]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bot', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null, rate_per_minute: 600, rate_burst: 100 } satisfies Nip46Token]
+    const component = await mount('administrator')
+    await flushPromises()
+    expect(component.find('[data-connection="c1"] [data-testid="connection-rate-limit"]').text()).toBe('limited to 30 a minute (burst 10)')
+    expect(component.find('[data-token="t1"] [data-testid="token-rate-limit"]').text()).toBe('limited to 600 a minute (burst 100)')
+  })
+
   it('shows when each active connection ends, and why an expired one ended', async () => {
     state.connections = [
       connection({ id: 'c1', expires_at: new Date(Date.now() + 6 * 86_400_000).toISOString() }),
       connection({ id: 'c2', client_pubkey: 'd'.repeat(64) }),
       connection({ id: 'c3', client_pubkey: 'e'.repeat(64), expires_at: new Date(Date.now() - 3_600_000).toISOString(), revoked_at: new Date(Date.now() - 3_600_000).toISOString(), revoked_reason: 'expired' })
     ]
-    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bot', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: 168 } satisfies Nip46Token]
+    state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bot', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: 168, rate_per_minute: 60, rate_burst: 20 } satisfies Nip46Token]
     const component = await mount('administrator')
     await flushPromises()
     expect(component.find('[data-connection="c1"] [data-testid="connection-end"]').text()).toBe('ends in 6 days')

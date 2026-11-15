@@ -14,15 +14,16 @@ test('shows the bunker as healthy, with its public key', async ({ page, bunkerNp
 })
 
 test('shows the metrics from the live bunker', async ({ page }) => {
-  for (const label of ['Total Signatures', 'NIP-46 Connections', 'HTTP Requests']) {
+  for (const label of ['Total Signatures', 'NIP-46 Connections', 'HTTP Requests', 'Requests refused (rate limit)']) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
 
   // As the bunker reports them. Other specs now connect apps and sign (#31), so these are not
   // zero; they do not change while this test runs.
-  const metrics = await (await page.request.get('/api/bunker/metrics')).json() as { total_signatures: number, nip46_connections: number }
+  const metrics = await (await page.request.get('/api/bunker/metrics')).json() as { total_signatures: number, nip46_connections: number, nip46_rate_limited: number }
   await expect(metric(page, 'Total Signatures')).toHaveText(String(metrics.total_signatures))
   await expect(metric(page, 'NIP-46 Connections')).toHaveText(String(metrics.nip46_connections))
+  await expect(metric(page, 'Requests refused (rate limit)')).toHaveText(String(metrics.nip46_rate_limited))
 
   // The bunker counts status requests, and global setup made several before this page loaded, so
   // a non-zero count shows the numbers came from the running bunker, not from the defaults.

@@ -161,6 +161,13 @@ and the connection is marked expired (#98); without one it lasts until revoked. 
 across restarts and can be revoked. See "Connecting an app" in
 [`backend/README.md`](backend/README.md#connecting-an-app-53).
 
+Each connection is rate limited (#101), so a runaway bot or a compromised app cannot sign or decrypt
+without limit. By default an app may make 60 signing and encryption requests a minute, with a burst
+of 20; past that it is told to wait, the refusal is logged at most once a minute, and the dashboard
+counts refusals. An administrator can choose a tighter or looser limit when issuing the token, from
+10 to 600 a minute in the console. See "Rate limits" in
+[`backend/README.md`](backend/README.md#rate-limits-101).
+
 Apps reach the bunker through its relays, which every `bunker://` string carries. After the first
 start, an administrator chooses them on the **Config** page under **Bunker relays**: from a search
 of known relays (NIP-66 reports from relay monitors) or by address, between one and six, and two or
@@ -232,6 +239,12 @@ Everyone signs in once more after this upgrade, because the sessions of the old 
 its memory. The directory holds one small file per session, named by a hash of its id, never the
 id itself. It is not part of backups and needs none: emptying it only signs everyone out (see
 [Sign-in sessions](docs/operating.md#sign-in-sessions)).
+
+### Upgrading: rate limits (#101)
+
+Connected apps are rate limited from this version. Apps connected before the upgrade keep working,
+limited to the default of 60 signing and encryption requests a minute with a burst of 20. An app
+that needs more, such as a bulk poster, needs a new token issued with a higher limit.
 
 ### The key and backups
 

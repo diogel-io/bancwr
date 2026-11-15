@@ -3,7 +3,8 @@
 // library) connects with it and signs a granted kind, the user sees the app and revokes it, and the
 // app can sign no more. An app granted the encryption methods (#97) encrypts and decrypts NIP-44
 // with the brand's key, and each decrypt is in the export. A connection issued for 7 days (#98)
-// shows when it ends. The bunker's relay is the in-process
+// shows when it ends. A connection issued with a rate limit (#101) is refused past its burst. The
+// bunker's relay is the in-process
 // one; from this process it is 127.0.0.1, from the container e2e-host.
 import type { Browser, Page } from '@playwright/test'
 import { BunkerSigner } from 'nostr-tools/nip46'
@@ -161,6 +162,32 @@ test('a connection issued for 7 days signs and shows when it ends (#98)', async 
 
   await page.reload()
   await expect(page.getByTestId('connection-end').filter({ hasText: 'ends in 7 days' })).toHaveCount(1)
+})
+
+test('a connection issued with a rate limit is refused past its burst and shows its limit (#101)', async ({ page }) => {
+  await page.goto('/connections')
+  const form = page.getByTestId('issue-token')
+  await form.getByRole('combobox').first().click()
+  await page.getByRole('option', { name: /\(you\)/ }).click()
+  await form.getByLabel('Label').fill('e2e rate-limited bot')
+  await form.locator('#issue-token-rate-limit').click()
+  await page.getByRole('option', { name: '10 a minute (burst 5)' }).click()
+  await form.getByRole('button', { name: 'Issue token' }).click()
+  const uri = (await page.getByTestId('issued-uri').textContent())!.trim()
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  const token = page.locator('[data-token]').filter({ hasText: 'e2e rate-limited bot' })
+  await expect(token.getByTestId('token-rate-limit')).toHaveText('limited to 10 a minute (burst 5)')
+
+  const app = await connectApp(uri)
+  for (let n = 0; n < 5; n++) {
+    await expect(within(app.signEvent(note()))).resolves.toHaveProperty('sig')
+  }
+  expect(await refusal(app.signEvent(note()))).toContain('Rate limited: this connection may make 10 requests a minute (burst 5)')
+  await app.close()
+
+  await page.reload()
+  await expect(page.getByTestId('connection-rate-limit').filter({ hasText: 'limited to 10 a minute (burst 5)' })).toHaveCount(1)
 })
 
 test.describe('viewer', () => {

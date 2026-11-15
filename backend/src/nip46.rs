@@ -12,13 +12,19 @@
 //! names it, and the bunker encrypts and decrypts with its own key. Every decrypt is recorded as an
 //! audit event before it happens. A peer that is a NIP-46 app's key is refused, because the
 //! traffic between apps and the bunker is encrypted with that same key.
+//!
+//! Each connection is rate limited (#101, `rate_limit.rs`): the methods that use the key for the
+//! app count, checked once the connection is found and before anything else, so a refused request
+//! signs, decrypts and records nothing.
 use crate::audit::action;
 use crate::db::{ClientMetadata, Database, Nip46Connection, RedeemRefusal};
+use crate::rate_limit::{self, Decision, RateLimiter};
 use crate::signer::Signer;
 use chrono::Utc;
 use nostr::hashes::{sha256, Hash};
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -70,6 +76,14 @@ pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token 
 /// revoked connection like any other, and gets `NOT_CONNECTED`.
 pub const EXPIRED: &str = "This connection has expired";
 
+/// The error a client over its rate limit gets (#101).
+pub fn rate_limited_message(limit: rate_limit::RateLimit, retry_after_secs: u64) -> String {
+    format!(
+        "Rate limited: this connection may make {} requests a minute (burst {}). Try again in {} s",
+        limit.per_minute, limit.burst, retry_after_secs
+    )
+}
+
 /// Marks every connection past its expiry (#98) as `expired`, and logs each. Returns those it
 /// ended. A failure is logged and ends nothing: expired connections are refused regardless, since
 /// `active_nip46_connection` never returns one. Called by the handler, at start and hourly
@@ -93,11 +107,48 @@ pub fn expire_connections(db: &Database) -> Vec<Nip46Connection> {
 pub struct Nip46Handler {
     signer: Arc<RwLock<Signer>>,
     db: Database,
+    limiter: RateLimiter,
+    /// Requests refused for the rate limit since the bunker started (#101), for the metrics.
+    rate_limited: AtomicU64,
 }
 
 impl Nip46Handler {
     pub fn new(signer: Arc<RwLock<Signer>>, db: Database) -> Self {
-        Self { signer, db }
+        Self { signer, db, limiter: RateLimiter::new(), rate_limited: AtomicU64::new(0) }
+    }
+
+    /// Requests refused for the rate limit since the bunker started (#101).
+    pub fn rate_limited_count(&self) -> u64 {
+        self.rate_limited.load(Ordering::Relaxed)
+    }
+
+    /// Drops the rate limiter's idle buckets (#101). Called hourly (`main.rs`).
+    pub fn sweep_rate_limits(&self) -> usize {
+        self.limiter.sweep()
+    }
+
+    /// Refuses `request` when the connection is over its rate limit (#101), counting the refusal
+    /// and, at most once a minute per connection, logging and auditing it. A failure to audit is
+    /// logged and still refuses.
+    fn rate_limit_refusal(&self, request: &Nip46Request, connection: &Nip46Connection) -> Option<Nip46Response> {
+        if !rate_limit::counts(&request.method) {
+            return None;
+        }
+        let limit = connection.effective_rate_limit();
+        let Decision::Limited { retry_after_secs, report } = self.limiter.check(&connection.id, limit) else {
+            return None;
+        };
+        self.rate_limited.fetch_add(1, Ordering::Relaxed);
+        if report {
+            warn!(
+                "NIP-46 connection {} for {} from {} is over its rate limit ({} a minute, burst {}); refusing until it slows down",
+                connection.id, connection.for_pubkey, connection.client_pubkey, limit.per_minute, limit.burst
+            );
+            if let Err(e) = self.db.record_rate_limited(connection, limit, Utc::now()) {
+                warn!("Failed to record the rate limiting of NIP-46 connection {}: {}", connection.id, e);
+            }
+        }
+        Some(Nip46Response::err(request.id.clone(), rate_limited_message(limit, retry_after_secs)))
     }
 
     /// Active connections, for /api/bunker/metrics.
@@ -132,6 +183,10 @@ impl Nip46Handler {
                 return Nip46Response::err(request.id, "Internal error");
             }
         };
+
+        if let Some(refusal) = self.rate_limit_refusal(&request, &connection) {
+            return refusal;
+        }
 
         match request.method.as_str() {
             "sign_event" => self.handle_sign_event(request, client_pubkey, &connection).await,

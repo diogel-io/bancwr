@@ -4,7 +4,8 @@
 //! change, so the record cannot disagree with the database: tokens issued and revoked,
 //! connections made and revoked, members added, removed and given another role, the bunker's
 //! relays, and the log's own retention. Exports and pruning are recorded too, and so is every
-//! decrypt a NIP-46 app asks for (#97), before it happens. Event content, plaintext and ciphertext
+//! decrypt a NIP-46 app asks for (#97), before it happens, and an app refused for going over its
+//! rate limit (#101), at most once a minute per connection. Event content, plaintext and ciphertext
 //! are never recorded, here or in the signing log.
 //!
 //! Timestamps in `signing_logs` and `audit_events` are fixed-width UTC (`db_time`), so text order
@@ -34,6 +35,9 @@ pub mod action {
     /// A NIP-46 app asked the bunker to decrypt (#97). Named as the NIP-46 methods are.
     pub const NIP44_DECRYPT: &str = "nip44_decrypt";
     pub const NIP04_DECRYPT: &str = "nip04_decrypt";
+    /// A NIP-46 app was refused for going over its connection's rate limit (#101). Recorded at most
+    /// once a minute per connection, however hard the app pushes.
+    pub const CONNECTION_RATE_LIMITED: &str = "connection_rate_limited";
 }
 
 /// A timestamp as `signing_logs` and `audit_events` store it: UTC, always six fractional digits
@@ -389,6 +393,24 @@ impl Database {
                 client_pubkey: Some(&connection.client_pubkey),
                 detail: Some(format!("peer={}", peer)),
                 ..Audit::new(decrypt_action)
+            },
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// Records that `connection` was refused for going over its rate limit (#101), with no actor.
+    pub fn record_rate_limited(&self, connection: &Nip46Connection, limit: crate::rate_limit::RateLimit, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let conn = self.lock()?;
+        record(
+            &conn,
+            &Audit {
+                member: Some(&connection.for_pubkey),
+                connection_id: Some(&connection.id),
+                token_id: Some(&connection.token_id),
+                client_pubkey: Some(&connection.client_pubkey),
+                detail: Some(format!("rate_per_minute={};burst={}", limit.per_minute, limit.burst)),
+                ..Audit::new(action::CONNECTION_RATE_LIMITED)
             },
             now,
         )?;

@@ -27,6 +27,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("record audit events", audit_events),
     ("normalise signing log timestamps", normalise_log_timestamps),
     ("let NIP-46 connections expire", nip46_connection_lifetime),
+    ("limit NIP-46 request rates", nip46_rate_limit),
 ];
 
 /// The version a fully migrated database is at.
@@ -463,7 +464,29 @@ fn normalise_log_timestamps(tx: &Transaction) -> anyhow::Result<()> {
 ///     every existing token and connection keeps lasting until revoked. Each column is added only
 ///     when missing, so a database whose version was rewound re-runs this cleanly.
 fn nip46_connection_lifetime(tx: &Transaction) -> anyhow::Result<()> {
-    for (table, column, kind) in [("nip46_tokens", "connection_lifetime_hours", "INTEGER"), ("nip46_connections", "expires_at", "TEXT")] {
+    add_missing_columns(tx, &[("nip46_tokens", "connection_lifetime_hours", "INTEGER"), ("nip46_connections", "expires_at", "TEXT")])
+}
+
+/// 11. A rate limit per NIP-46 connection (#101). A token may carry `rate_per_minute` and
+///     `rate_burst`, copied to the connection it makes. NULL means the default
+///     (`rate_limit::RateLimit::DEFAULT`, 60 a minute with a burst of 20), so every existing token
+///     and connection is limited to it from the upgrade. Each column is added only when missing.
+fn nip46_rate_limit(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(
+        tx,
+        &[
+            ("nip46_tokens", "rate_per_minute", "INTEGER"),
+            ("nip46_tokens", "rate_burst", "INTEGER"),
+            ("nip46_connections", "rate_per_minute", "INTEGER"),
+            ("nip46_connections", "rate_burst", "INTEGER"),
+        ],
+    )
+}
+
+/// Adds each `(table, column, type)` the table does not have yet, so a migration that adds columns
+/// re-runs cleanly on a database whose version was rewound.
+fn add_missing_columns(tx: &Transaction, wanted: &[(&str, &str, &str)]) -> anyhow::Result<()> {
+    for (table, column, kind) in wanted {
         let columns: Vec<String> = tx
             .prepare(&format!("SELECT name FROM pragma_table_info('{}')", table))?
             .query_map([], |row| row.get(0))?

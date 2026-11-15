@@ -23,6 +23,12 @@ const cards = computed(() => [
     label: 'HTTP Requests',
     icon: 'i-lucide-activity',
     value: metrics.value?.http_requests ?? 0
+  },
+  {
+    // Since the bunker started (#101): a rising number means an app is pushing past its limit.
+    label: 'Requests refused (rate limit)',
+    icon: 'i-lucide-gauge',
+    value: metrics.value?.nip46_rate_limited ?? 0
   }
 ])
 </script>
@@ -31,7 +37,7 @@ const cards = computed(() => [
   <ForbiddenNotice v-if="isForbidden(error)" />
   <div
     v-else
-    class="grid grid-cols-1 sm:grid-cols-3 gap-4"
+    class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"
   >
     <UCard
       v-for="card in cards"

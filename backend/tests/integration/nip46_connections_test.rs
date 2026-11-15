@@ -2,7 +2,7 @@
 // standard NIP-46 client (rust-nostr's nostr-connect) connects with it through a relay, learns the
 // bunker's key and signs a granted kind; a kind outside the grant is refused; the connection is
 // listed for its member and survives a restart. Plus who may issue, list and revoke, and the
-// encryption methods (#97) over the same client, and connection lifetimes (#98).
+// encryption methods (#97) over the same client, connection lifetimes (#98) and rate limits (#101).
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -187,6 +187,11 @@ async fn issuing_is_validated_and_refused_with_nip46_off() {
         (json!({ "label": "x", "methods": ["sign_event:1"] }), "invalid_methods"),
         (json!({ "label": "x", "kinds": [1], "connection_lifetime_hours": 0 }), "invalid_lifetime"),
         (json!({ "label": "x", "kinds": [1], "connection_lifetime_hours": 8761 }), "invalid_lifetime"),
+        (json!({ "label": "x", "kinds": [1], "rate_per_minute": 0 }), "invalid_rate_limit"),
+        (json!({ "label": "x", "kinds": [1], "rate_per_minute": 601 }), "invalid_rate_limit"),
+        (json!({ "label": "x", "kinds": [1], "rate_burst": 0 }), "invalid_rate_limit"),
+        (json!({ "label": "x", "kinds": [1], "rate_burst": 101 }), "invalid_rate_limit"),
+        (json!({ "label": "x", "kinds": [1], "rate_per_minute": 10, "rate_burst": 500 }), "invalid_rate_limit"),
         (json!({ "label": "x", "kinds": [1], "expires_in_hours": 0 }), "invalid_expiry"),
         (json!({ "label": "x", "kinds": [1], "expires_in_hours": 169 }), "invalid_expiry"),
         (json!({ "label": "x", "kinds": [1], "for_pubkey": "nope" }), "invalid_pubkey"),
@@ -589,4 +594,63 @@ async fn a_token_for_a_viewer_does_not_connect() {
         .redeem_nip46_token(&bunker::nip46::hash_secret("s3cret"), &Keys::generate().public_key().to_hex(), None, &Default::default(), now)
         .unwrap();
     assert_eq!(refusal.err(), Some(bunker::db::RedeemRefusal::MemberCannotSign));
+}
+
+#[tokio::test]
+async fn a_rate_limit_is_issued_reported_on_the_token_and_connection_and_defaults() {
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let admin = app.admin.public_key().to_hex();
+
+    let res = issue(&app, &admin, json!({ "label": "Bot", "kinds": [1], "rate_per_minute": 10, "rate_burst": 5 })).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let limited: IssueTokenResponse = res.json().await.unwrap();
+    assert_eq!((limited.rate_per_minute, limited.rate_burst), (10, 5));
+    // Each part defaults on its own.
+    let half: IssueTokenResponse = issue(&app, &admin, json!({ "label": "Half", "kinds": [1], "rate_per_minute": 120 })).await.json().await.unwrap();
+    assert_eq!((half.rate_per_minute, half.rate_burst), (120, 20));
+    let default: IssueTokenResponse = issue(&app, &admin, json!({ "label": "Phone", "kinds": [1] })).await.json().await.unwrap();
+    assert_eq!((default.rate_per_minute, default.rate_burst), (60, 20));
+
+    let tokens: Vec<TokenResponse> = app.signed(Method::GET, "/api/bunker/connections/tokens", &admin).send().await.unwrap().json().await.unwrap();
+    let bot = tokens.iter().find(|t| t.id == limited.id).unwrap();
+    assert_eq!((bot.rate_per_minute, bot.rate_burst), (10, 5));
+    let phone = tokens.iter().find(|t| t.id == default.id).unwrap();
+    assert_eq!((phone.rate_per_minute, phone.rate_burst), (60, 20));
+
+    let secret = limited.uri.split("secret=").nth(1).unwrap().to_string();
+    let client = Keys::generate();
+    let response = app
+        .state
+        .nip46_handler
+        .handle_request(
+            bunker::nip46::Nip46Request { id: "c".into(), method: "connect".into(), params: vec![app.bunker.public_key().to_hex(), secret] },
+            client.public_key(),
+        )
+        .await;
+    assert_eq!(response.result.as_deref(), Some("ack"));
+    let listed = connections(&app, &admin).await;
+    assert_eq!((listed[0].rate_per_minute, listed[0].rate_burst), (10, 5));
+}
+
+#[tokio::test]
+async fn a_standard_nip46_client_past_its_burst_is_refused_over_the_relay_and_counted() {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_bunker_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+
+    let token: IssueTokenResponse =
+        issue(&app, &admin, json!({ "label": "Bot", "kinds": [1], "rate_per_minute": 1, "rate_burst": 2 })).await.json().await.unwrap();
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(10), None).unwrap();
+    let bunker = client.get_public_key().await.unwrap();
+    for n in 0..2 {
+        assert!(client.sign_event(EventBuilder::text_note(format!("note {}", n)).build(bunker)).await.is_ok());
+    }
+    let refused = client.sign_event(EventBuilder::text_note("one too many").build(bunker)).await;
+    let error = refused.expect_err("past the burst").to_string();
+    assert!(error.contains("Rate limited"), "{}", error);
+
+    let metrics: Value = app.signed(Method::GET, "/api/bunker/metrics", &admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(metrics["nip46_rate_limited"], 1);
+    assert_eq!(metrics["total_signatures"], 2);
 }

@@ -3,7 +3,7 @@
 // and last used (signing, or encrypting and decrypting, #97), and Revoke, confirmed in place.
 import { npubEncode } from 'nostr-tools/nip19'
 import type { Nip46Connection } from '#shared/types/bunker'
-import { connectionEnd, kindLabel, methodLabel, relativeTime, revokedReason } from '~/utils/connections'
+import { connectionEnd, kindLabel, methodLabel, rateLimitLabel, relativeTime, revokedReason } from '~/utils/connections'
 import { NoReferrerImg } from '~/utils/no-referrer-img'
 
 // Third-party pictures load with no referrer, the policy set before src (#75).
@@ -118,6 +118,10 @@ function revoke() {
             :title="connection.expires_at ? exact(connection.expires_at) : undefined"
             data-testid="connection-end"
           >{{ connectionEnd(connection.expires_at) }}</span>
+          <template v-if="connection.rate_per_minute">
+            ·
+            <span data-testid="connection-rate-limit">limited to {{ rateLimitLabel(connection.rate_per_minute, connection.rate_burst) }}</span>
+          </template>
         </template>
         <template v-if="forName">
           · for {{ forName }}

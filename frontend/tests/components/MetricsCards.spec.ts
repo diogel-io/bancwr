@@ -14,7 +14,8 @@ describe('MetricsCards', () => {
     registerEndpoint('/api/bunker/metrics', () => ({
       http_requests: 42,
       nip46_connections: 3,
-      total_signatures: 1234
+      total_signatures: 1234,
+      nip46_rate_limited: 17
     }))
 
     const component = await mountSuspended(MetricsCards)
@@ -25,6 +26,8 @@ describe('MetricsCards', () => {
     expect(component.text()).toContain('NIP-46 Connections')
     expect(component.text()).toContain('42')
     expect(component.text()).toContain('HTTP Requests')
+    expect(component.text()).toContain('17')
+    expect(component.text()).toContain('Requests refused (rate limit)')
   })
 
   it('reports a signing total beyond the 100 rows the logs endpoint returns', async () => {
@@ -32,7 +35,8 @@ describe('MetricsCards', () => {
     registerEndpoint('/api/bunker/metrics', () => ({
       http_requests: 0,
       nip46_connections: 0,
-      total_signatures: 5000
+      total_signatures: 5000,
+      nip46_rate_limited: 0
     }))
 
     const component = await mountSuspended(MetricsCards)

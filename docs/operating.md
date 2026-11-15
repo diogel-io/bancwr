@@ -440,6 +440,22 @@ days, or **Until revoked**, which is the default and how every earlier connectio
 - A time limit cannot be extended. To give more time, issue a new token, and the app connects again.
 - You can still revoke a connection before its time runs out.
 
+## How fast an app may sign
+
+Every connection is rate limited (#101), so a runaway bot or a compromised app cannot sign or
+decrypt without limit. When issuing a token under **Connections**, choose under **Rate limit**: the
+default is 60 signing and encryption requests a minute with a burst of 20, and the presets run from
+10 to 600 a minute.
+
+- Past its limit, the app is refused and told how many seconds to wait. Normal use never comes near
+  the default: it is for a loop that has gone wrong.
+- The dashboard's **Requests refused (rate limit)** counts refusals since the bunker started. The
+  bunker's log has a warning, and the audit log a `connection_rate_limited` event, at most once a
+  minute for each connection that keeps being refused. A connection that shows up there again and
+  again is worth a look: revoke it if it should not be doing that.
+- Each token and connection shows its limit. A limit cannot be changed: issue a new token.
+- Apps connected before the upgrade are limited to the default.
+
 ## Apps that read and send private messages
 
 An app can be allowed to encrypt and decrypt with the brand's key (#97), which direct messages
