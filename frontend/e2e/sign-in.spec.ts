@@ -3,6 +3,8 @@ import type { Page } from '@playwright/test'
 import { continueAsKey, installExtension } from './extension'
 import { anonymousTest as test, expect } from './fixtures'
 import { generateNsec, npubFromNsec } from './keys'
+import { cookieJarPost, signInAs } from './sign-in'
+import { baseUrl, restartFrontend } from './stack'
 
 async function signInWithExtension(page: Page) {
   await page.getByRole('button', { name: 'Sign in with extension' }).click()
@@ -118,4 +120,42 @@ test('the bunker\'s own key is refused, with why and how the first administrator
   await expect(error).toContainText('the bunker signs for others')
   await expect(error).toContainText('BANCWR_ADMIN_PUBKEY')
   await expect(page).toHaveURL('/sign-in')
+})
+
+// Sessions are kept in a store on disk (#100): every acceptance criterion of diogel-io/bancwr#100.
+// They restart the frontend, so they need a stack this run started.
+test.describe('across a frontend restart (#100)', () => {
+  test.skip(process.env.E2E_STACK_STARTED !== '1', 'restarts the frontend, so needs a stack this run started')
+
+  test('a signed-in user stays signed in after the frontend restarts', async ({ page }) => {
+    await installExtension(page, process.env.E2E_ADMIN_NSEC!)
+    await page.goto('/sign-in')
+    await signInWithExtension(page)
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+
+    await restartFrontend()
+
+    await page.goto('/team')
+    await expect(page).toHaveURL('/team')
+    const admin = npubFromNsec(process.env.E2E_ADMIN_NSEC!)
+    await expect(page.getByRole('group', { name: /^Signed in as / })).toHaveAttribute('aria-label', `Signed in as ${admin}, Admin`)
+    expect((await page.request.get('/api/bunker/team')).status()).toBe(200)
+  })
+
+  test('a copy of the cookie stops working after sign-out, across a restart too', async () => {
+    const jar = cookieJarPost()
+    expect((await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), jar.post)).status).toBe(200)
+    const copy = jar.cookie()
+    const session = () => fetch(`${baseUrl()}/api/auth/session`, { headers: { cookie: copy } })
+
+    await restartFrontend()
+    expect((await session()).status).toBe(200)
+
+    expect((await fetch(`${baseUrl()}/api/auth/logout`, { method: 'POST', headers: { cookie: copy } })).status).toBe(200)
+    expect((await session()).status).toBe(401)
+
+    await restartFrontend()
+    expect((await session()).status).toBe(401)
+    expect((await fetch(`${baseUrl()}/api/bunker/team`, { headers: { cookie: copy } })).status).toBe(401)
+  })
 })

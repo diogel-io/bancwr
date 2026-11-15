@@ -5,6 +5,8 @@
 .env
 
 /data/
+# The frontend's live sessions (#100).
+/sessions/
 *.db
 *.db-shm
 *.db-wal

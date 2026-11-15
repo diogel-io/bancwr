@@ -65,6 +65,15 @@ services:
         - NUXT_PUBLIC_PROFILE_RELAYS=${NUXT_PUBLIC_PROFILE_RELAYS:-}
         - NUXT_PUBLIC_INDEXER_RELAYS=${NUXT_PUBLIC_INDEXER_RELAYS:-}
         - NUXT_PUBLIC_BLOSSOM_SERVER=${NUXT_PUBLIC_BLOSSOM_SERVER:-}
+        # Live sign-in sessions (#100), so restarting or upgrading the frontend signs nobody out.
+        - NUXT_SESSION_STORE_DIR=/sessions
+      # One small file per session, named by a hash of its id: no keys, and nothing a copy could
+      # sign in with. Not part of backups; emptying it signs everyone out. The frontend runs as UID
+      # 65532 (#16) and refuses to start if it cannot write here. Once, before the first start:
+      #   mkdir -p sessions && podman unshare chown 65532:65532 sessions   (rootless Podman)
+      #   mkdir -p sessions && sudo chown 65532:65532 sessions             (Docker)
+      volumes:
+        - ./sessions:/sessions:Z
       depends_on:
         - bunker
 
