@@ -4,7 +4,7 @@ import { canOpen } from '~/utils/access'
 
 defineProps<{ collapsed?: boolean }>()
 
-// Flat, because Bancwr has eight screens. The template this is modelled on nests a Settings
+// Flat, because Bancwr has nine screens. The template this is modelled on nests a Settings
 // section, but it has sixteen.
 const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', to: '/' },
@@ -16,7 +16,9 @@ const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Follows', icon: 'i-lucide-users-round', to: '/follows' },
   { label: 'Relays', icon: 'i-lucide-radio-tower', to: '/relays' },
   // Apps connected over NIP-46 for the signer; all of them for administrators (#31).
-  { label: 'Connections', icon: 'i-lucide-plug', to: '/connections' }
+  { label: 'Connections', icon: 'i-lucide-plug', to: '/connections' },
+  // Requests held for an administrator's approval before signing (#102).
+  { label: 'Approvals', icon: 'i-lucide-shield-check', to: '/approvals' }
 ]
 
 // Only what the signed-in role may open (#26, #77, utils/access.ts); a viewer gets the dashboard and

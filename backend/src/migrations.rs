@@ -28,6 +28,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("normalise signing log timestamps", normalise_log_timestamps),
     ("let NIP-46 connections expire", nip46_connection_lifetime),
     ("limit NIP-46 request rates", nip46_rate_limit),
+    ("hold chosen kinds for approval", nip46_approval_perms),
 ];
 
 /// The version a fully migrated database is at.
@@ -481,6 +482,14 @@ fn nip46_rate_limit(tx: &Transaction) -> anyhow::Result<()> {
             ("nip46_connections", "rate_burst", "INTEGER"),
         ],
     )
+}
+
+/// 12. Kinds held for an administrator's approval before signing (#102). A token may carry
+///     `approval_perms`, a comma list of `sign_event:<kind>` within its `perms`, copied to the
+///     connection it makes (those of them granted). NULL means nothing needs approval, so every
+///     existing token and connection signs as before. Each column is added only when missing.
+fn nip46_approval_perms(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(tx, &[("nip46_tokens", "approval_perms", "TEXT"), ("nip46_connections", "approval_perms", "TEXT")])
 }
 
 /// Adds each `(table, column, type)` the table does not have yet, so a migration that adds columns

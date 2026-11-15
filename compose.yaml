@@ -33,6 +33,11 @@ services:
         # Empty uses the relays an administrator chooses under Config, Bunker relays (#78). When
         # set, it overrides them and the console shows it read-only.
         - NIP46_RELAYS=${NIP46_RELAYS:-}
+        # Approval before signing (#102). A request held for approval points the app at the console
+        # (NUXT_SITE_ORIGIN, the frontend's address), and waits this many minutes, 1 to 1440, before
+        # it times out. Empty is 30.
+        - BANCWR_CONSOLE_URL=${NUXT_SITE_ORIGIN:?Set NUXT_SITE_ORIGIN in .env, such as https://bancwr.example}
+        - BANCWR_APPROVAL_TIMEOUT_MINUTES=${BANCWR_APPROVAL_TIMEOUT_MINUTES:-}
       # The bunker runs as UID 65532 (#16), so ./data must be writable by it. Once, before the first
       # start: podman unshare chown -R 65532:65532 ./data   (rootless Podman)
       #        sudo chown -R 65532:65532 ./data             (Docker)

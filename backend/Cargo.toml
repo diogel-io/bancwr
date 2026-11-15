@@ -145,3 +145,7 @@ path = "tests/integration/logs_api_test.rs"
 [[test]]
 name = "rate_limit_test"
 path = "tests/unit/rate_limit_test.rs"
+
+[[test]]
+name = "approvals_test"
+path = "tests/unit/approvals_test.rs"

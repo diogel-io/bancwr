@@ -21,3 +21,5 @@ pub mod backup;
 pub mod audit;
 pub mod logs_api;
 pub mod rate_limit;
+pub mod approvals;
+pub mod approvals_api;

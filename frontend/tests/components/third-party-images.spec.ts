@@ -68,7 +68,7 @@ describe('third-party images send no Referer (#75)', () => {
       id: 'c1', client_pubkey: key, for_pubkey: 'a'.repeat(64), client_name: 'App', client_url: null,
       client_image: 'https://app.example/icon.png', metadata_verified: false, kinds: [1], methods: [],
       connected_at: '2026-10-01T00:00:00Z', last_used_at: null, revoked_at: null, revoked_reason: null, revoked_by: null, expires_at: null,
-      rate_per_minute: 60, rate_burst: 20
+      rate_per_minute: 60, rate_burst: 20, approval_kinds: []
     }
     // It has tooltips, which need the provider UApp installs in app.vue.
     const Row = defineComponent({ render: () => h(UApp, () => h(ConnectionRow, { connection })) })

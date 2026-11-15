@@ -4,7 +4,8 @@
 // audit event each decrypt leaves before it happens.
 use bunker::db::{Database, TokenOptions};
 use bunker::rate_limit::RateLimit;
-use bunker::nip46::{hash_secret, sign_permission, ENCRYPTION_METHODS, EXPIRED, Nip46Handler, Nip46Request, Nip46Response, NOT_CONNECTED};
+use bunker::approvals::Scheme;
+use bunker::nip46::{hash_secret, sign_permission, ApprovalError, Nip46Handler, Nip46Outcome, Nip46Request, Nip46Response, ENCRYPTION_METHODS, EXPIRED, NOT_CONNECTED};
 use bunker::registry::Role;
 use bunker::signer::Signer;
 use chrono::{Duration, SubsecRound, Utc};
@@ -726,4 +727,210 @@ async fn a_token_with_a_limit_records_it_when_issued_and_the_default_does_not() 
     assert_eq!(issued.len(), 2);
     assert!(issued[0].ends_with(";rate_per_minute=1;rate_burst=2"), "{}", issued[0]);
     assert!(!issued[1].contains("rate_"), "{}", issued[1]);
+}
+
+// Approval before signing (#102).
+
+/// A client connected through the handler with a token allowing kinds 1 and 7, of which
+/// `approval` need approval.
+async fn connected_gated(s: &Setup, approval: &[u16]) -> Keys {
+    connected_gated_with(s, approval, None).await
+}
+
+async fn connected_gated_with(s: &Setup, approval: &[u16], rate_limit: Option<RateLimit>) -> Keys {
+    let secret = format!("secret-{}", uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let perms = vec![sign_permission(1), sign_permission(7)];
+    let options = TokenOptions { approval_perms: approval.iter().map(|k| sign_permission(*k)).collect(), rate_limit, ..TokenOptions::default() };
+    s.db.create_nip46_token_with(&hash_secret(&secret), &s.member.public_key().to_hex(), "admin", "test", &perms, now, now + Duration::hours(1), options).unwrap();
+    let client = Keys::generate();
+    let connected = connect(s, &client, connect_params(s, &secret)).await;
+    assert_eq!(connected.result.as_deref(), Some("ack"), "{:?}", connected.error);
+    client
+}
+
+fn approval_events(s: &Setup) -> Vec<bunker::audit::ExportRow> {
+    s.db.audit_events().unwrap().into_iter().filter(|e| e.action.starts_with("approval_")).collect()
+}
+
+const ADMIN: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
+
+#[tokio::test]
+async fn a_kind_that_needs_approval_is_held_and_not_signed() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    let held = sign(&s, &client, Kind::TextNote).await;
+    assert_eq!(held.result.as_deref(), Some("auth_url"));
+    assert_eq!(s.db.signature_count().unwrap(), 0);
+
+    let pending = s.handler.pending_approvals(None);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].kind(), 1);
+    assert_eq!(pending[0].event.content, "hello");
+    assert_eq!(pending[0].event.pubkey, s.bunker.public_key(), "previewed as it will be signed");
+    assert_eq!(held.error, Some(format!("/approvals/{}", pending[0].id)));
+    assert_eq!(s.handler.approvals_pending(), 1);
+
+    let events = approval_events(&s);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "approval_requested");
+    assert_eq!(events[0].detail.as_deref(), Some(pending[0].audit_detail().as_str()));
+    assert_eq!(events[0].actor_pubkey, None);
+}
+
+#[tokio::test]
+async fn a_kind_that_does_not_need_approval_signs_at_once() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    assert!(sign(&s, &client, Kind::Reaction).await.result.unwrap().contains("\"sig\""));
+    assert!(s.handler.pending_approvals(None).is_empty());
+}
+
+#[tokio::test]
+async fn the_auth_challenge_points_at_the_console_when_its_address_is_known() {
+    let s = setup();
+    s.handler.configure_approvals(Duration::minutes(30), Some("https://bancwr.example".to_string()));
+    let client = connected_gated(&s, &[1]).await;
+    let unsigned = EventBuilder::new(Kind::TextNote, "x").build(client.public_key());
+    let outcome = s.handler.handle(request("sign_event", vec![serde_json::to_string(&unsigned).unwrap()]), client.public_key(), Scheme::Nip04).await;
+    let Nip46Outcome::Held { pending_id, notice } = outcome else { panic!("held") };
+    let notice = notice.expect("an auth challenge");
+    assert_eq!(notice.id, "sign_event-id");
+    assert_eq!(notice.error, Some(format!("https://bancwr.example/approvals/{}", pending_id)));
+    assert_eq!(s.handler.pending_approvals(None)[0].scheme, Scheme::Nip04, "answered later as it came");
+
+    // Without the console's address, nothing is sent now.
+    s.handler.configure_approvals(Duration::minutes(30), None);
+    let outcome = s.handler.handle(request("sign_event", vec![serde_json::to_string(&unsigned).unwrap()]), client.public_key(), Scheme::Nip44).await;
+    assert!(matches!(outcome, Nip46Outcome::Held { notice: None, .. }));
+}
+
+#[tokio::test]
+async fn approving_signs_exactly_the_event_previewed_and_records_who() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    sign(&s, &client, Kind::TextNote).await;
+    let pending = s.handler.pending_approvals(None).remove(0);
+
+    let reply = s.handler.approve(pending.id, &pending.event_id.to_hex(), Some(ADMIN), Some("Looks good")).await.unwrap();
+    assert_eq!(reply.client_pubkey, client.public_key());
+    assert_eq!(reply.response.id, "sign_event-id");
+    let event: Event = serde_json::from_str(reply.response.result.as_deref().expect("signed")).unwrap();
+    assert_eq!(event.id, pending.event_id);
+    assert_eq!(event.pubkey, s.bunker.public_key());
+    assert!(event.verify().is_ok());
+    assert_eq!(s.db.signature_count().unwrap(), 1);
+    assert!(s.handler.pending_approvals(None).is_empty());
+
+    let approved = approval_events(&s).into_iter().find(|e| e.action == "approval_approved").unwrap();
+    assert_eq!(approved.actor_pubkey.as_deref(), Some(ADMIN));
+    assert_eq!(approved.detail, Some(format!("{};note=Looks good", pending.audit_detail())));
+    // Decided once.
+    assert!(matches!(s.handler.approve(pending.id, &pending.event_id.to_hex(), Some(ADMIN), None).await, Err(ApprovalError::NotFound)));
+}
+
+#[tokio::test]
+async fn approving_another_event_than_the_one_waiting_is_refused_and_it_still_waits() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    sign(&s, &client, Kind::TextNote).await;
+    let pending = s.handler.pending_approvals(None).remove(0);
+    let other = EventId::all_zeros().to_hex();
+    assert!(matches!(s.handler.approve(pending.id, &other, Some(ADMIN), None).await, Err(ApprovalError::EventMismatch)));
+    assert_eq!(s.db.signature_count().unwrap(), 0);
+    assert_eq!(s.handler.pending_approvals(None).len(), 1);
+}
+
+#[tokio::test]
+async fn rejecting_signs_nothing_and_tells_the_app_with_the_note() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    sign(&s, &client, Kind::TextNote).await;
+    let pending = s.handler.pending_approvals(None).remove(0);
+
+    let reply = s.handler.reject(pending.id, Some(ADMIN), Some("Not on brand")).unwrap();
+    assert_eq!(reply.response.result, None);
+    assert_eq!(reply.response.error.as_deref(), Some("Rejected by an administrator: Not on brand"));
+    assert_eq!(s.db.signature_count().unwrap(), 0);
+    let rejected = approval_events(&s).into_iter().find(|e| e.action == "approval_rejected").unwrap();
+    assert_eq!(rejected.actor_pubkey.as_deref(), Some(ADMIN));
+    assert_eq!(rejected.detail, Some(format!("{};note=Not on brand", pending.audit_detail())));
+    assert!(matches!(s.handler.reject(pending.id, Some(ADMIN), None), Err(ApprovalError::NotFound)));
+}
+
+#[tokio::test]
+async fn a_request_nobody_decides_times_out_and_signs_nothing() {
+    let s = setup();
+    s.handler.configure_approvals(Duration::minutes(10), None);
+    let client = connected_gated(&s, &[1]).await;
+    sign(&s, &client, Kind::TextNote).await;
+    let pending = s.handler.pending_approvals(None).remove(0);
+
+    assert!(s.handler.sweep_approvals(Utc::now() + Duration::minutes(9)).is_empty());
+    let replies = s.handler.sweep_approvals(Utc::now() + Duration::minutes(11));
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].response.error.as_deref(), Some("Approval timed out after 10 minutes: nothing was signed"));
+    assert_eq!(s.db.signature_count().unwrap(), 0);
+    assert!(s.handler.pending_approvals(None).is_empty());
+    let expired = approval_events(&s).into_iter().find(|e| e.action == "approval_expired").unwrap();
+    assert_eq!(expired.actor_pubkey, None);
+    assert_eq!(expired.detail, Some(format!("{};timeout_seconds=600", pending.audit_detail())));
+}
+
+#[tokio::test]
+async fn a_request_whose_connection_ends_is_cancelled_by_the_sweep_and_by_approving() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    sign(&s, &client, Kind::TextNote).await;
+    sign(&s, &client, Kind::TextNote).await;
+    let connection = s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap();
+    let first = s.handler.pending_approvals(None).remove(0);
+    s.db.revoke_nip46_connection(&connection.id, "revoked", Utc::now()).unwrap();
+
+    // Approving one finds the connection gone: cancelled, and the app told.
+    let Err(ApprovalError::ConnectionEnded(reply)) = s.handler.approve(first.id, &first.event_id.to_hex(), Some(ADMIN), None).await else {
+        panic!("cancelled")
+    };
+    assert_eq!(reply.response.error.as_deref(), Some("This connection ended: nothing was signed"));
+    // The sweep cancels the other.
+    let replies = s.handler.sweep_approvals(Utc::now());
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].response.error.as_deref(), Some("This connection ended: nothing was signed"));
+    assert_eq!(s.db.signature_count().unwrap(), 0);
+    let cancelled: Vec<_> = approval_events(&s).into_iter().filter(|e| e.action == "approval_cancelled").collect();
+    assert_eq!(cancelled.len(), 2);
+    assert!(cancelled.iter().all(|e| e.detail.as_deref().unwrap().ends_with(";reason=connection_ended")));
+}
+
+#[tokio::test]
+async fn too_many_requests_waiting_for_one_connection_are_refused() {
+    let s = setup();
+    // A rate limit above the queue's bound, so the bound is what refuses.
+    let gated = connected_gated_with(&s, &[1], Some(RateLimit { per_minute: 600, burst: 100 })).await;
+    for _ in 0..bunker::approvals::MAX_PENDING_PER_CONNECTION {
+        assert_eq!(sign(&s, &gated, Kind::TextNote).await.result.as_deref(), Some("auth_url"));
+    }
+    let refused = sign(&s, &gated, Kind::TextNote).await;
+    assert_eq!(refused.error.as_deref(), Some("Too many requests are waiting for approval"));
+    assert_eq!(s.handler.approvals_pending(), bunker::approvals::MAX_PENDING_PER_CONNECTION);
+}
+
+#[tokio::test]
+async fn held_requests_count_against_the_rate_limit() {
+    let s = setup();
+    let gated = connected_gated_with(&s, &[1], Some(RateLimit { per_minute: 1, burst: 2 })).await;
+    for _ in 0..2 {
+        assert_eq!(sign(&s, &gated, Kind::TextNote).await.result.as_deref(), Some("auth_url"));
+    }
+    assert!(sign(&s, &gated, Kind::TextNote).await.error.unwrap().starts_with("Rate limited"));
+    assert_eq!(s.handler.approvals_pending(), 2);
+}
+
+#[tokio::test]
+async fn a_kind_not_granted_is_refused_rather_than_held() {
+    let s = setup();
+    let client = connected_gated(&s, &[1]).await;
+    let refused = sign(&s, &client, Kind::Metadata).await;
+    assert!(refused.error.unwrap().starts_with("Forbidden"));
+    assert!(s.handler.pending_approvals(None).is_empty());
 }

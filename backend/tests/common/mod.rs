@@ -52,6 +52,8 @@ pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> Te
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: enforced.then(|| SECRET.to_string()),
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(Signer::new(bunker.secret_key().clone()), db.clone(), config);
     let app = create_router(state.clone());

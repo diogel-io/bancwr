@@ -63,6 +63,8 @@ export interface Metrics {
   total_signatures: number
   /** NIP-46 requests refused for a connection's rate limit since the bunker started (#101). */
   nip46_rate_limited: number
+  /** NIP-46 requests waiting for an administrator's approval now (#102). */
+  approvals_pending: number
 }
 
 /** GET /api/bunker/config — read-only; the key is never returned, nor where it is stored. */
@@ -155,6 +157,8 @@ export interface Nip46Connection {
   /** Its rate limit (#101): requests a minute, and how many may come at once. */
   rate_per_minute: number
   rate_burst: number
+  /** Kinds held for an administrator's approval before signing (#102). */
+  approval_kinds: number[]
 }
 
 /** A connection token (#53), from GET /api/bunker/connections/tokens: never the secret. */
@@ -172,6 +176,8 @@ export interface Nip46Token {
   /** The rate limit of its connection (#101). */
   rate_per_minute: number
   rate_burst: number
+  /** Kinds its connection holds for approval (#102). */
+  approval_kinds: number[]
   used_at: string | null
   revoked_at: string | null
 }
@@ -188,6 +194,8 @@ export interface IssueTokenRequest {
   /** The connection's rate limit (#101): 1 to 600 a minute, burst 1 to 100; omitted: 60, burst 20. */
   rate_per_minute?: number
   rate_burst?: number
+  /** Kinds held for approval before signing (#102), each one of `kinds`; omitted: none. */
+  approval_kinds?: number[]
 }
 
 /** The token just issued: `uri` carries its secret and is shown once. */
@@ -201,6 +209,40 @@ export interface IssueTokenResponse {
   connection_lifetime_hours: number | null
   rate_per_minute: number
   rate_burst: number
+  approval_kinds: number[]
+}
+
+/**
+ * GET /api/bunker/approvals (#102): a `sign_event` waiting for an administrator. The event is shown
+ * as it will be signed, under the bunker's key; approving names its `event_id`.
+ */
+export interface PendingApproval {
+  id: string
+  member_pubkey: string
+  member_name: string | null
+  connection_id: string
+  client_pubkey: string
+  /** What the app calls itself: never verified. */
+  client_name: string | null
+  kind: number
+  content: string
+  tags: string[][]
+  /** Unix seconds, as the app set it. */
+  created_at: number
+  event_id: string
+  requested_at: string
+  expires_at: string
+}
+
+/** POST /api/bunker/approvals/:id/approve */
+export interface ApproveRequest {
+  event_id: string
+  note?: string
+}
+
+/** POST /api/bunker/approvals/:id/reject */
+export interface RejectRequest {
+  note?: string
 }
 
 /** Where the bunker's own relays come from (#78): `environment` is NIP46_RELAYS, read-only here. */

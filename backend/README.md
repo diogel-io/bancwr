@@ -110,6 +110,8 @@ its group:
 | `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
 | `GET /api/bunker/connections` | all | own | | |
 | `DELETE /api/bunker/connections/:id` | any | own | | |
+| `GET /api/bunker/approvals` | all | own | | |
+| `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -304,6 +306,10 @@ Audit actions, each recorded in the same transaction as the change:
 | `logs_exported` | An administrator exports | `format=…;from=…;to=…` |
 | `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…` |
 | `nip44_decrypt`, `nip04_decrypt` | A NIP-46 app asks the bunker to decrypt (#97) | `peer=…`: the hex key of the other party |
+| `approval_requested` | A `sign_event` of a kind that needs approval is held (#102) | `request=…;kind=…;event_id=…` |
+| `approval_approved`, `approval_rejected` | An administrator decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;note=…` when given |
+| `approval_expired` | Nobody decided in time (#102) | `request=…;kind=…;event_id=…;timeout_seconds=…` |
+| `approval_cancelled` | The request's connection ended while it waited (#102) | `request=…;kind=…;event_id=…;reason=connection_ended` |
 | `connection_rate_limited` | A NIP-46 app is refused for going over its connection's rate limit (#101), at most once a minute per connection | `rate_per_minute=…;burst=…` |
 
 A decrypt changes nothing, so it has no transaction of its own: its event is written before the
@@ -438,6 +444,9 @@ POST /api/bunker/connections/tokens
 - `rate_per_minute`, 1 to 600, and `rate_burst`, 1 to 100, are the connection's rate limit (#101).
   Each defaults on its own, to 60 and 20; anything else is `400 {"error":"invalid_rate_limit"}`. See
   [Rate limits](#rate-limits-101).
+- `approval_kinds` (#102) are the kinds held for an administrator's approval before signing. Each
+  must be one of `kinds`, or it is `400 {"error":"invalid_approval_kinds"}`; none when omitted. See
+  [Approval before signing](#approval-before-signing-102).
 - The response's `uri` is the `bunker://` string to give the app. It carries the token's secret,
   which is shown this once: the bunker stores only its SHA-256 hash.
 
@@ -461,7 +470,7 @@ bunker also marks expired connections at start, every hour, before listing conne
 an app connects again, so one that is never used again is still shown as ended.
 Tokens and the token just issued return `connection_lifetime_hours`, `null` when there is none.
 Tokens, connections and the token just issued return `rate_per_minute` and `rate_burst`, the limit
-in force (#101).
+in force (#101), and `approval_kinds` (#102).
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`, and the encryption methods below. Tokens, connections and the token just issued
@@ -519,6 +528,50 @@ indexed lookup.
 
 Upgrading: tokens and connections from before #101 have no stored limit, so they get the default,
 60 a minute with a burst of 20, from the upgrade (migration 11).
+
+### Approval before signing (#102)
+A token can mark some of its kinds as needing approval (`approval_kinds`). A `sign_event` for one of
+them is not signed: it is held until an administrator approves or rejects it in the console, under
+**Approvals**. Other kinds sign as before, and so do all connections made without approval kinds.
+
+- **The app waits.** The bunker answers a held request at once with a NIP-46 auth challenge,
+  `{"id":…,"result":"auth_url","error":"<console>/approvals/<id>"}`, then sends the real answer later
+  under the same request id. `<console>` is `BANCWR_CONSOLE_URL`, which compose sets from
+  `NUXT_SITE_ORIGIN`; without it no challenge is sent, and the request still waits. nostr-tools'
+  `BunkerSigner` waits for the answer with no time limit of its own; rust-nostr's `nostr-connect`
+  waits as long as the app's own request timeout. An app that gives up first never sees the answer.
+- **Checks, in order:** the rate limit (#101), so held requests count against it; the permission
+  for the kind; then the hold. At most 20 requests wait for one connection and 200 for the bunker;
+  past that, `Too many requests are waiting for approval`. Each hold is recorded as
+  `approval_requested` first, and refused if that cannot be written.
+- **`GET /api/bunker/approvals`** lists the requests waiting, oldest first: all for an
+  administrator, their own for a signer. Each shows the event as it will be signed (`kind`,
+  `content`, `tags`, `created_at` and `event_id`, under the bunker's key), the member, the
+  connection, the app's self-reported name, and when it was asked and times out.
+- **`POST /api/bunker/approvals/:id/approve`** with `{"event_id":"…","note":"…"}`, for
+  administrators. `event_id` must be the one shown, or it is `409 {"error":"event_changed"}`, and
+  the request still waits. The connection is checked again: if it has ended, or may no longer sign
+  the kind, the request is cancelled, the app told, and it is `409 {"error":"connection_ended"}`.
+  Otherwise the event is signed, logged as a signature, recorded as `approval_approved` with the
+  administrator, and sent to the app.
+- **`POST /api/bunker/approvals/:id/reject`** with `{"note":"…"}` (optional), for administrators.
+  Nothing is signed; the app is told `Rejected by an administrator`, then `: <note>`.
+- Either on a request no longer waiting (decided, timed out or unknown) is `404`. Notes are one
+  line of at most 280 characters, recorded in the audit `detail`, and shown to the app on a
+  rejection.
+- **Timeouts.** A request nobody decides within `BANCWR_APPROVAL_TIMEOUT_MINUTES` (1 to 1,440,
+  30 by default) ends: the app is told `Approval timed out after <n> minutes: nothing was signed`,
+  recorded as `approval_expired`. One whose connection ends while it waits (logout, revoked,
+  expired, its member removed or made a viewer, a restore) is cancelled within 15 seconds:
+  `This connection ended: nothing was signed`, recorded as `approval_cancelled`.
+- **In memory only.** Waiting requests, with their content, are kept in the bunker's memory and
+  never written to disk or into a backup. A restart drops them: the app gets no answer, and the
+  audit log keeps the `approval_requested` with no outcome.
+- **Signed after the app gave up.** If an app's own timeout is shorter and it gives up, a later
+  approval still signs and sends the event, but the app is not listening, so it is never
+  published. The signature is still in the signing log.
+- **Who decides.** Any administrator, including for their own apps' requests. Signers see their own
+  requests waiting, without the buttons. `GET /api/bunker/metrics` returns `approvals_pending`.
 
 ## Podman
 

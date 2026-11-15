@@ -75,6 +75,8 @@ async fn test_api_metrics() {
     assert_eq!(after["total_signatures"], 0);
     // Requests refused for a connection's rate limit (#101), since the bunker started.
     assert_eq!(after["nip46_rate_limited"], 0);
+    // Requests waiting for approval now (#102).
+    assert_eq!(after["approvals_pending"], 0);
 }
 
 #[tokio::test]

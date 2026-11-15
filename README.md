@@ -168,6 +168,12 @@ counts refusals. An administrator can choose a tighter or looser limit when issu
 10 to 600 a minute in the console. See "Rate limits" in
 [`backend/README.md`](backend/README.md#rate-limits-101).
 
+Some kinds can need an administrator's approval before the bunker signs them (#102): a bot or a
+member drafts a note, and it waits under **Approvals**, with a preview, until an administrator
+approves or rejects it. The app is told either way, and every step is in the audit log. A request
+nobody decides times out after 30 minutes by default, and nothing is signed. See "Approval before
+signing" in [`backend/README.md`](backend/README.md#approval-before-signing-102).
+
 Apps reach the bunker through its relays, which every `bunker://` string carries. After the first
 start, an administrator chooses them on the **Config** page under **Bunker relays**: from a search
 of known relays (NIP-66 reports from relay monitors) or by address, between one and six, and two or

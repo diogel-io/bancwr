@@ -30,10 +30,12 @@ pub struct AppState {
 impl AppState {
     pub fn new(signer: Signer, db: Database, config: Config) -> Self {
         let signer = Arc::new(RwLock::new(signer));
+        let nip46_handler = Arc::new(Nip46Handler::new(signer.clone(), db.clone()));
+        // Requests held for approval (#102): how long they wait, and where the console is.
+        nip46_handler.configure_approvals(chrono::Duration::minutes(config.approval_timeout_minutes.into()), config.console_url.clone());
         let config = Arc::new(RwLock::new(config));
         let db = Arc::new(db);
-        let nip46_handler = Arc::new(Nip46Handler::new(signer.clone(), (*db).clone()));
-        
+
         Self {
             signer,
             db,

@@ -569,3 +569,35 @@ fn rerunning_the_101_migration_changes_nothing() {
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert_eq!(db.list_nip46_connections(None).unwrap().len(), 1);
 }
+
+#[test]
+fn migrating_to_102_adds_approval_kinds_and_existing_connections_need_none() {
+    // As #101 left it: version 11, with one token and its connection, and no approval columns.
+    let file = database_before_101();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE nip46_tokens DROP COLUMN approval_perms;
+         ALTER TABLE nip46_connections DROP COLUMN approval_perms;
+         PRAGMA user_version = 11;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    for table in ["nip46_tokens", "nip46_connections"] {
+        assert!(columns(&file, table).iter().any(|c| c == "approval_perms"), "{}", table);
+    }
+    assert!(db.list_nip46_tokens().unwrap()[0].approval_perms.is_empty());
+    let connection = db.active_nip46_connection("cc00000000000000000000000000000000000000000000000000000000000003").unwrap().expect("still active");
+    assert!(connection.approval_perms.is_empty());
+    assert!(!connection.needs_approval(1));
+
+    // Re-running it changes nothing.
+    drop(db);
+    Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 11;").unwrap();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(db.list_nip46_connections(None).unwrap().len(), 1);
+}

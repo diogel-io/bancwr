@@ -29,6 +29,8 @@ async fn test_health_check_handler() {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -66,6 +68,8 @@ async fn test_status_handler() {
         version: "1.2.3-test".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -111,6 +115,8 @@ async fn test_get_logs_handler() {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);
@@ -150,6 +156,8 @@ async fn test_get_config_handler() {
         version: "0.0.0".to_string(),
         admin_pubkey: None,
         proxy_secret: None,
+        approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        console_url: None,
     };
     let state = AppState::new(signer, db, config);
     let app = create_router(state);

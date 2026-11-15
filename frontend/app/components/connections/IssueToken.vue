@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Issuing a connection token (#31, administrators): for which member, a label, what the app may
 // sign, which encryption methods it may call (#97), how long the token is valid, how long the
-// connection lasts (#98) and how fast it may use the key (#101). The bunker:// string it
+// connection lasts (#98), how fast it may use the key (#101) and which kinds need an
+// administrator's approval before signing (#102). The bunker:// string it
 // returns carries the token's secret and is shown once: the bunker keeps only its hash (#53), so it
 // cannot be shown again.
 import { renderSVG } from 'uqr'
@@ -31,6 +32,8 @@ const hours = ref(24)
 const lifetime = ref(0)
 /** An index into RATE_LIMITS (#101); 0 is the bunker's default, which sends nothing. */
 const rateLimit = ref(0)
+/** Kinds held for an administrator's approval before signing (#102): some of the chosen kinds. */
+const approvalKinds = ref<number[]>([])
 const issuing = ref(false)
 const error = ref<string>()
 const issued = ref<IssueTokenResponse>()
@@ -55,6 +58,16 @@ const kinds = computed<{ kinds: number[] } | { error: string }>(() => {
 const kindsError = computed(() => preset.value === 'custom' && custom.value.trim() && 'error' in kinds.value ? kinds.value.error : undefined)
 const methodsError = computed(() => preset.value === 'none' && !methods.value.length ? 'Choose at least one method, or kinds the app may sign.' : undefined)
 const decrypts = computed(() => methods.value.some(isDecrypt))
+const chosenKinds = computed(() => 'kinds' in kinds.value ? kinds.value.kinds : [])
+// Only kinds the app may sign can need approval: drop any no longer chosen.
+watch(chosenKinds, (now) => {
+  approvalKinds.value = approvalKinds.value.filter(k => now.includes(k))
+})
+
+function toggleApproval(kind: number, on: boolean | 'indeterminate') {
+  const rest = approvalKinds.value.filter(k => k !== kind)
+  approvalKinds.value = on === true ? [...rest, kind].sort((a, b) => a - b) : rest
+}
 const canIssue = computed(() => !!label.value.trim() && 'kinds' in kinds.value && (kinds.value.kinds.length + methods.value.length) > 0 && !issuing.value)
 
 function toggleMethod(method: EncryptionMethod, on: boolean | 'indeterminate') {
@@ -71,6 +84,7 @@ const ERRORS: Record<string, string> = {
   member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.',
   invalid_lifetime: 'A connection can last 1 hour to 365 days, or until revoked.',
   invalid_rate_limit: 'A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.',
+  invalid_approval_kinds: 'Only kinds the app may sign can need approval.',
   invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.'
 }
 
@@ -92,7 +106,8 @@ async function submit() {
       methods: methods.value,
       expires_in_hours: hours.value,
       ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {}),
-      ...rateLimitRequest()
+      ...rateLimitRequest(),
+      ...(approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {})
     })
     copied.value = false
   } catch (failure) {
@@ -116,6 +131,7 @@ function done() {
   methods.value = []
   lifetime.value = 0
   rateLimit.value = 0
+  approvalKinds.value = []
 }
 </script>
 
@@ -218,6 +234,24 @@ function done() {
             class="w-full"
             placeholder="1, 7, 30023"
             aria-label="Kinds"
+          />
+        </div>
+      </UFormField>
+      <UFormField
+        v-if="chosenKinds.length"
+        label="Needs approval"
+        help="An administrator approves each of these on the Approvals page before the bunker signs it."
+        data-testid="issue-token-approval"
+      >
+        <div class="space-y-1.5">
+          <UCheckbox
+            v-for="kind in chosenKinds"
+            :id="`issue-token-approval-${kind}`"
+            :key="kind"
+            :model-value="approvalKinds.includes(kind)"
+            :label="kindLabel(kind)"
+            :data-kind="kind"
+            @update:model-value="on => toggleApproval(kind, on)"
           />
         </div>
       </UFormField>

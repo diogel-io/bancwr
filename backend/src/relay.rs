@@ -9,7 +9,13 @@
 //! The relays can change while it runs (#78): an administrator saves a new list in the console and
 //! `RelayHandle::set_relays` applies it to the running client, without a restart. With NIP-46 on
 //! and no relays yet, the client still starts, so the first list saved takes effect at once.
-use crate::nip46::Nip46Request;
+//!
+//! A request held for approval (#102) is not awaited here, which would stop every other request:
+//! the handler parks it and the relay sends its auth challenge, if any. The real answer is sent
+//! later through `RelayHandle::respond`, from the approval routes and the sweep.
+use crate::approvals::Scheme;
+use crate::nip46::{LaterReply, Nip46Outcome, Nip46Request, Nip46Response};
+use crate::signer::Signer;
 use crate::state::AppState;
 use nostr_sdk::prelude::*;
 use std::sync::Arc;
@@ -41,6 +47,18 @@ pub struct RelayHandle {
 }
 
 impl RelayHandle {
+    /// Sends `response` to `client`, encrypted as its request was, signed by the bunker.
+    pub async fn respond(&self, signer: &Signer, client: PublicKey, scheme: Scheme, response: &Nip46Response) -> anyhow::Result<()> {
+        let response_json = serde_json::to_string(response)?;
+        let encrypted = match scheme {
+            Scheme::Nip04 => signer.nip04_encrypt(&client, &response_json)?,
+            Scheme::Nip44 => signer.encrypt(&client, &response_json)?,
+        };
+        let response_event = signer.build_event(Kind::from(NIP46_KIND), encrypted, vec![Tag::public_key(client)]).await?;
+        self.client.send_event(response_event).await?;
+        Ok(())
+    }
+
     /// Makes the client's relays exactly `urls`: relays no longer listed are removed (and
     /// disconnected), new ones are added and connected, and the NIP-46 subscription is sent again
     /// so every relay carries it. `urls` are normalised already (`bunker_relays::validate`), or
@@ -169,23 +187,33 @@ impl RelayClient {
         };
         info!("Received NIP-46 request event: {}", event.id.to_hex());
         let request: Nip46Request = serde_json::from_str(&decrypted)?;
+        let scheme = if nip04 { Scheme::Nip04 } else { Scheme::Nip44 };
 
-        let response = self.state.nip46_handler.handle_request(request, event.pubkey).await;
-
-        let response_json = serde_json::to_string(&response)?;
-        let encrypted = {
-            let signer = self.state.signer.read().await;
-            if nip04 { signer.nip04_encrypt(&event.pubkey, &response_json)? } else { signer.encrypt(&event.pubkey, &response_json)? }
+        let response = match self.state.nip46_handler.handle(request, event.pubkey, scheme).await {
+            Nip46Outcome::Reply(response) => response,
+            Nip46Outcome::Held { notice: Some(notice), .. } => notice,
+            // Held, and the console's address is unknown: the app just waits for the answer.
+            Nip46Outcome::Held { notice: None, .. } => return Ok(()),
         };
-        let response_event = self
-            .state
-            .signer
-            .read()
-            .await
-            .build_event(Kind::from(NIP46_KIND), encrypted, vec![Tag::public_key(event.pubkey)])
-            .await?;
+        let signer = self.state.signer.read().await;
+        self.handle.respond(&signer, event.pubkey, scheme, &response).await
+    }
+}
 
-        self.client.send_event(response_event).await?;
-        Ok(())
+/// Sends answers decided later (#102) through the running relay client. With none (NIP-46 off,
+/// or not started yet) they are logged and dropped: the app gets nothing, as after a restart.
+pub async fn deliver(state: &AppState, replies: Vec<LaterReply>) {
+    if replies.is_empty() {
+        return;
+    }
+    let Some(handle) = state.relay_handle().await else {
+        warn!("{} NIP-46 answers could not be sent: the relay client is not running", replies.len());
+        return;
+    };
+    let signer = state.signer.read().await;
+    for reply in replies {
+        if let Err(e) = handle.respond(&signer, reply.client_pubkey, reply.scheme, &reply.response).await {
+            warn!("Failed to send a NIP-46 answer to {}: {}", reply.client_pubkey, e);
+        }
     }
 }

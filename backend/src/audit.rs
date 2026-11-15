@@ -4,8 +4,9 @@
 //! change, so the record cannot disagree with the database: tokens issued and revoked,
 //! connections made and revoked, members added, removed and given another role, the bunker's
 //! relays, and the log's own retention. Exports and pruning are recorded too, and so is every
-//! decrypt a NIP-46 app asks for (#97), before it happens, and an app refused for going over its
-//! rate limit (#101), at most once a minute per connection. Event content, plaintext and ciphertext
+//! decrypt a NIP-46 app asks for (#97), before it happens, an app refused for going over its
+//! rate limit (#101), at most once a minute per connection, and every request held for approval
+//! and how it ended (#102). Event content, plaintext and ciphertext
 //! are never recorded, here or in the signing log.
 //!
 //! Timestamps in `signing_logs` and `audit_events` are fixed-width UTC (`db_time`), so text order
@@ -38,6 +39,13 @@ pub mod action {
     /// A NIP-46 app was refused for going over its connection's rate limit (#101). Recorded at most
     /// once a minute per connection, however hard the app pushes.
     pub const CONNECTION_RATE_LIMITED: &str = "connection_rate_limited";
+    /// A `sign_event` of a kind that needs approval was held (#102), and how it ended: approved or
+    /// rejected by an administrator, timed out, or cancelled because its connection ended.
+    pub const APPROVAL_REQUESTED: &str = "approval_requested";
+    pub const APPROVAL_APPROVED: &str = "approval_approved";
+    pub const APPROVAL_REJECTED: &str = "approval_rejected";
+    pub const APPROVAL_EXPIRED: &str = "approval_expired";
+    pub const APPROVAL_CANCELLED: &str = "approval_cancelled";
 }
 
 /// A timestamp as `signing_logs` and `audit_events` store it: UTC, always six fractional digits
@@ -393,6 +401,26 @@ impl Database {
                 client_pubkey: Some(&connection.client_pubkey),
                 detail: Some(format!("peer={}", peer)),
                 ..Audit::new(decrypt_action)
+            },
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// Records an approval event (#102) about a request from `connection`. `detail` names the
+    /// request, kind and event id, and never the event's content.
+    pub fn record_approval(&self, approval_action: &str, connection: &Nip46Connection, actor: Option<&str>, detail: String, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let conn = self.lock()?;
+        record(
+            &conn,
+            &Audit {
+                actor: actor.filter(|a| !a.is_empty()),
+                member: Some(&connection.for_pubkey),
+                connection_id: Some(&connection.id),
+                token_id: Some(&connection.token_id),
+                client_pubkey: Some(&connection.client_pubkey),
+                detail: Some(detail),
+                ..Audit::new(approval_action)
             },
             now,
         )?;
