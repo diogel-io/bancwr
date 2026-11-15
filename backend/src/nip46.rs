@@ -689,11 +689,26 @@ impl Nip46Handler {
             warn!("Failed to record NIP-46 connection use: {}", e);
         }
         match result {
+            // NIP-46 traffic is encrypted with the identity's key, so a decrypt never returns it,
+            // whichever peer is named: this covers a request the bunker never received, such as
+            // one sent while it was stopped.
+            Ok(output) if decrypt_action.is_some() && is_nip46_message(&output) => {
+                Nip46Response::err(request.id, format!("Forbidden: {} does not return NIP-46 messages", method))
+            }
             Ok(output) => Nip46Response::ok(request.id, output),
             // `Signer` words these without the payload.
             Err(e) => Nip46Response::err(request.id, e.to_string()),
         }
     }
+}
+
+/// Whether `plaintext` is a NIP-46 request or response: a JSON object with an `id` and a `method`,
+/// `result` or `error`.
+fn is_nip46_message(plaintext: &str) -> bool {
+    let Ok(serde_json::Value::Object(object)) = serde_json::from_str::<serde_json::Value>(plaintext.trim()) else {
+        return false;
+    };
+    object.contains_key("id") && ["method", "result", "error"].iter().any(|key| object.contains_key(*key))
 }
 
 /// NIP-46 client metadata: a JSON object with optional `name`, `url` and `image`. Self-reported

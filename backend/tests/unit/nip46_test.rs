@@ -450,6 +450,30 @@ async fn refuses_as_the_peer_a_key_that_sent_any_request_without_connecting() {
 }
 
 #[tokio::test]
+async fn never_decrypts_a_nip46_message_even_from_a_key_the_bunker_has_not_seen() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_decrypt", "nip04_decrypt"]).await;
+    // A connect the bunker never received, such as one sent while it was stopped.
+    let unseen = Keys::generate();
+    let connect = serde_json::json!({ "id": "1", "method": "connect", "params": [s.bunker.public_key().to_hex(), "a-secret"] }).to_string();
+    let response = serde_json::json!({ "id": "2", "result": "ack" }).to_string();
+    for plaintext in [&connect, &response] {
+        let nip44_text = nip44::encrypt(unseen.secret_key(), &s.bunker.public_key(), plaintext, nip44::Version::V2).unwrap();
+        let refused = call(&s, &client, "nip44_decrypt", &unseen.public_key(), &nip44_text).await;
+        assert!(refused.result.is_none());
+        assert_eq!(refused.error.as_deref(), Some("Forbidden: nip44_decrypt does not return NIP-46 messages"));
+        let nip04_text = nip04::encrypt(unseen.secret_key(), &s.bunker.public_key(), plaintext).unwrap();
+        let refused = call(&s, &client, "nip04_decrypt", &unseen.public_key(), &nip04_text).await;
+        assert!(refused.result.is_none());
+        assert!(!refused.error.unwrap_or_default().contains("a-secret"));
+    }
+    // Other JSON still decrypts.
+    let other = r#"{"id":"3","kind":1}"#;
+    let text = nip44::encrypt(unseen.secret_key(), &s.bunker.public_key(), other, nip44::Version::V2).unwrap();
+    assert_eq!(call(&s, &client, "nip44_decrypt", &unseen.public_key(), &text).await.result.as_deref(), Some(other));
+}
+
+#[tokio::test]
 async fn the_bunkers_own_key_and_a_key_that_never_sent_a_request_still_work_as_the_peer() {
     let s = setup();
     let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"]).await;

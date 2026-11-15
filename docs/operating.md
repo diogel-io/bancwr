@@ -525,8 +525,10 @@ Before allowing an app to read encrypted messages:
 - Revoking the app's connection stops it at once.
 
 No app can encrypt or decrypt with the key of another app that has connected to the bunker, or
-that has sent it any request, even one that was refused. That protects what apps and the bunker
-send each other.
+that has sent it any request, even one that was refused. Nor does a decrypt ever return a NIP-46
+request or response, whichever key it names (`Forbidden: <method> does not return NIP-46
+messages`). That protects what apps and the bunker send each other, including a request the bunker
+never received because it was stopped.
 
 A connection token that an app presents but that is refused, for example because it is for another
 identity or the app asks only for permissions the token does not allow, is used up: it shows as
