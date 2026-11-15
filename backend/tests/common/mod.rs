@@ -38,11 +38,24 @@ pub async fn spawn(enforced: bool) -> TestApp {
 /// As `spawn`, with NIP-46 on and these relays when `nip46_relays` is set (#53). The relay client
 /// is not started: tests that need it start `RelayClient` on `app.state`.
 pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> TestApp {
+    spawn_with_identities(enforced, nip46_relays, &[]).await
+}
+
+/// As `spawn_with`, holding `others` beside the primary (#103): each recorded as an identity, as
+/// `bunker import-key --add` records it, and unlocked, as the bunker unlocks it at start. The
+/// administrator is registered before they are added, so they hold the primary's grant.
+pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)]) -> TestApp {
     let bunker = Keys::generate();
     let admin = Keys::generate();
     let db = Database::new(":memory:").expect("in-memory database");
     db.add_team_member("Admin", &admin.public_key().to_hex(), Role::Administrator)
         .expect("register the administrator");
+    db.ensure_primary_identity(&bunker.public_key().to_hex(), chrono::Utc::now()).expect("record the primary");
+    for (label, keys) in others {
+        db.add_identity(&keys.public_key().to_hex(), label, "bancwr-key v1 (not used by these tests)", chrono::Utc::now())
+            .expect("record the identity")
+            .expect("a new identity");
+    }
 
     let config = Config {
         port: 0,
@@ -55,7 +68,8 @@ pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> Te
         approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
         console_url: None,
     };
-    let state = AppState::new(Signer::new(bunker.secret_key().clone()), db.clone(), config);
+    let others: Vec<Signer> = others.iter().map(|(_, keys)| Signer::new(keys.secret_key().clone())).collect();
+    let state = AppState::with_identities(Signer::new(bunker.secret_key().clone()), others, db.clone(), config);
     let app = create_router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind a random port");

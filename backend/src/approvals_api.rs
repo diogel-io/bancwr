@@ -37,6 +37,8 @@ pub struct ApprovalResponse {
     /// The app's NIP-46 key (hex), and the name it gave itself: never verified.
     pub client_pubkey: String,
     pub client_name: Option<String>,
+    /// The identity it would be signed as (#103), hex. None: the primary.
+    pub identity_pubkey: Option<String>,
     /// The event that will be signed, as the app sent it, under the bunker's key.
     pub kind: u16,
     pub content: String,
@@ -57,6 +59,7 @@ impl ApprovalResponse {
             connection_id: pending.connection.id.clone(),
             client_pubkey: pending.connection.client_pubkey.clone(),
             client_name: pending.connection.client_name.clone(),
+            identity_pubkey: pending.connection.identity_pubkey.clone(),
             kind: pending.kind(),
             content: pending.event.content.clone(),
             tags: pending.event.tags.iter().map(|tag| tag.as_slice().to_vec()).collect(),
@@ -134,7 +137,7 @@ pub async fn approve(
             Err(api_error(StatusCode::CONFLICT, "event_changed", "That is not the event waiting for approval. Reload and check it again."))
         }
         Err(ApprovalError::ConnectionEnded(reply)) => {
-            crate::relay::deliver(&state, vec![reply]).await;
+            crate::relay::deliver(&state, vec![*reply]).await;
             Err(api_error(StatusCode::CONFLICT, "connection_ended", "The app's connection has ended, so nothing was signed."))
         }
         Err(ApprovalError::Internal) => Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error", "Database error")),

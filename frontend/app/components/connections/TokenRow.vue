@@ -3,7 +3,7 @@
 import type { Nip46Token } from '#shared/types/bunker'
 import { kindLabel, lifetimeLabel, methodLabel, rateLimitLabel, relativeTime } from '~/utils/connections'
 
-defineProps<{ token: Nip46Token, forName: string }>()
+defineProps<{ token: Nip46Token, forName: string, identityLabel?: string }>()
 const emit = defineEmits<{ revoke: [] }>()
 </script>
 
@@ -18,6 +18,9 @@ const emit = defineEmits<{ revoke: [] }>()
       </p>
       <p class="text-xs text-muted">
         For {{ forName }}
+        <template v-if="identityLabel">
+          · <span data-testid="token-identity">signs as {{ identityLabel }}</span>
+        </template>
         <template v-if="token.kinds.length">
           · may sign {{ token.kinds.map(kindLabel).join(', ') }}
         </template>

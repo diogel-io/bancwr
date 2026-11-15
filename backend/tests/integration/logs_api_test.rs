@@ -86,7 +86,7 @@ async fn an_administrator_downloads_a_csv_of_signatures_and_audit_events_in_the_
     let lines: Vec<&str> = body.split("\r\n").filter(|l| !l.is_empty()).collect();
     assert_eq!(
         lines[0],
-        "time,source,action,event_kind,event_id,member_pubkey,member_name,connection_id,token_id,client_pubkey,actor_pubkey,detail"
+        "time,source,action,event_kind,event_id,member_pubkey,member_name,connection_id,token_id,client_pubkey,actor_pubkey,detail,identity_pubkey"
     );
     let signed = lines.iter().find(|l| l.contains("in-range")).expect("the signature in range");
     assert!(signed.contains(&format!(",signature,signed,7,in-range,{signer},Member,conn-1,,{CLIENT},,")), "{signed}");
@@ -94,7 +94,7 @@ async fn an_administrator_downloads_a_csv_of_signatures_and_audit_events_in_the_
     // The member was added today, and the export itself is recorded before its rows are read.
     assert!(lines.iter().any(|l| l.contains(",audit,member_added,") && l.contains(&signer)));
     let exported = lines.iter().find(|l| l.contains(",audit,logs_exported,")).expect("the export recorded");
-    assert!(exported.contains(&admin) && exported.ends_with(&format!("format=csv;from={day};to={day}")), "{exported}");
+    assert!(exported.contains(&admin) && exported.ends_with(&format!("format=csv;from={day};to={day},")), "{exported}");
 }
 
 #[tokio::test]

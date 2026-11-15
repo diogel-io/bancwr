@@ -135,4 +135,12 @@ describe('verifyLoginRequest', () => {
   it('refuses the bunker\'s own key with 403', () => {
     expect(failure(request({ key: bunkerKey }))).toEqual({ code: 'bunker_key', status: 403 })
   })
+
+  it('refuses any identity the bunker holds with 403 (#103)', () => {
+    const brandKey = generateSecretKey()
+    const req = { ...request({ key: brandKey }), identityPubkeys: [getPublicKey(bunkerKey), getPublicKey(brandKey)] }
+    expect(failure(req)).toEqual({ code: 'bunker_key', status: 403 })
+    // Anyone else still signs in.
+    expect(failure({ ...request(), identityPubkeys: [getPublicKey(brandKey)] })).toBeUndefined()
+  })
 })

@@ -7,7 +7,8 @@ test('the activity log lists what the bunker has signed', async ({ page }) => {
   await page.goto('/logs')
   const table = page.getByRole('table')
 
-  await expect(table.getByRole('columnheader')).toHaveText(['Timestamp', 'Event Kind', 'Member', 'App'])
+  // The e2e bunker holds a second identity (#103), so the log names which signed.
+  await expect(table.getByRole('columnheader')).toHaveText(['Timestamp', 'Event Kind', 'Member', 'Signed as', 'App'])
   if (logs.length === 0) await expect(table.getByText('No data')).toBeVisible()
   // Body rows only: the table's header has more than one row.
   else await expect(table.locator('tbody tr')).toHaveCount(logs.length)
@@ -50,9 +51,9 @@ test('an administrator downloads the log and audit events as CSV, and the export
 
   const csv = await (await page.request.get(`/api/bunker/logs/export?format=csv&from=${today}&to=${today}`)).text()
   const lines = csv.split('\r\n').filter(Boolean)
-  expect(lines[0]).toBe('time,source,action,event_kind,event_id,member_pubkey,member_name,connection_id,token_id,client_pubkey,actor_pubkey,detail')
+  expect(lines[0]).toBe('time,source,action,event_kind,event_id,member_pubkey,member_name,connection_id,token_id,client_pubkey,actor_pubkey,detail,identity_pubkey')
   // The download above was recorded before this one read its rows.
-  expect(lines.some(l => l.includes(',audit,logs_exported,') && l.endsWith(`format=csv;from=${today};to=${today}`))).toBe(true)
+  expect(lines.some(l => l.includes(',audit,logs_exported,') && l.endsWith(`format=csv;from=${today};to=${today},`))).toBe(true)
 })
 
 test('a reversed export range is refused in the page and by the bunker (#96)', async ({ page }) => {

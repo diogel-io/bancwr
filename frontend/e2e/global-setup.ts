@@ -18,6 +18,7 @@ import { baseUrl, down, up, waitForStack } from './stack'
  *   E2E_NIP46_URI    a bunker:// string for the remote signer, whose key is a registered `signer`
  *   E2E_SIGNER_NSEC  a registered `signer`, for the role specs
  *   E2E_VIEWER_NSEC  a registered `viewer`, for the role specs
+ *   E2E_BRAND_NSEC   a second identity the bunker holds (#103), and E2E_BRAND_NPUB its npub
  */
 export default async function globalSetup() {
   if (process.env.E2E_BASE_URL) {
@@ -33,6 +34,8 @@ export default async function globalSetup() {
 
   process.env.BUNKER_NSEC = generateNsec()
   process.env.E2E_BUNKER_NPUB = npubFromNsec(process.env.BUNKER_NSEC)
+  process.env.E2E_BRAND_NSEC = generateNsec()
+  process.env.E2E_BRAND_NPUB = npubFromNsec(process.env.E2E_BRAND_NSEC)
   process.env.E2E_ADMIN_NSEC = generateNsec()
   process.env.E2E_ADMIN_NPUB = npubFromNsec(process.env.E2E_ADMIN_NSEC)
   process.env.E2E_PROXY_SECRET = randomBytes(32).toString('hex')

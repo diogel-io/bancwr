@@ -26,7 +26,10 @@ export interface HealthCheck {
 /** GET /api/bunker/status */
 export interface BunkerStatus {
   status: HealthState
+  /** The primary identity's npub. */
   pubkey: string
+  /** Every identity the bunker signs as (#103), hex, the primary first. */
+  identities?: string[]
   /** The bunker's release version, from its BANCWR_VERSION; `0.0.0` when unversioned. */
   version: string
   checks: HealthCheck[]
@@ -54,6 +57,8 @@ export interface LogEntry {
   /** That member's name, while they are still in the vault. */
   member_name?: string | null
   connection_id?: string | null
+  /** The identity that signed (#103), hex. */
+  identity_pubkey?: string | null
 }
 
 /** GET /api/bunker/metrics */
@@ -112,6 +117,8 @@ export interface AddTeamMemberRequest {
   name: string
   pubkey: string
   role: Role
+  /** The identities they may sign as (#103), hex, when the bunker has several; omitted: the primary. */
+  identities?: string[]
 }
 
 /** PATCH /api/bunker/team/:id (#99). */
@@ -159,6 +166,8 @@ export interface Nip46Connection {
   rate_burst: number
   /** Kinds held for an administrator's approval before signing (#102). */
   approval_kinds: number[]
+  /** The identity it signs as (#103), hex. */
+  identity_pubkey?: string | null
 }
 
 /** A connection token (#53), from GET /api/bunker/connections/tokens: never the secret. */
@@ -178,6 +187,8 @@ export interface Nip46Token {
   rate_burst: number
   /** Kinds its connection holds for approval (#102). */
   approval_kinds: number[]
+  /** The identity its connection signs as (#103), hex. */
+  identity_pubkey?: string | null
   used_at: string | null
   revoked_at: string | null
 }
@@ -196,6 +207,8 @@ export interface IssueTokenRequest {
   rate_burst?: number
   /** Kinds held for approval before signing (#102), each one of `kinds`; omitted: none. */
   approval_kinds?: number[]
+  /** The identity the connection signs as (#103), hex; omitted: the primary. */
+  identity?: string
 }
 
 /** The token just issued: `uri` carries its secret and is shown once. */
@@ -210,6 +223,23 @@ export interface IssueTokenResponse {
   rate_per_minute: number
   rate_burst: number
   approval_kinds: number[]
+  /** The identity it signs as (#103), hex. */
+  identity_pubkey?: string
+}
+
+/**
+ * GET /api/bunker/identities (#103): an identity this bunker signs as, never its key.
+ * Administrators see every identity with its members; others those they may use.
+ */
+export interface BunkerIdentity {
+  pubkey: string
+  npub: string | null
+  label: string
+  is_primary: boolean
+  /** Unlocked in the running bunker: one added since it started loads on restart. */
+  available: boolean
+  /** Members granted it (hex), for administrators. Administrators may use every identity. */
+  members?: string[]
 }
 
 /**

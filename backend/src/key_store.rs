@@ -324,6 +324,15 @@ pub fn unlock(plain_key_configured: bool, root: Result<RootKey, KeyStoreError>, 
     }
 }
 
+/// Decrypts an identity added beside the primary (#103), whose row records `pubkey` (hex): the
+/// key file's own recorded public key must be that one, and decrypting must yield it.
+pub fn decrypt_identity(root: &RootKey, pubkey: &str, key_file: &str) -> Result<SecretKey, KeyStoreError> {
+    if recorded_public_key(key_file)?.to_hex() != pubkey {
+        return Err(KeyStoreError::PublicKeyMismatch);
+    }
+    decrypt(root, key_file)
+}
+
 /// `unlock` from the environment.
 pub fn unlock_from_env(db_path: &str) -> Unlock {
     unlock(plain_key_configured(), RootKey::from_env(), &key_path(db_path))

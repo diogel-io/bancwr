@@ -258,3 +258,20 @@ fn the_key_path_can_be_set() {
     assert_eq!(key_store::key_path("/data/bancwr.db"), Path::new("/data/bunker-key.enc"));
     std::env::remove_var(key_store::KEY_PATH_ENV);
 }
+
+// Identities beside the primary (#103), each stored as a key file's line in the database.
+
+#[test]
+fn an_identity_decrypts_only_under_the_root_and_only_as_the_key_its_row_names() {
+    let keys = Keys::generate();
+    let line = encrypt(&root(), keys.secret_key());
+    let hex = keys.public_key().to_hex();
+    assert_eq!(key_store::decrypt_identity(&root(), &hex, &line).unwrap(), *keys.secret_key());
+    // Another row's pubkey: the line is not that identity's.
+    let other = Keys::generate().public_key().to_hex();
+    assert!(matches!(key_store::decrypt_identity(&root(), &other, &line), Err(KeyStoreError::PublicKeyMismatch)));
+    // Another root credential.
+    let wrong = RootKey::from_hex(OTHER_HEX).unwrap();
+    assert!(matches!(key_store::decrypt_identity(&wrong, &hex, &line), Err(KeyStoreError::WrongRootKeyOrTampered)));
+    assert!(matches!(key_store::decrypt_identity(&root(), &hex, "not a key file"), Err(KeyStoreError::KeyFileMalformed)));
+}

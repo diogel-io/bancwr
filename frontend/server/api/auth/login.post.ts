@@ -9,7 +9,7 @@
 import { npubEncode } from 'nostr-tools/nip19'
 import { challengeStore } from '../../utils/auth/challenges'
 import { LoginError, verifyLoginRequest } from '../../utils/auth/login-event'
-import { bunkerLacksAdministrator, bunkerPubkey, memberRole } from '../../utils/auth/members'
+import { bunkerLacksAdministrator, bunkerPubkeys, memberRole } from '../../utils/auth/members'
 import { startSession } from '../../utils/auth/session'
 
 export default defineEventHandler(async (event) => {
@@ -17,12 +17,14 @@ export default defineEventHandler(async (event) => {
 
   let pubkey: string
   try {
+    const bunker = await bunkerPubkeys(event)
     pubkey = verifyLoginRequest({
       authorization: getHeader(event, 'authorization'),
       method: event.method,
       body: (await readRawBody(event, 'utf8')) ?? '',
       siteOrigin: config.siteOrigin,
-      bunkerPubkey: await bunkerPubkey(event),
+      bunkerPubkey: bunker.primary,
+      identityPubkeys: bunker.identities,
       challenges: challengeStore
     })
   } catch (error) {

@@ -2,7 +2,7 @@
 // The vault's members (#24). Administrators add and remove them and change their roles (#99);
 // viewers read the list (#77), with none of those controls, which the bunker would refuse them anyway
 // (#25). Each row links to the member's read-only profile (team/[pubkey].vue).
-import { useFetch, ref, reactive, useToast, computed } from '#imports'
+import { useFetch, ref, reactive, useToast, computed, watch } from '#imports'
 import { ROLE_LABELS, ROLES } from '#shared/types/bunker'
 import type { AddTeamMemberRequest, TeamMember } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
@@ -21,6 +21,20 @@ const state = reactive<AddTeamMemberRequest>({
 // The three roles of #77, in order of access: Admin, Signer, Viewer.
 const roles = ROLES.map(value => ({ label: ROLE_LABELS[value], value }))
 
+// The identities a new member may sign as (#103), offered only on a bunker with several: the
+// primary preselected, as the bunker grants it when none is named.
+const { list: identities, several } = useIdentities({ immediate: isAdministrator.value })
+const chosenIdentities = ref<string[]>([])
+watch(identities, (now) => {
+  if (!chosenIdentities.value.length) chosenIdentities.value = now.filter(i => i.is_primary).map(i => i.pubkey)
+}, { immediate: true })
+const offersIdentities = computed(() => several.value && state.role !== 'viewer')
+
+function toggleIdentity(pubkey: string, on: boolean | 'indeterminate') {
+  const rest = chosenIdentities.value.filter(p => p !== pubkey)
+  chosenIdentities.value = on === true ? [...rest, pubkey] : rest
+}
+
 const loading = ref(false)
 const toast = useToast()
 
@@ -29,7 +43,7 @@ const addMember = async () => {
   try {
     await $fetch('/api/bunker/team', {
       method: 'POST',
-      body: state
+      body: { ...state, ...(offersIdentities.value ? { identities: chosenIdentities.value } : {}) }
     })
     toast.add({ title: 'Member added successfully', color: 'success' })
     await refresh()
@@ -94,6 +108,23 @@ const addMember = async () => {
                 v-model="state.role"
                 :items="roles"
               />
+            </UFormField>
+            <UFormField
+              v-if="offersIdentities"
+              label="May sign as"
+              data-testid="team-member-identities"
+            >
+              <div class="space-y-1.5">
+                <UCheckbox
+                  v-for="identity in identities"
+                  :id="`team-member-identity-${identity.pubkey}`"
+                  :key="identity.pubkey"
+                  :model-value="chosenIdentities.includes(identity.pubkey)"
+                  :label="identity.label"
+                  :data-identity="identity.pubkey"
+                  @update:model-value="on => toggleIdentity(identity.pubkey, on)"
+                />
+              </div>
             </UFormField>
           </div>
 

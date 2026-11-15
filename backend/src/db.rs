@@ -30,6 +30,9 @@ pub struct SigningLog {
     pub member_name: Option<String>,
     /// The NIP-46 connection that signed.
     pub connection_id: Option<String>,
+    /// The identity that signed (#103), hex: the primary's for a row that names none. None only
+    /// before the primary has been recorded.
+    pub identity_pubkey: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,14 +151,29 @@ impl Database {
         event_kind: u32,
         timestamp: DateTime<Utc>,
     ) -> anyhow::Result<()> {
+        self.log_signing_event_for(event_id, pubkey, member_pubkey, connection_id, None, event_kind, timestamp)
+    }
+
+    /// `log_signing_event`, naming the identity that signed (#103; None: the primary).
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_signing_event_for(
+        &self,
+        event_id: &str,
+        pubkey: &str,
+        member_pubkey: Option<&str>,
+        connection_id: Option<&str>,
+        identity: Option<&str>,
+        event_kind: u32,
+        timestamp: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
         let id = Uuid::new_v4().to_string();
         // Fixed width, so text order is time order (#96).
         let timestamp_str = db_time(timestamp);
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         conn.execute(
-            "INSERT INTO signing_logs (id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp_str],
+            "INSERT INTO signing_logs (id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp, identity_pubkey)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp_str, identity],
         )?;
         Ok(())
     }
@@ -184,7 +202,8 @@ impl Database {
     fn recent_logs(&self, member_pubkey: Option<&str>, before: Option<&Cursor>, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT l.id, l.event_id, l.pubkey, l.event_kind, l.timestamp, l.member_pubkey, m.name, l.connection_id
+            "SELECT l.id, l.event_id, l.pubkey, l.event_kind, l.timestamp, l.member_pubkey, m.name, l.connection_id,
+                    COALESCE(l.identity_pubkey, (SELECT pubkey FROM identities WHERE is_primary = 1))
              FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
              WHERE (?2 IS NULL OR l.member_pubkey = ?2)
                AND (?3 IS NULL OR l.timestamp < ?3 OR (l.timestamp = ?3 AND l.id < ?4))
@@ -198,13 +217,13 @@ impl Database {
             let id_str: String = row.get(0)?;
             let event_kind_raw: i64 = row.get(3)?;
             let timestamp_str: String = row.get(4)?;
-            let attribution: (Option<String>, Option<String>, Option<String>) = (row.get(5)?, row.get(6)?, row.get(7)?);
+            let attribution: (Option<String>, Option<String>, Option<String>, Option<String>) = (row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?);
             Ok((id_str, row.get::<_, String>(1)?, row.get::<_, String>(2)?, event_kind_raw, timestamp_str, attribution))
         })?;
 
         let mut logs = Vec::new();
         for row in rows {
-            let (id_str, event_id, pubkey, event_kind_raw, timestamp_str, (member_pubkey, member_name, connection_id)) = row?;
+            let (id_str, event_id, pubkey, event_kind_raw, timestamp_str, (member_pubkey, member_name, connection_id, identity_pubkey)) = row?;
             let id = Uuid::parse_str(&id_str)
                 .map_err(|e| anyhow::anyhow!("Malformed UUID in signing_logs.id '{}': {}", id_str, e))?;
             let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
@@ -219,6 +238,7 @@ impl Database {
                 member_pubkey,
                 member_name,
                 connection_id,
+                identity_pubkey,
             });
         }
         Ok(logs)
@@ -478,6 +498,8 @@ impl Database {
             // Their NIP-46 tokens and connections end with them (#53), in the same transaction.
             if let Some((pubkey, _)) = &member {
                 revoke_member_access(&tx, pubkey, "member_removed", now)?;
+                // And their identity grants (#103), so a key added again later starts with none.
+                tx.execute("DELETE FROM identity_access WHERE member_pubkey = ?1", params![pubkey])?;
             }
             tx.commit()?;
             return Ok(RemoveOutcome::Removed);
@@ -569,6 +591,8 @@ pub struct Nip46Token {
     pub rate_limit: Option<RateLimit>,
     /// Which of its `sign_event:<kind>` permissions need an administrator's approval (#102).
     pub approval_perms: Vec<String>,
+    /// The identity a connection made with it signs as (#103), hex. None: the primary.
+    pub identity_pubkey: Option<String>,
     pub used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -599,6 +623,8 @@ pub struct Nip46Connection {
     /// Which of its `sign_event:<kind>` permissions are held for an administrator's approval
     /// (#102): the token's, of those it was granted.
     pub approval_perms: Vec<String>,
+    /// The identity it signs as (#103), hex, copied from its token. None: the primary.
+    pub identity_pubkey: Option<String>,
 }
 
 impl Nip46Connection {
@@ -623,6 +649,9 @@ pub struct TokenOptions {
     /// Which kinds are held for an administrator's approval (#102), as `sign_event:<kind>`. Each
     /// must be among the token's perms. Empty: none.
     pub approval_perms: Vec<String>,
+    /// The identity the connection signs as (#103), hex. None: the primary. The caller checks the
+    /// member may use it.
+    pub identity_pubkey: Option<String>,
 }
 
 /// Unverified client metadata from `connect` (NIP-46 "Client metadata").
@@ -646,6 +675,10 @@ pub enum RedeemRefusal {
     MemberCannotSign,
     /// The client asked only for permissions the token does not allow.
     NothingGrantable,
+    /// The token's member is no longer granted the token's identity (#103).
+    NoIdentityAccess,
+    /// The token is for another identity than the `connect` was addressed to (#103).
+    OtherIdentity,
 }
 
 /// The permissions granted: the token's, or those of them the client asked for. A request that
@@ -682,13 +715,36 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
     value.as_deref().map(parse_time).transpose()
 }
 
+/// A condition on `nip46_connections c`: its member may use its identity (#103). Administrators
+/// may use every identity; with no identity but the primary, everyone may; otherwise the member
+/// needs a grant. Matches `may_use_identity`.
+const IDENTITY_ALLOWED: &str = "(EXISTS(SELECT 1 FROM team_members ma WHERE ma.pubkey = c.for_pubkey AND ma.role = 'administrator')
+       OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
+       OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = c.for_pubkey AND a.identity_pubkey = COALESCE(c.identity_pubkey, '')))";
+
+/// The key `identity_access` stores an identity under: its pubkey, or '' for the primary.
+fn access_key(identity: Option<&str>) -> &str {
+    identity.unwrap_or("")
+}
+
+/// Whether `member` may use `identity` (#103), as `IDENTITY_ALLOWED` decides it.
+fn may_use_identity(conn: &Connection, member: &str, identity: Option<&str>) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1 AND role = 'administrator')
+             OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
+             OR EXISTS(SELECT 1 FROM identity_access WHERE member_pubkey = ?1 AND identity_pubkey = ?2)",
+        params![member, access_key(identity)],
+        |row| row.get(0),
+    )
+}
+
 /// Appended inside `EXISTS(SELECT 1 FROM team_members m WHERE ...)`: the member's role may sign
 /// (#77). Matches `Role::can_sign`.
 const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
 const TOKEN_COLUMNS: &str =
-    "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours, rate_per_minute, rate_burst, approval_perms";
-const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst, approval_perms";
+    "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours, rate_per_minute, rate_burst, approval_perms, identity_pubkey";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst, approval_perms, identity_pubkey";
 
 /// A stored rate limit (#101): both columns NULL is none, so the default; one NULL takes the
 /// default's part, as issuing does. Values were checked when the token was issued.
@@ -720,6 +776,7 @@ fn token_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Token> {
         connection_lifetime_hours: row.get(9)?,
         rate_limit: stored_rate_limit(row.get(10)?, row.get(11)?),
         approval_perms: split_perms(&row.get::<_, Option<String>>(12)?.unwrap_or_default()),
+        identity_pubkey: row.get(13)?,
     })
 }
 
@@ -741,6 +798,7 @@ fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection>
         expires_at: parse_optional_time(row.get(13)?)?,
         rate_limit: stored_rate_limit(row.get(14)?, row.get(15)?),
         approval_perms: split_perms(&row.get::<_, Option<String>>(16)?.unwrap_or_default()),
+        identity_pubkey: row.get(17)?,
     })
 }
 
@@ -793,7 +851,7 @@ impl Database {
         expires_at: DateTime<Utc>,
         options: TokenOptions,
     ) -> anyhow::Result<Nip46Token> {
-        let TokenOptions { connection_lifetime_hours, rate_limit, approval_perms } = options;
+        let TokenOptions { connection_lifetime_hours, rate_limit, approval_perms, identity_pubkey } = options;
         let token = Nip46Token {
             id: Uuid::new_v4().to_string(),
             for_pubkey: for_pubkey.to_string(),
@@ -805,6 +863,7 @@ impl Database {
             connection_lifetime_hours,
             rate_limit,
             approval_perms: approval_perms.clone(),
+            identity_pubkey: identity_pubkey.clone(),
             used_at: None,
             revoked_at: None,
         };
@@ -813,11 +872,12 @@ impl Database {
         tx.execute(
             "INSERT INTO nip46_tokens
                 (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, connection_lifetime_hours, rate_per_minute, rate_burst,
-                 approval_perms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 approval_perms, identity_pubkey)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 token.id, secret_hash, token.for_pubkey, token.issued_by, token.label, join_perms(perms), now.to_rfc3339(), expires_at.to_rfc3339(),
-                connection_lifetime_hours, rate_limit.map(|l| l.per_minute), rate_limit.map(|l| l.burst), optional_perms(&approval_perms)
+                connection_lifetime_hours, rate_limit.map(|l| l.per_minute), rate_limit.map(|l| l.burst), optional_perms(&approval_perms),
+                identity_pubkey
             ],
         )?;
         audit::record(
@@ -826,6 +886,7 @@ impl Database {
                 actor: audit::actor(issued_by),
                 member: Some(for_pubkey),
                 token_id: Some(&token.id),
+                identity: token.identity_pubkey.as_deref(),
                 detail: Some({
                     let mut detail = format!("perms={};expires_at={}", join_perms(perms), db_time(expires_at));
                     if let Some(hours) = connection_lifetime_hours {
@@ -892,6 +953,20 @@ impl Database {
         metadata: &ClientMetadata,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Result<Nip46Connection, RedeemRefusal>> {
+        self.redeem_nip46_token_for(secret_hash, None, client_pubkey, requested_perms, metadata, now)
+    }
+
+    /// `redeem_nip46_token` for a `connect` addressed to `identity` (#103; None: the primary): a
+    /// token for another identity is refused, as is one whose member may no longer use it.
+    pub fn redeem_nip46_token_for(
+        &self,
+        secret_hash: &str,
+        identity: Option<&str>,
+        client_pubkey: &str,
+        requested_perms: Option<&str>,
+        metadata: &ClientMetadata,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Result<Nip46Connection, RedeemRefusal>> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let token = tx
@@ -911,12 +986,18 @@ impl Database {
         if token.expires_at <= now {
             return Ok(Err(RedeemRefusal::Expired));
         }
+        if token.identity_pubkey.as_deref() != identity {
+            return Ok(Err(RedeemRefusal::OtherIdentity));
+        }
         let role: Option<String> = tx
             .query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![token.for_pubkey], |row| row.get(0))
             .optional()?;
         let Some(role) = role else { return Ok(Err(RedeemRefusal::MemberRemoved)) };
         if !role.parse::<Role>().is_ok_and(|role| role.can_sign()) {
             return Ok(Err(RedeemRefusal::MemberCannotSign));
+        }
+        if !may_use_identity(&tx, &token.for_pubkey, token.identity_pubkey.as_deref())? {
+            return Ok(Err(RedeemRefusal::NoIdentityAccess));
         }
         let perms = grant(&token.perms, requested_perms);
         let perms_granted = perms.clone();
@@ -966,16 +1047,18 @@ impl Database {
             expires_at: token.connection_lifetime_hours.map(|hours| (now + chrono::Duration::hours(hours.into())).trunc_subsecs(6)),
             rate_limit: token.rate_limit,
             approval_perms: token.approval_perms.iter().filter(|p| perms_granted.contains(p)).cloned().collect(),
+            identity_pubkey: token.identity_pubkey.clone(),
         };
         tx.execute(
             &format!(
-                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12, ?13)",
+                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12, ?13, ?14)",
                 CONNECTION_COLUMNS
             ),
             params![
                 connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
                 connection.client_name, connection.client_url, connection.client_image, now.to_rfc3339(), connection.expires_at.map(db_time),
-                connection.rate_limit.map(|l| l.per_minute), connection.rate_limit.map(|l| l.burst), optional_perms(&connection.approval_perms)
+                connection.rate_limit.map(|l| l.per_minute), connection.rate_limit.map(|l| l.burst), optional_perms(&connection.approval_perms),
+                connection.identity_pubkey
             ],
         )?;
         audit::record(
@@ -985,6 +1068,7 @@ impl Database {
                 connection_id: Some(&connection.id),
                 token_id: Some(&connection.token_id),
                 client_pubkey: Some(client_pubkey),
+                identity: connection.identity_pubkey.as_deref(),
                 detail: Some({
                     let mut detail = match connection.expires_at {
                         Some(expires_at) => format!("perms={};expires_at={}", join_perms(&connection.perms), db_time(expires_at)),
@@ -1019,10 +1103,12 @@ impl Database {
                 &format!(
                     "SELECT {} FROM nip46_connections c
                      WHERE c.client_pubkey = ?1 AND c.revoked_at IS NULL {}
-                       AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey {})",
+                       AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = c.for_pubkey {})
+                       AND {}",
                     CONNECTION_COLUMNS.split(", ").map(|c| format!("c.{}", c)).collect::<Vec<_>>().join(", "),
                     not_expired(2),
-                    MEMBER_CAN_SIGN
+                    MEMBER_CAN_SIGN,
+                    IDENTITY_ALLOWED
                 ),
                 params![client_pubkey, db_time(now)],
                 connection_from_row,
@@ -1248,4 +1334,254 @@ impl Database {
         tx.commit()?;
         Ok(())
     }
+}
+
+// Identities (#103): the keys this bunker signs as, and who may use each. See migrations.rs,
+// migration 13.
+
+/// One identity, never its key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// Hex.
+    pub pubkey: String,
+    pub label: String,
+    /// The primary's key is `bunker-key.enc`; every other identity's is in the database.
+    pub is_primary: bool,
+    pub added_at: DateTime<Utc>,
+}
+
+impl Identity {
+    /// How tokens, connections and grants refer to it: None for the primary.
+    pub fn reference(&self) -> Option<&str> {
+        (!self.is_primary).then_some(self.pubkey.as_str())
+    }
+}
+
+/// An identity other than the primary, with its encrypted key, for unlocking at start.
+#[derive(Debug, Clone)]
+pub struct StoredIdentity {
+    pub pubkey: String,
+    pub label: String,
+    /// The `bancwr-key v1` line, as `key_store::encrypt` writes it.
+    pub key_file: String,
+}
+
+/// Why `add_identity` refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddIdentityRefusal {
+    /// It is already one of this bunker's identities, the primary included.
+    AlreadyAnIdentity,
+    /// It is a team member's key, and an identity's key never signs in (T2).
+    IsAMember,
+}
+
+/// The longest label an identity may have.
+pub const MAX_IDENTITY_LABEL_CHARS: usize = 100;
+
+fn identity_from_row(row: &rusqlite::Row) -> rusqlite::Result<Identity> {
+    Ok(Identity {
+        pubkey: row.get(0)?,
+        label: row.get(1)?,
+        is_primary: row.get::<_, i64>(2)? != 0,
+        added_at: parse_time(&row.get::<_, String>(3)?)?,
+    })
+}
+
+impl Database {
+    /// Records the primary identity, whose key is `bunker-key.enc`, once it is unlocked: its row
+    /// is added the first time, labelled "Primary", and its pubkey follows the key file (after a
+    /// restore of another bunker, say). Grants to the primary are kept: they are to the primary,
+    /// whichever key it is.
+    pub fn ensure_primary_identity(&self, pubkey: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let current: Option<String> = conn.query_row("SELECT pubkey FROM identities WHERE is_primary = 1", [], |row| row.get(0)).optional()?;
+        match current {
+            Some(current) if current == pubkey => {}
+            Some(current) => {
+                conn.execute("UPDATE identities SET pubkey = ?2 WHERE pubkey = ?1 AND is_primary = 1", params![current, pubkey])?;
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at) VALUES (?1, 'Primary', NULL, 1, ?2)",
+                    params![pubkey, db_time(now)],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every identity: the primary first, then the others in the order they were added.
+    pub fn list_identities(&self) -> anyhow::Result<Vec<Identity>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT pubkey, label, is_primary, added_at FROM identities ORDER BY is_primary DESC, added_at, pubkey")?;
+        let rows = stmt.query_map([], identity_from_row)?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// The identities other than the primary, with their encrypted keys, for unlocking.
+    pub fn stored_identities(&self) -> anyhow::Result<Vec<StoredIdentity>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT pubkey, label, key_file FROM identities WHERE is_primary = 0 AND key_file IS NOT NULL ORDER BY added_at, pubkey")?;
+        let rows = stmt
+            .query_map([], |row| Ok(StoredIdentity { pubkey: row.get(0)?, label: row.get(1)?, key_file: row.get(2)? }))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Adds an identity whose key is `key_file` (encrypted, as `key_store::encrypt` writes it).
+    /// The first identity added beside the primary grants the primary to every member who may
+    /// sign, in the same transaction, so nobody loses access when grants start to matter. Recorded
+    /// as `identity_added`, with no actor: it is done at the bunker's own command line.
+    pub fn add_identity(&self, pubkey: &str, label: &str, key_file: &str, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
+        if exists {
+            return Ok(Err(AddIdentityRefusal::AlreadyAnIdentity));
+        }
+        let member: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
+        if member {
+            return Ok(Err(AddIdentityRefusal::IsAMember));
+        }
+        let first: bool = tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)", [], |row| row.get(0))?;
+        if first {
+            tx.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at)
+                     SELECT '', m.pubkey, NULL, ?1 FROM team_members m WHERE 1 = 1 {}",
+                    MEMBER_CAN_SIGN
+                ),
+                params![db_time(now)],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at) VALUES (?1, ?2, ?3, 0, ?4)",
+            params![pubkey, label, key_file, db_time(now)],
+        )?;
+        audit::record(&tx, &Audit { identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_ADDED) }, now)?;
+        tx.commit()?;
+        Ok(Ok(()))
+    }
+
+    /// The identity with this pubkey, primary included.
+    pub fn find_identity(&self, pubkey: &str) -> anyhow::Result<Option<Identity>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(conn
+            .query_row("SELECT pubkey, label, is_primary, added_at FROM identities WHERE pubkey = ?1", params![pubkey], identity_from_row)
+            .optional()?)
+    }
+
+    /// Renames an identity, recorded as `identity_renamed` by `actor`. False when there is none.
+    pub fn rename_identity(&self, pubkey: &str, label: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let changed = tx.execute("UPDATE identities SET label = ?2 WHERE pubkey = ?1", params![pubkey, label])?;
+        if changed > 0 {
+            audit::record(&tx, &Audit { actor, identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_RENAMED) }, now)?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+
+    /// Whether this bunker has an identity beside the primary, from when grants matter.
+    pub fn has_several_identities(&self) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)", [], |row| row.get(0))?)
+    }
+
+    /// Whether `member` may use `identity` (None: the primary).
+    pub fn may_use_identity(&self, member: &str, identity: Option<&str>) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(may_use_identity(&conn, member, identity)?)
+    }
+
+    /// The members granted `identity` (None: the primary), hex. Administrators may use every
+    /// identity without a grant, and are not listed unless granted.
+    pub fn identity_members(&self, identity: Option<&str>) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT member_pubkey FROM identity_access WHERE identity_pubkey = ?1 ORDER BY member_pubkey")?;
+        let rows = stmt.query_map(params![access_key(identity)], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Grants `member` `identity` (None: the primary), recorded as `identity_access_granted` by
+    /// `actor`. False when it was granted already.
+    pub fn grant_identity(&self, identity: Option<&str>, member: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at) VALUES (?1, ?2, ?3, ?4)",
+            params![access_key(identity), member, actor, db_time(now)],
+        )?;
+        if added > 0 {
+            audit::record(&tx, &Audit { actor, member: Some(member), identity, ..Audit::new(action::IDENTITY_ACCESS_GRANTED) }, now)?;
+        }
+        tx.commit()?;
+        Ok(added > 0)
+    }
+
+    /// Removes `member`'s grant of `identity` (None: the primary), and in the same transaction
+    /// revokes their active connections and unused tokens for it (`access_removed`), each recorded,
+    /// as a role change does (#77). Recorded as `identity_access_removed` by `actor`. Returns how
+    /// many connections and tokens it revoked, or None when there was no grant.
+    pub fn remove_identity_grant(&self, identity: Option<&str>, member: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<Option<(usize, usize)>> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let removed = tx.execute("DELETE FROM identity_access WHERE identity_pubkey = ?1 AND member_pubkey = ?2", params![access_key(identity), member])?;
+        if removed == 0 {
+            return Ok(None);
+        }
+        audit::record(&tx, &Audit { actor, member: Some(member), identity, ..Audit::new(action::IDENTITY_ACCESS_REMOVED) }, now)?;
+        // An administrator may still use it, so only a member who no longer may loses anything.
+        let revoked = if may_use_identity(&tx, member, identity)? { (0, 0) } else { revoke_identity_access(&tx, member, identity, now)? };
+        tx.commit()?;
+        Ok(Some(revoked))
+    }
+}
+
+/// Revokes `member`'s active connections and unused tokens for `identity` (None: the primary),
+/// recording each, inside the caller's transaction.
+fn revoke_identity_access(conn: &Connection, member: &str, identity: Option<&str>, now: DateTime<Utc>) -> rusqlite::Result<(usize, usize)> {
+    const SAME_IDENTITY: &str = "COALESCE(identity_pubkey, '') = ?2";
+    let key = access_key(identity);
+    let connections: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(&format!("SELECT id, client_pubkey FROM nip46_connections WHERE for_pubkey = ?1 AND revoked_at IS NULL AND {}", SAME_IDENTITY))?;
+        let rows = stmt.query_map(params![member, key], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let tokens: Vec<String> = {
+        let mut stmt = conn.prepare(&format!("SELECT id FROM nip46_tokens WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL AND {}", SAME_IDENTITY))?;
+        let rows = stmt.query_map(params![member, key], |row| row.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    conn.execute(
+        &format!("UPDATE nip46_tokens SET revoked_at = ?3 WHERE for_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL AND {}", SAME_IDENTITY),
+        params![member, key, now.to_rfc3339()],
+    )?;
+    conn.execute(
+        &format!("UPDATE nip46_connections SET revoked_at = ?3, revoked_reason = 'access_removed' WHERE for_pubkey = ?1 AND revoked_at IS NULL AND {}", SAME_IDENTITY),
+        params![member, key, now.to_rfc3339()],
+    )?;
+    for (id, client) in &connections {
+        audit::record(
+            conn,
+            &Audit {
+                member: Some(member),
+                connection_id: Some(id),
+                client_pubkey: Some(client),
+                identity,
+                detail: Some("reason=access_removed".to_string()),
+                ..Audit::new(action::CONNECTION_REVOKED)
+            },
+            now,
+        )?;
+    }
+    for id in &tokens {
+        audit::record(
+            conn,
+            &Audit { member: Some(member), token_id: Some(id), identity, detail: Some("reason=access_removed".to_string()), ..Audit::new(action::TOKEN_REVOKED) },
+            now,
+        )?;
+    }
+    Ok((connections.len(), tokens.len()))
 }

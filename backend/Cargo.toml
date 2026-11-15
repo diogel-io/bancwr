@@ -149,3 +149,15 @@ path = "tests/unit/rate_limit_test.rs"
 [[test]]
 name = "approvals_test"
 path = "tests/unit/approvals_test.rs"
+
+[[test]]
+name = "identities_test"
+path = "tests/integration/identities_test.rs"
+
+[[test]]
+name = "keyring_test"
+path = "tests/unit/keyring_test.rs"
+
+[[test]]
+name = "identities_db_test"
+path = "tests/unit/identities_db_test.rs"

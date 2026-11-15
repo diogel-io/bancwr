@@ -83,6 +83,10 @@ impl Signer {
     }
 
     /// Lowercase hex, the form the vault stores keys in (#24).
+    pub fn public_key(&self) -> PublicKey {
+        self.keys.public_key()
+    }
+
     pub fn public_key_hex(&self) -> String {
         self.keys.public_key().to_hex()
     }

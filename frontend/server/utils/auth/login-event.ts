@@ -41,6 +41,8 @@ export interface LoginRequest {
   siteOrigin: string
   /** This bunker's own pubkey (hex), which may never be used to sign in. */
   bunkerPubkey: string
+  /** Every identity the bunker holds (#103), hex: none may be used to sign in either. */
+  identityPubkeys?: string[]
   challenges: ChallengeStore
   now?: number
 }
@@ -111,7 +113,7 @@ export function verifyLoginRequest(request: LoginRequest): string {
   if (challengeState !== 'ok') throw new LoginError('unknown_challenge')
 
   // 10. Never the bunker's own key: anyone the bunker will sign for could otherwise sign in as it.
-  if (signed.pubkey === request.bunkerPubkey) throw new LoginError('bunker_key', 403)
+  if (signed.pubkey === request.bunkerPubkey || request.identityPubkeys?.includes(signed.pubkey)) throw new LoginError('bunker_key', 403)
 
   return signed.pubkey as string
 }

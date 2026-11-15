@@ -4,7 +4,7 @@ import { flushPromises } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { createError, readBody, setResponseStatus } from 'h3'
 import { UApp } from '#components'
-import type { Nip46Connection, Nip46Token, Role } from '#shared/types/bunker'
+import type { BunkerIdentity, Nip46Connection, Nip46Token, Role } from '#shared/types/bunker'
 import { signInAs } from '../helpers/session'
 import Connections from '~/pages/connections.vue'
 import { clearNuxtData } from '#imports'
@@ -25,8 +25,11 @@ const state = vi.hoisted(() => ({
   listStatus: 200,
   issueStatus: 200,
   deleted: [] as string[],
-  issued: [] as unknown[]
+  issued: [] as unknown[],
+  identities: [] as unknown[]
 }))
+
+registerEndpoint('/api/bunker/identities', () => state.identities)
 
 registerEndpoint('/api/bunker/status', () => ({ status: 'healthy', pubkey: 'npub1test', version: '0.1.0', checks: [] }))
 registerEndpoint('/api/bunker/connections', () => {
@@ -86,7 +89,7 @@ describe('Connections page', () => {
   beforeEach(async () => {
     document.body.innerHTML = ''
     await clearNuxtData()
-    Object.assign(state, { connections: [], tokens: [], listStatus: 200, issueStatus: 200, deleted: [], issued: [] })
+    Object.assign(state, { connections: [], tokens: [], listStatus: 200, issueStatus: 200, deleted: [], issued: [], identities: [] })
   })
 
   it('always explains that apps sign as the bunker\'s key', async () => {
@@ -284,6 +287,44 @@ describe('Connections page', () => {
     await form.trigger('submit')
     await vi.waitFor(() => expect(state.issued).toHaveLength(1))
     expect(state.issued[0]).not.toHaveProperty('approval_kinds')
+  })
+
+  it('offers no identity choice on a bunker with one identity (#103)', async () => {
+    state.identities = [{ pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, members: [me] } satisfies BunkerIdentity]
+    state.connections = [connection()]
+    const component = await mount('administrator')
+    await flushPromises()
+    expect(component.find('[data-testid="issue-token-identity"]').exists()).toBe(false)
+    expect(component.find('[data-testid="connection-identity"]').exists()).toBe(false)
+  })
+
+  it('issues for the identity chosen, offering only those the member may use, and names it on rows (#103)', async () => {
+    const brand = '9'.repeat(64)
+    state.identities = [
+      { pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, members: [me] },
+      { pubkey: brand, npub: 'npub1brand', label: 'Brand B', is_primary: false, available: true, members: [other] },
+      { pubkey: '8'.repeat(64), npub: 'npub1c', label: 'Brand C', is_primary: false, available: true, members: [] }
+    ] satisfies BunkerIdentity[]
+    state.connections = [connection({ identity_pubkey: brand })]
+    const component = await mount('administrator')
+    await flushPromises()
+    expect(component.find('[data-connection="c1"] [data-testid="connection-identity"]').text()).toBe('signs as Brand B')
+
+    const form = component.find('[data-testid="issue-token"]')
+    // For Bob, a signer granted Brand B only.
+    await form.find('#issue-token-for').trigger('click')
+    await flushPromises()
+    ;([...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === 'Bob') as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await flushPromises()
+    await form.find('#issue-token-identity').trigger('click')
+    await flushPromises()
+    const offered = [...document.body.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
+    expect(offered).toEqual(['Brand B'])
+    ;([...document.body.querySelectorAll('[role="option"]')][0] as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await form.find('input[maxlength="100"]').setValue('Bob on Brand B')
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(1))
+    expect(state.issued[0]).toMatchObject({ for_pubkey: other, identity: brand })
   })
 
   it('shows the rate limit of each token and active connection (#101)', async () => {

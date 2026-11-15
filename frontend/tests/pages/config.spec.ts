@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createError } from 'h3'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { flushPromises } from '@vue/test-utils'
 import Config from '../../app/pages/config.vue'
 import type { ConfigResponse } from '#shared/types/bunker'
 import { clearNuxtData } from '#imports'
@@ -12,6 +13,22 @@ describe('Config page', () => {
   // useFetch caches by key across mounts; each test must fetch its own response.
   beforeEach(async () => {
     await clearNuxtData()
+  })
+
+  it('lists the bunker\'s identities (#103)', async () => {
+    registerEndpoint('/api/bunker/config', () => fromEnv)
+    registerEndpoint('/api/bunker/identities', () => [
+      { pubkey: 'e'.repeat(64), npub: 'npub1primary', label: 'Primary', is_primary: true, available: true, members: [] },
+      { pubkey: '9'.repeat(64), npub: 'npub1brand', label: 'Brand B', is_primary: false, available: true, members: [] }
+    ])
+
+    const component = await mountSuspended(Config)
+    await flushPromises()
+
+    const section = component.find('[data-testid="identities-section"]')
+    expect(section.exists()).toBe(true)
+    expect(section.findAll('[data-identity]')).toHaveLength(2)
+    expect(section.text()).toContain('Brand B')
   })
 
   it('shows the bunker public key', async () => {

@@ -601,3 +601,41 @@ fn migrating_to_102_adds_approval_kinds_and_existing_connections_need_none() {
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert_eq!(db.list_nip46_connections(None).unwrap().len(), 1);
 }
+
+#[test]
+fn migrating_to_103_leaves_a_single_key_bunker_as_it_was() {
+    // As #102 left it: version 12, one token and its connection, no identities.
+    let file = database_before_101();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch(
+        "DROP TABLE identity_access;
+         DROP TABLE identities;
+         ALTER TABLE nip46_tokens DROP COLUMN identity_pubkey;
+         ALTER TABLE nip46_connections DROP COLUMN identity_pubkey;
+         ALTER TABLE signing_logs DROP COLUMN identity_pubkey;
+         ALTER TABLE audit_events DROP COLUMN identity_pubkey;
+         PRAGMA user_version = 12;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    for table in ["nip46_tokens", "nip46_connections", "signing_logs", "audit_events"] {
+        assert!(columns(&file, table).iter().any(|c| c == "identity_pubkey"), "{}", table);
+    }
+    assert!(db.list_identities().unwrap().is_empty(), "the primary is recorded at start, not by the migration");
+    let client = "cc00000000000000000000000000000000000000000000000000000000000003";
+    let connection = db.active_nip46_connection(client).unwrap().expect("still active");
+    assert_eq!(connection.identity_pubkey, None);
+    assert_eq!(db.list_nip46_tokens().unwrap()[0].identity_pubkey, None);
+    assert!(db.may_use_identity(&connection.for_pubkey, None).unwrap());
+
+    // Re-running it changes nothing.
+    drop(db);
+    Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 12;").unwrap();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert!(db.active_nip46_connection(client).unwrap().is_some());
+}

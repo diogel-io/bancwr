@@ -112,6 +112,8 @@ its group:
 | `DELETE /api/bunker/connections/:id` | any | own | | |
 | `GET /api/bunker/approvals` | all | own | | |
 | `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | | |
+| `GET /api/bunker/identities` | all, with members | those they may use | | |
+| `PATCH /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -295,9 +297,9 @@ Audit actions, each recorded in the same transaction as the change:
 | `action` | When | `detail` |
 |----------|------|----------|
 | `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…`, then `;connection_lifetime_hours=…` when it has one, and `;rate_per_minute=…;rate_burst=…` when its rate limit is not the default (#101) |
-| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore | `reason=revoked`, `member_removed`, `role_changed` or `restored` |
+| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore, or their grant of its identity being removed (#103) | `reason=revoked`, `member_removed`, `role_changed`, `restored` or `access_removed` |
 | `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
-| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored` or `expired` |
+| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored`, `expired` or `access_removed` (#103) |
 | `member_added`, `member_removed` | Team changes | `role=…` |
 | `member_role_changed` | An administrator changes a role (#99), or the `BANCWR_ADMIN_PUBKEY` bootstrap promotes | `from=…;to=…` |
 | `relays_changed` | An administrator saves the bunker relays | `relays=…` |
@@ -310,6 +312,9 @@ Audit actions, each recorded in the same transaction as the change:
 | `approval_approved`, `approval_rejected` | An administrator decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;note=…` when given |
 | `approval_expired` | Nobody decided in time (#102) | `request=…;kind=…;event_id=…;timeout_seconds=…` |
 | `approval_cancelled` | The request's connection ended while it waited (#102) | `request=…;kind=…;event_id=…;reason=connection_ended` |
+| `identity_added` | `bunker import-key --add` adds an identity (#103), with no actor | `label=…` |
+| `identity_renamed` | An administrator renames one | `label=…` |
+| `identity_access_granted`, `identity_access_removed` | An administrator grants a member an identity, or removes the grant | none |
 | `connection_rate_limited` | A NIP-46 app is refused for going over its connection's rate limit (#101), at most once a minute per connection | `rate_per_minute=…;burst=…` |
 
 A decrypt changes nothing, so it has no transaction of its own: its event is written before the
@@ -447,6 +452,10 @@ POST /api/bunker/connections/tokens
 - `approval_kinds` (#102) are the kinds held for an administrator's approval before signing. Each
   must be one of `kinds`, or it is `400 {"error":"invalid_approval_kinds"}`; none when omitted. See
   [Approval before signing](#approval-before-signing-102).
+- `identity` (#103), an npub or hex, is the identity the connection signs as: the primary when
+  omitted. One the bunker does not hold is `400 {"error":"invalid_identity"}`, and one the member
+  may not use is `400 {"error":"no_identity_access"}`. See
+  [More than one identity](#more-than-one-identity-103).
 - The response's `uri` is the `bunker://` string to give the app. It carries the token's secret,
   which is shown this once: the bunker stores only its SHA-256 hash.
 
@@ -470,7 +479,7 @@ bunker also marks expired connections at start, every hour, before listing conne
 an app connects again, so one that is never used again is still shown as ended.
 Tokens and the token just issued return `connection_lifetime_hours`, `null` when there is none.
 Tokens, connections and the token just issued return `rate_per_minute` and `rate_burst`, the limit
-in force (#101), and `approval_kinds` (#102).
+in force (#101), `approval_kinds` (#102), and `identity_pubkey`, the identity it signs as (#103).
 
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`, and the encryption methods below. Tokens, connections and the token just issued
@@ -572,6 +581,46 @@ them is not signed: it is held until an administrator approves or rejects it in 
   published. The signature is still in the signing log.
 - **Who decides.** Any administrator, including for their own apps' requests. Signers see their own
   requests waiting, without the buttons. `GET /api/bunker/metrics` returns `approvals_pending`.
+
+### More than one identity (#103)
+One bunker can sign as several Nostr keys, its **identities**, so an agency or a brand with several
+accounts needs one deployment, not one per key. The key in `bunker-key.enc` is the **primary**.
+
+- **Adding one** happens on the host, never in the console, so a key never passes through a
+  browser: `bunker import-key --add --label "Brand B"`, with the key in `BUNKER_NSEC_FILE` (or
+  `BUNKER_NSEC`) and `BANCWR_ROOT_KEY_FILE` set. It is encrypted under the same root credential, in
+  the same `bancwr-key v1` format, and stored in the database, so a backup carries it. It refuses a
+  key that is already an identity, the primary, or a team member's key. A running bunker loads it on
+  its next restart. The plain-key rules of #94 apply: while `BUNKER_NSEC*` is set, the bunker stays
+  locked.
+- **Unlocking.** At start the bunker decrypts the primary, then every other identity, each of which
+  must decrypt to the public key its row records. If any does not, the bunker stays locked, and
+  `/health` says which, by its label.
+- **Each is its own remote signer.** A token is issued for one identity (`identity`), its
+  `bunker://` string names that identity's key, and the connection signs, encrypts and decrypts
+  only as it. The bunker listens for requests to every identity on the same relays, and answers
+  each as the identity its `p` tag names. An app connected to one identity that sends to another
+  gets `Not connected`; a token for another identity is refused at `connect`
+  (`This connection token is for another identity`). One app key holds one connection at a time.
+- **Who may use which.** With only the primary, everyone may, exactly as before. Once there are
+  several, a signer needs a grant for each identity, the primary included; adding the first other
+  identity grants the primary to every member who may sign, so nobody loses access. Administrators
+  may use every identity without a grant. A member added through the API gets the identities in
+  `identities`, or the primary when it is omitted. Removing a grant revokes their connections and
+  unused tokens for that identity, as `access_removed`.
+- **`GET /api/bunker/identities`** lists `pubkey`, `npub`, `label`, `is_primary`, `available`
+  (unlocked in the running bunker) and, for administrators, `members`. `PATCH` renames one
+  (`{"label":"…"}`, 1 to 100 characters). `PUT` and `DELETE
+  /api/bunker/identities/:pubkey/members/:member` grant and remove; a viewer is
+  `400 {"error":"member_cannot_sign"}`.
+- **Never a member's key.** No identity's key can be registered as a member, be
+  `BANCWR_ADMIN_PUBKEY`, or sign in. `GET /api/bunker/status` lists every identity's key as
+  `identities`, which sign-in reads.
+- **Logs and exports.** The signing log and the logs API name the identity that signed
+  (`identity_pubkey`); the export appends an `identity_pubkey` column, last, so the earlier columns
+  keep their places. Identity audit events name it too.
+- **Not yet:** removing an identity, and a separate root credential per identity. Every identity
+  uses the bunker's relays.
 
 ## Podman
 

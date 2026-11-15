@@ -29,6 +29,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("let NIP-46 connections expire", nip46_connection_lifetime),
     ("limit NIP-46 request rates", nip46_rate_limit),
     ("hold chosen kinds for approval", nip46_approval_perms),
+    ("hold several identities", identities),
 ];
 
 /// The version a fully migrated database is at.
@@ -490,6 +491,41 @@ fn nip46_rate_limit(tx: &Transaction) -> anyhow::Result<()> {
 ///     existing token and connection signs as before. Each column is added only when missing.
 fn nip46_approval_perms(tx: &Transaction) -> anyhow::Result<()> {
     add_missing_columns(tx, &[("nip46_tokens", "approval_perms", "TEXT"), ("nip46_connections", "approval_perms", "TEXT")])
+}
+
+/// 13. Several signing identities in one bunker (#103). `identities` lists them: the primary, whose
+///     key is `bunker-key.enc` (its row is written at startup, once the key is unlocked, since a
+///     migration cannot read it), and each further one with its key encrypted under the same root
+///     credential (`key_file`, the `bancwr-key v1` line). `identity_access` grants a member an
+///     identity; the primary is the empty string. Tokens, connections, the signing log and audit
+///     events gain `identity_pubkey`, where NULL means the primary, so every existing row keeps its
+///     meaning and a single-key bunker works exactly as before.
+fn identities(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS identities (
+            pubkey TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            key_file TEXT,
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            added_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS identity_access (
+            identity_pubkey TEXT NOT NULL,
+            member_pubkey TEXT NOT NULL,
+            granted_by TEXT,
+            granted_at TEXT NOT NULL,
+            PRIMARY KEY (identity_pubkey, member_pubkey)
+        );",
+    )?;
+    add_missing_columns(
+        tx,
+        &[
+            ("nip46_tokens", "identity_pubkey", "TEXT"),
+            ("nip46_connections", "identity_pubkey", "TEXT"),
+            ("signing_logs", "identity_pubkey", "TEXT"),
+            ("audit_events", "identity_pubkey", "TEXT"),
+        ],
+    )
 }
 
 /// Adds each `(table, column, type)` the table does not have yet, so a migration that adds columns

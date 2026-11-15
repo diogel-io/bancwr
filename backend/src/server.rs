@@ -6,7 +6,7 @@ use crate::proxy_auth::{Access, Guard};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use nostr::prelude::*;
@@ -33,7 +33,11 @@ pub struct HealthResponse {
 pub struct BunkerStatus {
     /// Healthy, degraded or unhealthy, from the checks (#27).
     pub status: Overall,
+    /// The primary identity's npub.
     pub pubkey: String,
+    /// Every identity's key (#103), hex, the primary first. Sign-in refuses each of them.
+    #[serde(default)]
+    pub identities: Vec<String>,
     /// The running Bancwr version, from BANCWR_VERSION (#35). Deliberately not on /health, which
     /// stays cheap and dependency-free for container probes.
     pub version: String,
@@ -54,6 +58,8 @@ pub struct LogEntry {
     /// That member's name, while they are still in the vault.
     pub member_name: Option<String>,
     pub connection_id: Option<String>,
+    /// The identity that signed (#103), hex.
+    pub identity_pubkey: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -106,6 +112,10 @@ pub struct AddTeamMemberRequest {
     pub name: String,
     pub pubkey: String,
     pub role: String,
+    /// The identities the member may sign as (#103), hex or npub, when the bunker has several.
+    /// Omitted: the primary. Ignored with only the primary, which everyone may use.
+    #[serde(default)]
+    pub identities: Option<Vec<String>>,
 }
 
 /// The body of `PATCH /api/bunker/team/:id` (#99).
@@ -140,6 +150,7 @@ pub async fn get_status(
     Json(BunkerStatus {
         status,
         pubkey: state.signer.read().await.public_key_bech32(),
+        identities: state.keyring.public_keys().await.iter().map(|key| key.to_hex()).collect(),
         version: state.config.read().await.version.clone(),
         checks,
     })
@@ -170,6 +181,7 @@ impl From<crate::db::SigningLog> for LogEntry {
             member_pubkey: log.member_pubkey,
             member_name: log.member_name,
             connection_id: log.connection_id,
+            identity_pubkey: log.identity_pubkey,
         }
     }
 }
@@ -247,8 +259,34 @@ pub async fn add_team_member(
     // Never the bunker's own key: anyone holding a NIP-46 connection can obtain its signature
     // (since #53, only within their granted kinds), so it must never sign in. See the sign-in
     // decision record, rule 10.
-    if pubkey == state.signer.read().await.public_key_hex() {
+    // The same for every identity it holds (#103), including one added since it started.
+    let stored_identity = state.db.find_identity(&pubkey).map_err(|e| {
+        error!("Failed to look up identities: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
+    })?;
+    if state.keyring.is_identity(&pubkey).await || stored_identity.is_some() {
         return Err((StatusCode::BAD_REQUEST, "The bunker's own key cannot be registered".to_string()));
+    }
+
+    // Which identities they may sign as (#103), checked before anything is stored.
+    let several = state.db.has_several_identities().map_err(|e| {
+        error!("Failed to read identities: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
+    })?;
+    let mut grants: Vec<Option<String>> = Vec::new();
+    if several && role.can_sign() {
+        match &request.identities {
+            None => grants.push(None),
+            Some(keys) => {
+                for key in keys {
+                    let parsed = PublicKey::parse(key.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+                    let identity = state.keyring.identity_of(&parsed).await.ok_or((StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+                    if !grants.contains(&identity) {
+                        grants.push(identity);
+                    }
+                }
+            }
+        }
     }
 
     match state.db.find_member_by_pubkey(&pubkey) {
@@ -264,6 +302,11 @@ pub async fn add_team_member(
     match state.db.add_team_member_as(&request.name, &pubkey, role, crate::audit::actor(&by)) {
         Ok(_) => {
             info!("Added team member: {}", request.name);
+            for identity in &grants {
+                if let Err(e) = state.db.grant_identity(identity.as_deref(), &pubkey, crate::audit::actor(&by), chrono::Utc::now()) {
+                    error!("Failed to grant a new member an identity: {}", e);
+                }
+            }
             Ok(Json(TeamOperationResponse {
                 success: true,
                 message: "Team member added".to_string(),
@@ -429,7 +472,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
         // Deciding requests held for approval (#102): administrators only.
         .route("/api/bunker/approvals/:id/approve", post(crate::approvals_api::approve))
-        .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject));
+        .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject))
+        // The bunker's identities (#103): renaming one, and who may sign as it.
+        .route("/api/bunker/identities/:pubkey", patch(crate::identities_api::rename_identity))
+        .route(
+            "/api/bunker/identities/:pubkey/members/:member",
+            put(crate::identities_api::grant_identity).delete(crate::identities_api::remove_identity_grant),
+        );
     // Administrators and viewers read the team (#77).
     let team_read = Router::new().route("/api/bunker/team", get(get_team));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
@@ -441,7 +490,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection))
         .route("/api/bunker/logs/mine", get(get_my_logs))
         // Requests held for approval (#102): administrators see all, signers their own.
-        .route("/api/bunker/approvals", get(crate::approvals_api::list_approvals));
+        .route("/api/bunker/approvals", get(crate::approvals_api::list_approvals))
+        // The identities each may sign as (#103): administrators see all.
+        .route("/api/bunker/identities", get(crate::identities_api::list_identities));
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no
@@ -484,6 +535,8 @@ pub async fn locked_status(State(state): State<LockedState>) -> Json<BunkerStatu
     Json(BunkerStatus {
         status: crate::health::assess(&checks),
         pubkey: state.pubkey.clone(),
+        // The identities recorded (#103), so sign-in still refuses each while locked.
+        identities: state.db.list_identities().map(|all| all.into_iter().map(|i| i.pubkey).collect()).unwrap_or_default(),
         version: state.version.clone(),
         checks,
     })

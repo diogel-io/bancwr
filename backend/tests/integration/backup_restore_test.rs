@@ -334,3 +334,114 @@ async fn a_tampered_or_wrong_key_archive_is_refused_and_writes_nothing() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
+
+impl Host {
+    /// `bunker import-key --add` (#103) with `key` and `args`.
+    fn add_identity(&self, key: &Keys, args: &[&str]) -> Output {
+        let nsec = key.secret_key().to_bech32().unwrap();
+        let mut all = vec!["import-key", "--add"];
+        all.extend_from_slice(args);
+        self.command(&all, &[("BUNKER_NSEC", nsec), ("BANCWR_ROOT_KEY_FILE", self.secret("root"))]).output().unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_identity_added_at_the_command_line_signs_as_itself_and_survives_a_backup() {
+    let bunker = Keys::generate();
+    let brand = Keys::generate();
+    let admin = Keys::generate();
+    let relay = MockRelay::run().await.unwrap();
+    let nip46 = [("NIP46_ENABLED", "true".to_string()), ("NIP46_RELAYS", relay.url())];
+
+    let original = Host::new(&admin);
+    original.import(&bunker);
+    // Refused: no label, and the primary's key.
+    assert_eq!(original.add_identity(&brand, &[]).status.code(), Some(1));
+    let primary_again = original.add_identity(&bunker, &["--label", "Again"]);
+    assert_eq!(primary_again.status.code(), Some(1));
+    assert!(stderr(&primary_again).contains("already this bunker's primary identity"), "{}", stderr(&primary_again));
+
+    // Added, with the key never printed.
+    let added = original.add_identity(&brand, &["--label", "Brand B"]);
+    assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
+    let stdout = String::from_utf8_lossy(&added.stdout);
+    assert!(stdout.contains(&brand.public_key().to_bech32().unwrap()), "{}", stdout);
+    assert!(!stdout.contains(&brand.secret_key().to_bech32().unwrap()) && !stdout.contains(&brand.secret_key().to_secret_hex()));
+    assert_eq!(original.add_identity(&brand, &["--label=Twice"]).status.code(), Some(1), "added once only");
+    // At rest, only ciphertext.
+    let db = std::fs::read(original.path("data/bancwr.db")).unwrap();
+    let db = String::from_utf8_lossy(&db);
+    assert!(!db.contains(&brand.secret_key().to_secret_hex()) && !db.contains(&brand.secret_key().to_bech32().unwrap()));
+
+    let mut env = original.secrets();
+    env.extend(nip46.clone());
+    let running = Running::start(&original, &env).await;
+    let identities = running.get("/api/bunker/identities").await;
+    assert_eq!(identities.as_array().unwrap().len(), 2);
+    assert_eq!(identities[1]["label"], "Brand B");
+    assert_eq!(identities[1]["available"], true);
+
+    // An administrator issues a connection for Brand B, and it signs as Brand B.
+    let res = running
+        .signed(reqwest::Method::POST, "/api/bunker/connections/tokens")
+        .json(&json!({ "label": "Brand B app", "kinds": [1], "identity": brand.public_key().to_hex() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let token: Value = res.json().await.unwrap();
+    let app = connect(&token, Duration::from_secs(10));
+    assert_eq!(app.get_public_key().await.unwrap(), brand.public_key());
+    let note = app.sign_event(EventBuilder::text_note("from Brand B").build(brand.public_key())).await.unwrap();
+    assert_eq!(note.pubkey, brand.public_key());
+
+    // Backed up and restored onto a clean host, both identities unlock under the same credential.
+    let output = original.backup(&original.secrets());
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let archive = output.stdout;
+    drop(running);
+    let restored = Host::new(&admin);
+    let output = restored.restore(&archive, &restored.secrets());
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let mut env = restored.secrets();
+    env.extend(nip46.clone());
+    let running = Running::start(&restored, &env).await;
+    let health: Value = running.client.get(running.url("/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(health, json!({ "status": "ok" }));
+    let identities = running.get("/api/bunker/identities").await;
+    assert_eq!(identities[1]["pubkey"], brand.public_key().to_hex());
+    let res = running
+        .signed(reqwest::Method::POST, "/api/bunker/connections/tokens")
+        .json(&json!({ "label": "After the restore", "kinds": [1], "identity": brand.public_key().to_hex() }))
+        .send()
+        .await
+        .unwrap();
+    let fresh = connect(&res.json().await.unwrap(), Duration::from_secs(10));
+    assert_eq!(fresh.sign_event(EventBuilder::text_note("restored").build(brand.public_key())).await.unwrap().pubkey, brand.public_key());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_identity_that_does_not_unlock_leaves_the_bunker_locked_naming_it() {
+    let bunker = Keys::generate();
+    let admin = Keys::generate();
+    let host = Host::new(&admin);
+    host.import(&bunker);
+    assert_eq!(host.add_identity(&Keys::generate(), &["--label", "Brand B"]).status.code(), Some(0));
+    // The identity's ciphertext altered in the database.
+    let conn = rusqlite::Connection::open(host.path("data/bancwr.db")).unwrap();
+    let key_file: String = conn.query_row("SELECT key_file FROM identities WHERE is_primary = 0", [], |row| row.get(0)).unwrap();
+    let mut fields: Vec<String> = key_file.split_whitespace().map(str::to_string).collect();
+    let last = fields.last_mut().unwrap();
+    let flipped = if last.ends_with('0') { "1" } else { "0" };
+    last.replace_range(last.len() - 1.., flipped);
+    conn.execute("UPDATE identities SET key_file = ?1 WHERE is_primary = 0", [fields.join(" ")]).unwrap();
+    drop(conn);
+
+    let running = Running::start(&host, &host.secrets()).await;
+    let res = running.client.get(running.url("/health")).send().await.unwrap();
+    assert_eq!(res.status(), 503);
+    let health: Value = res.json().await.unwrap();
+    assert_eq!(health["status"], "locked");
+    let reason = health["reason"].as_str().unwrap();
+    assert!(reason.starts_with("The identity \"Brand B\" cannot be unlocked."), "{reason}");
+}
