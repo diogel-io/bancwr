@@ -1,33 +1,33 @@
 import { describe, it, expect } from 'vitest'
-import { refusal, type IncomingRequest } from '../../../server/utils/auth/origin'
+import { hasBody, isSafeMethod, jsonBodyRefusal, refusal, type IncomingRequest } from '../../../server/utils/auth/origin'
 
 const SITE = 'https://bancwr.example'
 
 function request(overrides: Partial<IncomingRequest>): IncomingRequest {
-  return { method: 'POST', path: '/api/bunker/team', hasBody: false, ...overrides }
+  return { method: 'POST', sessionCookie: true, ...overrides }
 }
 
-describe('which requests the console accepts', () => {
+describe('which requests the console accepts, by where they came from', () => {
   it('lets the console\'s own requests through', () => {
-    expect(refusal(request({ origin: SITE, contentType: 'application/json', hasBody: true }), SITE)).toBeUndefined()
-    expect(refusal(request({ method: 'DELETE', path: '/api/bunker/team/1', origin: SITE }), SITE)).toBeUndefined()
-    expect(refusal(request({ path: '/api/auth/logout', origin: SITE }), SITE)).toBeUndefined()
-    expect(refusal(request({ origin: SITE, contentType: 'application/json; charset=utf-8', hasBody: true }), SITE)).toBeUndefined()
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      expect(refusal(request({ method, origin: SITE }), SITE)).toBeUndefined()
+    }
   })
 
   it('refuses a request that changes something from another origin, on the same site or not', () => {
-    for (const origin of ['https://evil.example', 'https://other.bancwr.example', 'http://bancwr.example', 'null']) {
+    for (const origin of ['https://evil.example', 'https://other.bancwr.example', 'http://bancwr.example', `${SITE}/`, 'null']) {
       for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
-        expect(refusal(request({ method, origin, contentType: 'application/json', hasBody: true }), SITE)?.data)
-          .toEqual({ error: 'forbidden', reason: 'bad_origin' })
+        for (const sessionCookie of [true, false]) {
+          expect(refusal(request({ method, origin, sessionCookie }), SITE)?.data)
+            .toEqual({ error: 'forbidden', reason: 'bad_origin' })
+        }
       }
     }
   })
 
-  it('refuses the sign-in routes from another origin too', () => {
-    for (const path of ['/api/auth/login', '/api/auth/logout', '/api/auth/challenge']) {
-      expect(refusal(request({ path, origin: 'https://other.bancwr.example' }), SITE)?.statusCode).toBe(403)
-    }
+  it('goes by Origin when there is one, whatever Sec-Fetch-Site says', () => {
+    expect(refusal(request({ origin: 'https://other.bancwr.example', secFetchSite: 'same-origin' }), SITE)?.statusCode).toBe(403)
+    expect(refusal(request({ origin: SITE, secFetchSite: 'same-site' }), SITE)).toBeUndefined()
   })
 
   it('falls back to Sec-Fetch-Site when there is no Origin', () => {
@@ -37,24 +37,70 @@ describe('which requests the console accepts', () => {
     }
   })
 
-  it('lets a request with neither header through, since no browser page sent it', () => {
-    expect(refusal(request({ contentType: 'application/json', hasBody: true }), SITE)).toBeUndefined()
+  it('lets a request with neither header and no session cookie through, as an operator\'s script sends', () => {
+    for (const method of ['POST', 'DELETE']) {
+      expect(refusal(request({ method, sessionCookie: false }), SITE)).toBeUndefined()
+    }
+  })
+
+  it('refuses a request with neither header that carries the session cookie', () => {
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      expect(refusal(request({ method, sessionCookie: true }), SITE)?.data)
+        .toEqual({ error: 'forbidden', reason: 'bad_origin' })
+    }
+  })
+
+  it('refuses the sign-in routes from another origin too', () => {
+    // The check does not depend on the path: it is the same for every route.
+    expect(refusal(request({ origin: 'https://other.bancwr.example', sessionCookie: false }), SITE)?.statusCode).toBe(403)
   })
 
   it('never checks a request that changes nothing', () => {
-    for (const method of ['GET', 'HEAD', 'OPTIONS']) {
+    for (const method of ['GET', 'HEAD', 'OPTIONS', 'get']) {
+      expect(isSafeMethod(method)).toBe(true)
       expect(refusal(request({ method, origin: 'https://evil.example' }), SITE)).toBeUndefined()
+    }
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'post', 'PROPFIND']) {
+      expect(isSafeMethod(method)).toBe(false)
+    }
+  })
+})
+
+describe('whether a request carries a body', () => {
+  it('has none without a length or with a length of 0', () => {
+    expect(hasBody(undefined, undefined)).toBe(false)
+    expect(hasBody('0', undefined)).toBe(false)
+  })
+
+  it('has one with any other length, or any transfer encoding', () => {
+    for (const length of ['1', '42', '00', ' 0', '']) {
+      expect(hasBody(length, undefined)).toBe(true)
+    }
+    for (const encoding of ['chunked', 'gzip, chunked', '']) {
+      expect(hasBody(undefined, encoding)).toBe(true)
+      expect(hasBody('0', encoding)).toBe(true)
+    }
+  })
+})
+
+describe('which bodies the proxy forwards to the bunker', () => {
+  it('forwards a body declared JSON, with or without parameters', () => {
+    for (const contentType of ['application/json', 'application/json; charset=utf-8', 'Application/JSON']) {
+      expect(jsonBodyRefusal({ hasBody: true, contentType })).toBeUndefined()
     }
   })
 
-  it('refuses a body for the bunker that is not declared JSON, as a form would send', () => {
-    for (const contentType of [undefined, 'text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x']) {
-      expect(refusal(request({ origin: SITE, contentType, hasBody: true }), SITE)?.statusCode).toBe(415)
+  it('refuses a body that is not declared JSON, as a form would send', () => {
+    for (const contentType of [
+      undefined, '', 'text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x',
+      'application/json-foo', 'text/plain; application/json', 'application/jsonp'
+    ]) {
+      expect(jsonBodyRefusal({ hasBody: true, contentType })?.statusCode).toBe(415)
     }
-    expect(refusal(request({ path: '/API/BUNKER/team', origin: SITE, contentType: 'text/plain', hasBody: true }), SITE)?.statusCode).toBe(415)
   })
 
   it('needs no content type for a request with no body', () => {
-    expect(refusal(request({ origin: SITE, hasBody: false }), SITE)).toBeUndefined()
+    expect(jsonBodyRefusal({ hasBody: false })).toBeUndefined()
+    expect(jsonBodyRefusal({ hasBody: false, contentType: 'text/plain' })).toBeUndefined()
   })
 })

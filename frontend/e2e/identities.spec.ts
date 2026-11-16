@@ -6,7 +6,7 @@
 import { BunkerSigner } from 'nostr-tools/nip46'
 import { decode } from 'nostr-tools/nip19'
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
-import { test, expect } from './fixtures'
+import { test, expect, sameOrigin } from './fixtures'
 
 const relay = `ws://127.0.0.1:${process.env.E2E_RELAY_PORT || 7777}`
 
@@ -30,6 +30,7 @@ test('an administrator connects an app that signs as a second identity (#103)', 
 
   // The signer was added with the primary only, so Brand cannot be issued for them yet.
   const refused = await page.request.post('/api/bunker/connections/tokens', {
+    headers: sameOrigin,
     data: { for_pubkey: signer, label: 'not yet', kinds: [1], identity: brand }
   })
   expect(refused.status()).toBe(400)

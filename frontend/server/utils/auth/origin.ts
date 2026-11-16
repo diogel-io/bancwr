@@ -1,23 +1,25 @@
 // Which requests the console's server accepts from a browser. A request that changes something
 // must come from the console's own origin, NUXT_SITE_ORIGIN: the session cookie alone is not enough,
 // because SameSite=Strict lets every origin on the same site send it. A body forwarded to the bunker
-// must be declared JSON, so a plain HTML form can never produce one.
+// must be declared JSON, so a plain HTML form can never produce one; the proxy enforces that on
+// what it forwards (see jsonBodyRefusal).
 
 /** Methods that change nothing, and so need no origin check. */
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
+/** Whether a request with this method changes nothing, and so needs no origin check. */
+export function isSafeMethod(method: string): boolean {
+  return SAFE_METHODS.has(method.toUpperCase())
+}
+
 export interface IncomingRequest {
   method: string
-  /** The request's path, without the query. */
-  path: string
   /** The `Origin` header, if any. */
   origin?: string
   /** The `Sec-Fetch-Site` header, if any. */
   secFetchSite?: string
-  /** The `Content-Type` header, if any. */
-  contentType?: string
-  /** Whether the request carries a body: a non-zero `Content-Length`, or `Transfer-Encoding`. */
-  hasBody: boolean
+  /** Whether the request carries the session cookie, whatever its value. */
+  sessionCookie: boolean
 }
 
 export interface Refusal {
@@ -39,25 +41,37 @@ const NOT_JSON: Refusal = {
 }
 
 /**
- * Why the request is refused, or undefined to let it through.
+ * Why the request is refused for where it came from, or undefined to let it through.
  *
- * A browser sends `Origin` with every request that is not GET or HEAD, and `Sec-Fetch-Site` with
- * every request, so a request carrying neither did not come from a browser page and cannot be one
- * a page made on someone's behalf. Those are allowed, for operators' scripts and health checks.
+ * `Origin` must be the console's own. With no `Origin`, `Sec-Fetch-Site` must be `same-origin`.
+ * A request carrying neither is let through only when it also carries no session cookie: then it
+ * acts as nobody, as an operator's script or a health check does. With the cookie and neither
+ * header, nothing shows the console's own page sent it, so it is refused.
  */
 export function refusal(request: IncomingRequest, siteOrigin: string): Refusal | undefined {
-  if (SAFE_METHODS.has(request.method.toUpperCase())) return undefined
+  if (isSafeMethod(request.method)) return undefined
 
   if (request.origin !== undefined) {
-    if (request.origin !== siteOrigin) return BAD_ORIGIN
-  } else if (request.secFetchSite !== undefined && request.secFetchSite !== 'same-origin') {
-    return BAD_ORIGIN
+    return request.origin === siteOrigin ? undefined : BAD_ORIGIN
   }
-
-  if (request.hasBody && request.path.toLowerCase().startsWith('/api/bunker/')) {
-    const mediaType = request.contentType?.split(';')[0]?.trim().toLowerCase()
-    if (mediaType !== 'application/json') return NOT_JSON
+  if (request.secFetchSite !== undefined) {
+    return request.secFetchSite === 'same-origin' ? undefined : BAD_ORIGIN
   }
+  return request.sessionCookie ? BAD_ORIGIN : undefined
+}
 
-  return undefined
+/** Whether a request carries a body: a `Content-Length` other than 0, or any `Transfer-Encoding`. */
+export function hasBody(contentLength: string | undefined, transferEncoding: string | undefined): boolean {
+  return (contentLength !== undefined && contentLength !== '0') || transferEncoding !== undefined
+}
+
+/** The media type of a `Content-Type` header, without parameters, in lower case. */
+function mediaType(contentType: string | undefined): string | undefined {
+  return contentType?.split(';')[0]?.trim().toLowerCase()
+}
+
+/** Refuses a body that is not declared `application/json`, or undefined when there is no body. */
+export function jsonBodyRefusal(body: { hasBody: boolean, contentType?: string }): Refusal | undefined {
+  if (!body.hasBody) return undefined
+  return mediaType(body.contentType) === 'application/json' ? undefined : NOT_JSON
 }

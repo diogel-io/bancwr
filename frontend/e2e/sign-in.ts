@@ -30,11 +30,16 @@ export async function signInAs(nsec: string, origin: string, post: PostLike) {
   return { status: response.status, body: await response.json() }
 }
 
-/** A `post` over plain fetch that remembers the session cookie, for use outside a browser. */
+/**
+ * A `post` over plain fetch that remembers the session cookie, for use outside a browser. It sends
+ * the URL's own origin as `Origin`, as the console's page does: the server refuses a change that
+ * carries the cookie without it.
+ */
 export function cookieJarPost(): { post: PostLike, cookie: () => string } {
   let cookie = ''
   const post: PostLike = async (url, init) => {
-    const response = await fetch(url, { method: 'POST', headers: { ...init.headers, ...(cookie ? { cookie } : {}) }, body: init.body })
+    const headers = { 'Origin': new URL(url).origin, ...init.headers, ...(cookie ? { cookie } : {}) }
+    const response = await fetch(url, { method: 'POST', headers, body: init.body })
     const set = response.headers.get('set-cookie')
     if (set) cookie = set.split(';')[0]!
     return response
