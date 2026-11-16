@@ -159,20 +159,61 @@ fn rejects_a_malformed_identity_nonce_or_timestamp() {
     assert_eq!(verify_proxy_request(SECRET, &headers, "GET", PATH, b"", NOW), Err(ProxyAuthError::Malformed));
 }
 
+/// A set for a process that started a minute before `NOW`.
+fn nonces() -> Nonces {
+    Nonces::started_at(NOW - 60)
+}
+
 #[test]
 fn a_nonce_is_accepted_once() {
-    let nonces = Nonces::default();
-    assert!(nonces.first_use(NONCE, NOW, NOW));
-    assert!(!nonces.first_use(NONCE, NOW, NOW));
-    assert!(!nonces.first_use(NONCE, NOW, NOW + MAX_SKEW_SECONDS));
-    assert!(nonces.first_use("fedcba9876543210fedcba9876543210", NOW, NOW));
+    let nonces = nonces();
+    assert_eq!(nonces.accept(NONCE, NOW, NOW), Ok(()));
+    assert_eq!(nonces.accept(NONCE, NOW, NOW), Err(ProxyAuthError::Replayed));
+    assert_eq!(nonces.accept(NONCE, NOW, NOW + MAX_SKEW_SECONDS), Err(ProxyAuthError::Replayed));
+    assert_eq!(nonces.accept("fedcba9876543210fedcba9876543210", NOW, NOW), Ok(()));
 }
 
 #[test]
 fn a_nonce_is_forgotten_once_its_timestamp_leaves_the_window() {
-    let nonces = Nonces::default();
-    assert!(nonces.first_use(NONCE, NOW, NOW));
+    let nonces = nonces();
+    assert_eq!(nonces.accept(NONCE, NOW, NOW), Ok(()));
     // By now the window refuses that timestamp as stale, so the nonce no longer needs keeping.
     let later = NOW + MAX_SKEW_SECONDS + 1;
-    assert!(nonces.first_use(NONCE, later, later));
+    assert_eq!(nonces.accept(NONCE, later, later), Ok(()));
+}
+
+#[test]
+fn a_nonce_is_still_refused_between_sweeps() {
+    // Several requests in the same second sweep once; the set still holds every nonce.
+    let nonces = nonces();
+    for nonce in [NONCE, "fedcba9876543210fedcba9876543210", "00112233445566778899aabbccddeeff"] {
+        assert_eq!(nonces.accept(nonce, NOW, NOW), Ok(()));
+    }
+    for nonce in [NONCE, "fedcba9876543210fedcba9876543210", "00112233445566778899aabbccddeeff"] {
+        assert_eq!(nonces.accept(nonce, NOW, NOW), Err(ProxyAuthError::Replayed));
+    }
+}
+
+#[test]
+fn a_timestamp_from_before_the_process_started_is_refused() {
+    // A request signed for the process before a restart, still inside the time window, is
+    // refused by the new process even though its set of nonces starts empty.
+    let started = NOW;
+    let nonces = Nonces::started_at(started);
+    let before = started - 1;
+    assert!((NOW - before).abs() <= MAX_SKEW_SECONDS, "inside the window");
+    assert_eq!(nonces.accept(NONCE, before, NOW), Err(ProxyAuthError::Stale));
+    assert_eq!(nonces.accept(NONCE, started - MAX_SKEW_SECONDS, NOW), Err(ProxyAuthError::Stale));
+
+    // Signed from the second the process started on: accepted, once.
+    assert_eq!(nonces.accept(NONCE, started, NOW), Ok(()));
+    assert_eq!(nonces.accept(NONCE, started, NOW + 1), Err(ProxyAuthError::Replayed));
+    assert_eq!(nonces.accept("fedcba9876543210fedcba9876543210", started + 5, started + 5), Ok(()));
+}
+
+#[test]
+fn a_set_made_now_accepts_a_request_signed_now() {
+    let nonces = Nonces::default();
+    let now = chrono::Utc::now().timestamp();
+    assert_eq!(nonces.accept(NONCE, now, now), Ok(()));
 }

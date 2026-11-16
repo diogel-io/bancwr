@@ -288,6 +288,36 @@ async fn a_missing_or_wrong_credential_or_a_tampered_file_locks_the_bunker() {
         Running::start(&deployment, &env).await.assert_locked(KeyStoreError::KeyFileMissing.reason(), "").await;
     }
 
+    // The locked bunker accepts each signed request once, as the unlocked one does.
+    let env = [nip46[0].clone(), nip46[1].clone(), root.clone()];
+    let captured = {
+        let running = Running::start(&deployment, &env).await;
+        let status = running.signed(reqwest::Method::GET, "/api/bunker/status", "service").build().unwrap();
+        assert_eq!(running.client.execute(status.try_clone().unwrap()).await.unwrap().status(), 200);
+        let again = running.client.execute(status).await.unwrap();
+        assert_eq!(again.status(), 401);
+        let body: Value = again.json().await.unwrap();
+        assert_eq!((body["error"].as_str(), body["reason"].as_str()), (Some("not_authenticated"), Some("replayed")));
+
+        // Signed while this process runs, and never sent to it.
+        running.signed(reqwest::Method::GET, "/api/bunker/status", "service").build().unwrap()
+    };
+
+    // Nor does a restart let a request signed before it through: still inside the time window,
+    // but from before the new process started.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    {
+        let running = Running::start(&deployment, &env).await;
+        let mut replay = captured;
+        *replay.url_mut() = running.url("/api/bunker/status").parse().unwrap();
+        let res = running.client.execute(replay).await.unwrap();
+        assert_eq!(res.status(), 401);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["reason"], "stale");
+        // A request signed now passes.
+        assert_eq!(running.signed(reqwest::Method::GET, "/api/bunker/status", "service").send().await.unwrap().status(), 200);
+    }
+
     assert_eq!(deployment.import(&[plain_file, root.clone()]).status.code(), Some(0));
 
     let cases: Vec<(Vec<(&str, String)>, &str)> = vec![

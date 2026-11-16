@@ -12,7 +12,8 @@
 //!
 //! The signature covers the request's body and a nonce as well as its method, path and identity,
 //! and the bunker accepts each nonce once: a request seen in transit cannot be sent again, or sent
-//! with another body, inside its time window.
+//! with another body, inside its time window. Nothing signed before the bunker process started
+//! is accepted, so a restart, which empties the set of nonces, does not let one through again.
 //!
 //! frontend/tests/server/auth/proxy-signature.spec.ts asserts the same test vectors.
 
@@ -120,7 +121,7 @@ pub struct ProxyHeaders<'a> {
     pub signature: Option<&'a str>,
 }
 
-/// A request whose signature checked out. The nonce still has to pass [`Nonces::first_use`].
+/// A request whose signature checked out. The nonce still has to pass [`Nonces::accept`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct Verified {
     pub identity: String,
@@ -158,24 +159,59 @@ pub fn verify_proxy_request(
     Ok(Verified { identity: identity.to_string(), timestamp, nonce: nonce.to_string() })
 }
 
-/// The nonces of signed requests still inside the time window. A nonce whose timestamp has left
-/// the window is forgotten, since the window alone refuses it from then on. One bunker process
-/// serves every request, so memory is enough.
-#[derive(Default)]
+/// The nonces of signed requests still inside the time window, and when this process started.
+///
+/// A nonce whose timestamp has left the window is forgotten, since the window alone refuses it
+/// from then on. The set lives in memory, so it starts empty in every process: a timestamp from
+/// before the process started is refused as stale, because a request signed then was meant for a
+/// process that no longer exists, and this one cannot know whether it was already accepted. No
+/// skew is allowed on that rule. The frontend signs each request just before sending it, and the
+/// two share a clock in the deployed stack, so a fresh request is never signed before the bunker
+/// it reaches was serving; one signed against the process before a restart is refused, and the
+/// next request the frontend signs passes.
 pub struct Nonces {
-    seen: Mutex<HashMap<String, i64>>,
+    started_at: i64,
+    state: Mutex<NonceState>,
+}
+
+#[derive(Default)]
+struct NonceState {
+    seen: HashMap<String, i64>,
+    /// The second the set was last swept, so it is swept at most once a second.
+    swept_at: Option<i64>,
+}
+
+impl Default for Nonces {
+    /// A set for a process starting now.
+    fn default() -> Self {
+        Self::started_at(chrono::Utc::now().timestamp())
+    }
 }
 
 impl Nonces {
-    /// True the first time a nonce is presented, false when it is presented again.
-    pub fn first_use(&self, nonce: &str, timestamp: i64, now: i64) -> bool {
-        let mut seen = self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        seen.retain(|_, t| (now - *t).abs() <= MAX_SKEW_SECONDS);
-        if seen.contains_key(nonce) {
-            return false;
+    /// A set for a process that started at `started_at` (seconds since the epoch).
+    pub fn started_at(started_at: i64) -> Self {
+        Self { started_at, state: Mutex::new(NonceState::default()) }
+    }
+
+    /// Accepts a verified request's nonce the first time it is presented: [`ProxyAuthError::Stale`]
+    /// for a timestamp from before this process started, [`ProxyAuthError::Replayed`] for a nonce
+    /// already accepted.
+    pub fn accept(&self, nonce: &str, timestamp: i64, now: i64) -> Result<(), ProxyAuthError> {
+        if timestamp < self.started_at {
+            return Err(ProxyAuthError::Stale);
         }
-        seen.insert(nonce.to_string(), timestamp);
-        true
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.swept_at != Some(now) {
+            // Keeping a nonce a second longer only refuses what the window refuses already.
+            state.seen.retain(|_, t| (now - *t).abs() <= MAX_SKEW_SECONDS);
+            state.swept_at = Some(now);
+        }
+        if state.seen.contains_key(nonce) {
+            return Err(ProxyAuthError::Replayed);
+        }
+        state.seen.insert(nonce.to_string(), timestamp);
+        Ok(())
     }
 }
 
@@ -235,7 +271,8 @@ fn refuse(status: StatusCode, body: serde_json::Value) -> Response {
 }
 
 /// Middleware for a group of `/api/bunker/*` routes:
-/// 401 `not_authenticated` without a valid signature or for a nonce already used; 413
+/// 401 `not_authenticated` without a valid signature, for a nonce already used, or for a
+/// timestamp from before this process started; 413
 /// `payload_too_large` for a body over [`MAX_BODY_BYTES`]; 403 `not_registered` for a key not in
 /// the vault; 403 `forbidden` for a role (or the service identity) the group does not allow.
 /// The role is read from the vault on every request, so a removed member loses access at once.
@@ -256,7 +293,7 @@ pub async fn guard(State(guard): State<Guard>, request: Request, next: Next) -> 
     };
     let path = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or_default();
     let verified = verify_proxy_request(&guard.secret, &headers, parts.method.as_str(), path, &body, now)
-        .and_then(|v| if guard.nonces.first_use(&v.nonce, v.timestamp, now) { Ok(v) } else { Err(ProxyAuthError::Replayed) });
+        .and_then(|v| guard.nonces.accept(&v.nonce, v.timestamp, now).map(|()| v));
     let identity = match verified {
         Ok(verified) => verified.identity,
         Err(e) => return refuse(StatusCode::UNAUTHORIZED, json!({ "error": "not_authenticated", "reason": e.reason() })),
