@@ -83,9 +83,10 @@ fn backup() -> i32 {
     }
 }
 
-/// Restores an archive from standard input into an empty data directory, then revokes every NIP-46
-/// connection and unused token. Checks the whole archive, that BANCWR_ROOT_KEY_FILE decrypts its
-/// key, and that the archive verifies under it, before writing anything. Returns the exit code.
+/// Restores an archive from standard input into an empty data directory, revoking every NIP-46
+/// connection and unused token before the database is placed there. Checks the whole archive, that
+/// BANCWR_ROOT_KEY_FILE decrypts its key, and that the archive verifies under it, before writing
+/// anything. Returns the exit code.
 fn restore() -> i32 {
     use std::io::{IsTerminal, Read};
     let _ = dotenvy::dotenv();
@@ -98,16 +99,11 @@ fn restore() -> i32 {
         std::io::stdin().lock().read_to_end(&mut archive).map_err(backup::BackupError::ReadArchive)?;
         let root = key_store::RootKey::from_env().map_err(backup::BackupError::RootKey)?;
         let contents = backup::open(&passphrase, &root, &archive)?;
-        backup::place(&contents, Ok(root), std::path::Path::new(&db_path), &key_store::key_path(&db_path))?;
-        let db = Database::new(&db_path).map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
-        let revoked = db
-            .revoke_all_for_restore(contents.created_at, chrono::Utc::now())
-            .map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?;
-        let members = db.get_team_members().map_err(|e| backup::BackupError::OpenRestored(e.to_string()))?.len();
-        Ok((contents, revoked, members))
+        let restored = backup::place(&contents, Ok(root), std::path::Path::new(&db_path), &key_store::key_path(&db_path), chrono::Utc::now())?;
+        Ok((contents, restored))
     });
     match result {
-        Ok((contents, (connections, tokens), members)) => {
+        Ok((contents, backup::Restored { connections, tokens, members })) => {
             println!("Restored the bunker from the backup taken at {}.", contents.created_at.to_rfc3339());
             println!("Public key: {}", contents.public_key.to_bech32().unwrap_or_default());
             println!("{} members, with their roles, are back.", members);

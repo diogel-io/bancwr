@@ -348,9 +348,12 @@ root credential has to decrypt the archive's key file, which is encrypted under 
 Archives are in format version 2. A version 1 archive, made before archives were authenticated
 under the root credential, is refused: take a new backup.
 
-If any check fails it exits non-zero, says why, and writes nothing. If they all pass, it writes the
-database and key file, then revokes every connected app and every unused connection token. Members,
-their roles, the signing log and the bunker relays come back as they were in the archive.
+If any check fails it exits non-zero, says why, and writes nothing. If they all pass, it revokes
+every connected app and every unused connection token in a staged copy of the database, and records
+the restore there, before it puts the database and key file into the data directory. So if a
+restore fails partway, the data directory is left empty, never holding a database whose apps and
+tokens still work. Members, their roles, the signing log and the bunker relays come back as they
+were in the archive.
 
 ### On a clean host
 

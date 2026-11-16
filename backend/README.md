@@ -42,7 +42,8 @@ the member lookup that sign-in needs answer; every other route answers `503`. Un
 
 `bunker backup` writes an encrypted archive of a consistent database snapshot and the key file to
 standard output, safe while the bunker runs. `bunker restore` reads one from standard input into an
-empty data directory and revokes every NIP-46 connection and unused token (#95). Both read the
+empty data directory, revoking every NIP-46 connection and unused token before the database is put
+there (#95). Both read the
 backup passphrase, 16 characters or more and not the root credential, from the file
 `BANCWR_BACKUP_KEY_FILE` names, and the root credential from `BANCWR_ROOT_KEY_FILE`: an archive is
 encrypted under the passphrase and authenticated under the root credential. `restore` checks that

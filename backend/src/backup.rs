@@ -20,10 +20,14 @@
 //!   the root credential that made it to verify it, and only then writes anything. Version 1
 //!   archives, which had no tag, are refused.
 //! - A restored database may hold only tables and indexes, which is all the migrations create.
+//! - A restore migrates the staged copy, revokes every connection and unused token in it and
+//!   records the `restored` audit event, all before the copy is linked into the data directory. So
+//!   a database a restore leaves in the data directory never holds access the restore revokes.
 //!
 //! Every error has fixed operator wording (`BackupError::reason`), which never names a path or
 //! includes key material.
 
+use crate::db::Database;
 use crate::key_store::{self, KeyStoreError, RootKey};
 use crate::migrations;
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
@@ -424,9 +428,20 @@ impl Temporary {
 }
 
 impl Drop for Temporary {
+    /// Removes the file and any journal SQLite left beside it.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let _ = fs::remove_file(with_suffix(&self.0, suffix));
+        }
     }
+}
+
+/// `path` with `suffix` appended to its file name, as SQLite names a database's journals.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 fn directory_of(path: &Path) -> PathBuf {
@@ -524,22 +539,56 @@ pub fn snapshot(db_path: &Path, key_path: &Path, now: DateTime<Utc>) -> Result<(
 
 /// The files a data directory must not hold before a restore.
 fn occupied(db_path: &Path, key_path: &Path) -> bool {
-    let with_suffix = |suffix: &str| {
-        let mut name = db_path.as_os_str().to_owned();
-        name.push(suffix);
-        PathBuf::from(name)
-    };
-    [db_path.to_path_buf(), with_suffix("-wal"), with_suffix("-shm"), with_suffix("-journal"), key_path.to_path_buf()]
+    [db_path.to_path_buf(), with_suffix(db_path, "-wal"), with_suffix(db_path, "-shm"), with_suffix(db_path, "-journal"), key_path.to_path_buf()]
         .iter()
         .any(|path| path.exists())
 }
 
+/// What a restore revoked, and how many members it brought back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Restored {
+    pub connections: usize,
+    pub tokens: usize,
+    pub members: usize,
+}
+
+/// Migrates the staged copy at `path`, revokes every connection and unused token in it, records
+/// the `restored` audit event, and leaves it one self-contained file with no journal beside it.
+fn revoke_staged(path: &Path, backup_created_at: DateTime<Utc>, now: DateTime<Utc>) -> Result<Restored, BackupError> {
+    let failed = |e: anyhow::Error| BackupError::OpenRestored(e.to_string());
+    let text = path.to_str().ok_or_else(|| BackupError::OpenRestored("the data directory's path is not UTF-8".to_string()))?;
+    let db = Database::new(text).map_err(failed)?;
+    let (connections, tokens) = db.revoke_all_for_restore(backup_created_at, now).map_err(failed)?;
+    let members = db.get_team_members().map_err(failed)?.len();
+    // Out of WAL, so everything is in the one file that is linked in; the bunker turns WAL back on.
+    let mode: String = db
+        .lock()
+        .map_err(failed)?
+        .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        .map_err(|e| BackupError::OpenRestored(e.to_string()))?;
+    drop(db);
+    if !mode.eq_ignore_ascii_case("delete") || with_suffix(path, "-wal").exists() {
+        return Err(BackupError::OpenRestored("the restored database could not leave WAL mode".to_string()));
+    }
+    fs::File::open(path).and_then(|file| file.sync_all()).map_err(BackupError::WriteRestore)?;
+    Ok(Restored { connections, tokens, members })
+}
+
 /// Puts an opened archive's database and key file into an empty data directory, after checking
-/// that the root credential decrypts the key, that the database passes its integrity check, and
-/// that it holds only tables and indexes.
-/// Nothing is written until every check passes; a failure while writing removes what it wrote.
-/// The caller then opens the database and revokes its connections.
-pub fn place(contents: &Contents, root: Result<RootKey, KeyStoreError>, db_path: &Path, key_path: &Path) -> Result<(), BackupError> {
+/// that the root credential decrypts the key, that the database holds only tables and indexes, and
+/// that it passes its integrity check. Then, still on a staged copy outside the data directory's
+/// names, migrates it, revokes every NIP-46 connection and unused token as at `now`, and records
+/// the restore. Only then is it linked in, so the data directory never holds the restored database
+/// with that access still live.
+/// Nothing is written into the data directory until all of that succeeds; a failure while writing
+/// removes what it wrote.
+pub fn place(
+    contents: &Contents,
+    root: Result<RootKey, KeyStoreError>,
+    db_path: &Path,
+    key_path: &Path,
+    now: DateTime<Utc>,
+) -> Result<Restored, BackupError> {
     if occupied(db_path, key_path) {
         return Err(BackupError::DataDirNotEmpty);
     }
@@ -560,15 +609,17 @@ pub fn place(contents: &Contents, root: Result<RootKey, KeyStoreError>, db_path:
     let (staged, mut file) = Temporary::create(&dir, "restore").map_err(BackupError::WriteRestore)?;
     file.write_all(&contents.database).and_then(|_| file.sync_all()).map_err(BackupError::WriteRestore)?;
     drop(file);
-    match check_database(&staged.0) {
-        Ok(version) if version == contents.schema_version => {}
-        _ => return Err(BackupError::DatabaseDamaged),
-    }
+    // The schema first, so nothing else reads a file that holds anything but tables and indexes.
     match only_tables_and_indexes(&staged.0) {
         Ok(true) => {}
         Ok(false) => return Err(BackupError::UnexpectedSchema),
         Err(_) => return Err(BackupError::DatabaseDamaged),
     }
+    match check_database(&staged.0) {
+        Ok(version) if version == contents.schema_version => {}
+        _ => return Err(BackupError::DatabaseDamaged),
+    }
+    let restored = revoke_staged(&staged.0, contents.created_at, now)?;
     // A hard link fails if the database appeared meanwhile, so nothing is ever replaced.
     fs::hard_link(&staged.0, db_path).map_err(|error| match error.kind() {
         io::ErrorKind::AlreadyExists => BackupError::DataDirNotEmpty,
@@ -586,5 +637,5 @@ pub fn place(contents: &Contents, root: Result<RootKey, KeyStoreError>, db_path:
     if let Ok(dir) = fs::File::open(&dir) {
         let _ = dir.sync_all();
     }
-    Ok(())
+    Ok(restored)
 }

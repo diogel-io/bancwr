@@ -223,7 +223,9 @@ fn a_snapshot_restores_into_an_empty_directory_and_revokes_connections() {
     let target = tempfile::tempdir().unwrap();
     let db_path = target.path().join("data/bancwr.db");
     let key_path = target.path().join("data/bunker-key.enc");
-    backup::place(&opened, Ok(root()), &db_path, &key_path).unwrap();
+    let restored = backup::place(&opened, Ok(root()), &db_path, &key_path, Utc::now()).unwrap();
+    assert_eq!(restored, backup::Restored { connections: 1, tokens: 1, members: 2 });
+    // Only the two files: the staged copy and its journals are gone.
     assert_eq!(files_in(&target.path().join("data")), vec!["bancwr.db", "bunker-key.enc"]);
     #[cfg(unix)]
     {
@@ -235,8 +237,8 @@ fn a_snapshot_restores_into_an_empty_directory_and_revokes_connections() {
     let unlocked = key_store::decrypt(&root(), &std::fs::read_to_string(&key_path).unwrap()).unwrap();
     assert_eq!(Keys::new(unlocked).public_key(), data.keys.public_key());
 
+    // The placed database is already revoked, and records the restore.
     let db = Database::new(db_path.to_str().unwrap()).unwrap();
-    assert_eq!(db.revoke_all_for_restore(opened.created_at, Utc::now()).unwrap(), (1, 1));
     // The restore's audit event records when the backup was taken.
     let restored = db.audit_events().unwrap().into_iter().last().unwrap();
     assert_eq!(restored.action, bunker::audit::action::RESTORED);
@@ -265,9 +267,9 @@ fn a_restore_writes_nothing_when_refused() {
     let key_path = dir.join("bunker-key.enc");
 
     // Wrong, missing and malformed root credentials.
-    let wrong = backup::place(&contents, Ok(RootKey::from_hex(WRONG_HEX).unwrap()), &db_path, &key_path);
+    let wrong = backup::place(&contents, Ok(RootKey::from_hex(WRONG_HEX).unwrap()), &db_path, &key_path, Utc::now());
     assert!(matches!(wrong.unwrap_err(), BackupError::RootKeyDoesNotDecrypt));
-    let missing = backup::place(&contents, Err(KeyStoreError::RootKeyNotSet), &db_path, &key_path);
+    let missing = backup::place(&contents, Err(KeyStoreError::RootKeyNotSet), &db_path, &key_path, Utc::now());
     assert_eq!(missing.unwrap_err().reason(), KeyStoreError::RootKeyNotSet.reason());
     assert!(files_in(&dir).is_empty());
 
@@ -276,14 +278,14 @@ fn a_restore_writes_nothing_when_refused() {
     damaged.schema_version = contents.schema_version;
     // The schema page's b-tree header, after the 100-byte file header: still "SQLite format 3".
     damaged.database[100..200].fill(0xff);
-    let result = backup::place(&damaged, Ok(root()), &db_path, &key_path);
+    let result = backup::place(&damaged, Ok(root()), &db_path, &key_path, Utc::now());
     assert!(matches!(result.unwrap_err(), BackupError::DatabaseDamaged));
     assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
 
     // Anything already there: a database, its WAL, or a key file.
     for name in ["bancwr.db", "bancwr.db-wal", "bunker-key.enc"] {
         std::fs::write(dir.join(name), b"x").unwrap();
-        let result = backup::place(&contents, Ok(root()), &db_path, &key_path);
+        let result = backup::place(&contents, Ok(root()), &db_path, &key_path, Utc::now());
         assert!(matches!(result.unwrap_err(), BackupError::DataDirNotEmpty), "{}", name);
         assert_eq!(files_in(&dir), vec![name.to_string()]);
         std::fs::remove_file(dir.join(name)).unwrap();
@@ -356,7 +358,7 @@ fn a_database_swapped_under_the_passphrase_alone_is_refused() {
 }
 
 #[test]
-fn a_database_with_a_trigger_or_view_is_refused_and_writes_nothing() {
+fn a_database_with_a_trigger_view_or_virtual_table_is_refused_and_writes_nothing() {
     let data = populated();
     let (contents, _) = backup::snapshot(&data.db, &data.key, Utc::now()).unwrap();
     let target = tempfile::tempdir().unwrap();
@@ -367,14 +369,45 @@ fn a_database_with_a_trigger_or_view_is_refused_and_writes_nothing() {
     for sql in [
         "CREATE TRIGGER quiet AFTER INSERT ON audit_events BEGIN DELETE FROM audit_events WHERE id = NEW.id; END;",
         "CREATE VIEW members AS SELECT * FROM team_members;",
+        "CREATE VIRTUAL TABLE vt USING fts5(x);",
     ] {
         let altered = Contents { database: altered_database(&contents.database, sql), key_file: contents.key_file.clone(), ..contents_for(&data.keys) };
         let altered = Contents { schema_version: contents.schema_version, ..altered };
-        let result = backup::place(&altered, Ok(root()), &db_path, &key_path);
+        let result = backup::place(&altered, Ok(root()), &db_path, &key_path, Utc::now());
         assert!(matches!(result.unwrap_err(), BackupError::UnexpectedSchema), "{}", sql);
         assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
     }
 
     // The migrations' own tables and indexes, autoindexes included, are accepted.
-    backup::place(&contents, Ok(root()), &db_path, &key_path).unwrap();
+    backup::place(&contents, Ok(root()), &db_path, &key_path, Utc::now()).unwrap();
+}
+
+#[test]
+fn a_restore_that_fails_after_staging_leaves_the_data_directory_unchanged() {
+    let data = populated();
+    let (contents, _) = backup::snapshot(&data.db, &data.key, Utc::now()).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let dir = target.path().join("data");
+    let db_path = dir.join("bancwr.db");
+    let key_path = dir.join("bunker-key.enc");
+
+    // Passes every check, but the restore's audit event cannot be written, so the revocation
+    // fails after the database is staged, migrated and partly revoked.
+    let altered = Contents {
+        database: altered_database(&contents.database, "DROP TABLE audit_events; CREATE TABLE audit_events (id INTEGER PRIMARY KEY);"),
+        key_file: contents.key_file.clone(),
+        ..contents_for(&data.keys)
+    };
+    let altered = Contents { schema_version: contents.schema_version, ..altered };
+    let result = backup::place(&altered, Ok(root()), &db_path, &key_path, Utc::now());
+    assert!(matches!(result.unwrap_err(), BackupError::OpenRestored(_)));
+    // Nothing in the data directory: no database with its connections still live, no key file,
+    // and no staged copy or journal.
+    assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
+
+    // The same directory then takes a good restore, already revoked.
+    let restored = backup::place(&contents, Ok(root()), &db_path, &key_path, Utc::now()).unwrap();
+    assert_eq!((restored.connections, restored.tokens), (1, 1));
+    let db = Database::new(db_path.to_str().unwrap()).unwrap();
+    assert!(db.list_nip46_connections(None).unwrap().iter().all(|c| c.revoked_at.is_some()));
 }
