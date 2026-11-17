@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for release-targets.sh and image-tags.sh (#15): which commits are built, and which tags
-# each publishes, above all that :latest only ever goes to the highest stable release.
+# Tests for release-targets.sh, image-tags.sh (#15) and verify-image.sh (#104): which commits are
+# built, which tags each publishes, and what a release image is verified against. Above all,
+# :latest only ever goes to the highest stable release.
 # Run from anywhere: bash .github/scripts/test-release-scripts.sh
 set -euo pipefail
 
@@ -60,6 +61,25 @@ check 'latest release tags' 'img:0.1.0 img:0.1 img:latest img:sha-abc1234' "$(ta
 check 'older-line release tags: no latest' 'img:0.1.5 img:0.1 img:sha-abc1234' "$(tags release 0.1.5 v0.1.5 false)"
 check 'pre-release tags: version and sha only' 'img:1.0.0-rc.1 img:sha-abc1234' "$(tags release 1.0.0-rc.1 v1.0.0-rc.1 true)"
 check 'no :0 major alias' '' "$(tags release 0.1.0 v0.1.0 true | tr ' ' '\n' | grep -x 'img:0' || true)"
+
+# verify-image.sh (#104): it takes a digest, never a tag or another image, and the documentation
+# gives operators the same signer identity it checks. Refusals happen before cosign or gh run.
+verify() {
+  local status=0
+  bash "${here}/verify-image.sh" "$@" >/dev/null 2>&1 || status=$?
+  echo "exit ${status}"
+}
+digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+check 'verify refuses a tag' 'exit 2' "$(verify ghcr.io/diogel-io/bancwr-diogel-backend:0.1.0)"
+check 'verify refuses another image' 'exit 2' "$(verify "ghcr.io/someone/else@${digest}")"
+check 'verify refuses no argument' 'exit 2' "$(verify)"
+root=$(cd "${here}/../.." && pwd)
+identity=$(sed -n "s/^IDENTITY_REGEXP='\(.*\)'$/\1/p" "${here}/verify-image.sh")
+check 'verify-image.sh has an identity' yes "$([[ -n "${identity}" ]] && echo yes || echo no)"
+for doc in docs/releasing.md README.md; do
+  check "${doc} gives verify-image.sh's identity" yes \
+    "$(grep -qF -- "--certificate-identity-regexp '${identity}'" "${root}/${doc}" && echo yes || echo no)"
+done
 
 if (( failures > 0 )); then
   echo "${failures} failed"

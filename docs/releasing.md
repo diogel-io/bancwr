@@ -118,6 +118,92 @@ A release's version is its tag. A trunk build's is GitVersion's, which in Action
 the run was started from: started from another branch (`--ref`), a preview of `master` shows that
 branch's label, such as `0.1.0-my-branch.1`. Runs on `master` itself are not affected.
 
+## Verifying an image
+
+Every image published for a release (#104) is signed, and carries signed build provenance and an
+SBOM, all made by `.github/workflows/release-image.yml` after the vulnerability gate passes:
+
+| What | Made with | Stored |
+| --- | --- | --- |
+| Signature | `cosign sign`, keyless | GHCR, beside the image; logged in the public Rekor transparency log |
+| Build provenance (SLSA v1) | `actions/attest` | GHCR and GitHub's attestation store |
+| SBOM (SPDX 2.3, from Trivy) | `actions/attest` | GHCR and GitHub's attestation store, and as a release asset |
+
+Keyless means there is no signing key to steal or lose. Sigstore issues a short-lived certificate
+to the workflow's GitHub OIDC identity, which names the repository, the workflow file and the ref
+it ran from. Verifying an image means checking that the certificate names Bancwr's release
+workflow and nothing else.
+
+Trunk images (`edge`, `master`, `<semVer>`) are not signed. Run a release if you need to verify
+what you run.
+
+### What each release lists
+
+Each GitHub release has three assets per image, attached once the image is published, a few
+minutes after the release itself:
+
+| Asset | Holds |
+| --- | --- |
+| `bancwr-diogel-<image>-<version>.digest` | The image's digest, `ghcr.io/diogel-io/bancwr-diogel-<image>@sha256:…` |
+| `bancwr-diogel-<image>-<version>.spdx.json` | The SBOM |
+| `bancwr-diogel-<image>-<version>.sha256` | The SHA-256 of the two files above |
+
+The weekly rebuild republishes the newest release on fresh base images, so its digest changes
+(see [Image tags](#image-tags)). Each rebuild is signed and attested in the same way, and replaces
+the release's assets, so the `.digest` asset always names what the version tag points at now.
+Older digests keep their own signatures.
+
+### The commands
+
+Verify by digest, never by tag: a tag can move after you check it. You need
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 or later and the GitHub
+CLI, signed in.
+
+1. Download the release's assets and check them against their checksums:
+
+   ```bash
+   gh release download v0.3.0 -R diogel-io/bancwr -p 'bancwr-diogel-backend-0.3.0.*'
+   sha256sum -c bancwr-diogel-backend-0.3.0.sha256
+   IMAGE=$(cat bancwr-diogel-backend-0.3.0.digest)
+   ```
+
+   To check the image a tag points at now instead, read its digest from the registry:
+
+   ```bash
+   IMAGE=ghcr.io/diogel-io/bancwr-diogel-backend@$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/diogel-io/bancwr-diogel-backend:0.3.0)
+   ```
+
+2. Check the signature. The identity must match exactly: a looser pattern would accept an image
+   signed by any workflow, in any repository:
+
+   ```bash
+   cosign verify "$IMAGE" \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     --certificate-identity-regexp '^https://github\.com/diogel-io/bancwr/\.github/workflows/release-image\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$'
+   ```
+
+3. Check the build provenance and the SBOM attestation:
+
+   ```bash
+   gh attestation verify "oci://$IMAGE" -R diogel-io/bancwr \
+     --signer-workflow diogel-io/bancwr/.github/workflows/release-image.yml
+   gh attestation verify "oci://$IMAGE" -R diogel-io/bancwr \
+     --signer-workflow diogel-io/bancwr/.github/workflows/release-image.yml \
+     --predicate-type https://spdx.dev/Document/v2.3
+   ```
+
+`.github/scripts/verify-image.sh` runs steps 2 and 3 for one digest:
+`bash .github/scripts/verify-image.sh "$IMAGE"`. The release workflow runs it on every image it
+publishes, so a release whose images the commands above would reject fails rather than shipping.
+`.github/scripts/test-release-scripts.sh` checks that this page and the README give the identity
+the script checks.
+
+Repeat for `bancwr-diogel-frontend`. To run exactly what you verified, put the digest in
+`compose.yaml` (`image: ghcr.io/diogel-io/bancwr-diogel-backend@sha256:…`). A pinned digest
+does not get the weekly base-image fixes: verify and pin the new one after each rebuild.
+
+Compose does not check signatures. Verifying is the operator's step.
+
 ## Cutting a release
 
 Releases are cut by merging the release PR. Nobody pushes a tag by hand.
@@ -172,7 +258,9 @@ and reopen it, or push an empty commit to its branch, to get the checks.
    - closes the milestone named after the version.
 5. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
    images carry `0.1.0`, `0.1` and `latest` in GHCR, and that `latest` and `0.1.0` have the same
-   digest. Each runs the full test suite first (see [The test gate](#the-test-gate)); if a test
+   digest. Check that the release lists each image's `.digest`, `.spdx.json` and `.sha256` assets,
+   and that both images pass [Verifying an image](#verifying-an-image) with the documented
+   commands. Each runs the full test suite first (see [The test gate](#the-test-gate)); if a test
    fails, nothing is published and the job graph shows `test` failed before `release`. Fix the
    cause, then run the release by hand for the tag:
 
