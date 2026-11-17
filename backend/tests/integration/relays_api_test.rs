@@ -4,6 +4,8 @@
 // the running relay client uses, without a restart.
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../support/ports.rs"]
+mod ports;
 
 use bunker::bunker_relays::{normalise_relay_url, MAX_RELAYS};
 use bunker::connections_api::IssueTokenResponse;
@@ -11,7 +13,6 @@ use bunker::registry::Role;
 use bunker::relay::RelayClient;
 use bunker::relays_api::RelaysResponse;
 use bunker::bunker_relays::RelaySource;
-use nostr_relay_builder::MockRelay;
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -202,8 +203,8 @@ async fn relays_until(app: &common::TestApp, done: impl Fn(&RelaysResponse) -> b
 
 #[tokio::test]
 async fn a_saved_list_applies_to_the_running_relay_client_without_a_restart() {
-    let first = MockRelay::run().await.unwrap();
-    let second = MockRelay::run().await.unwrap();
+    let first = ports::run_mock_relay().await;
+    let second = ports::run_mock_relay().await;
     let app = console().await;
     // As main.rs starts it with NIP-46 on and nothing configured yet.
     let client = RelayClient::new(vec![], app.state.clone()).await.unwrap();

@@ -20,3 +20,7 @@
 # The bunker key at rest and its root credential (#94): never committed.
 /secrets/
 bunker-key.enc
+
+# Backups taken beside compose.yaml, as docs/operating.md describes (#95): archives, .part files
+# and cold copies of ./data. Never committed.
+/backups/

@@ -2,10 +2,12 @@
 // signature in flight, then `bunker restore` onto a clean host. The restored bunker unlocks as the
 // same key with the same members and roles, every connection and unused token is revoked, the old
 // app cannot sign, and a new token connects. Every refusal writes nothing.
+#[path = "../support/ports.rs"]
+mod ports;
+
 use bunker::backup::{BackupError, RESTORED_REASON};
 use bunker::proxy_auth::{proxy_signature, IDENTITY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use nostr_connect::prelude::*;
-use nostr_relay_builder::MockRelay;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
@@ -89,10 +91,6 @@ impl Host {
     }
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
 /// A running `bunker serve`, killed when dropped.
 struct Running {
     child: Child,
@@ -109,21 +107,46 @@ impl Drop for Running {
 }
 
 impl Running {
+    /// `bunker serve` on a free port, started again on a new port if it exits before listening.
     async fn start(host: &Host, env: &[(&str, String)]) -> Running {
-        let port = free_port();
-        let mut env = env.to_vec();
-        env.push(("BUNKER_PORT", port.to_string()));
-        let child = host.command(&[], &env).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let running = Running { child, port, client: reqwest::Client::new(), admin: host.admin.public_key().to_hex() };
+        let mut exits = Vec::new();
+        for _ in 0..ports::ATTEMPTS {
+            let port = ports::free_port();
+            let mut env = env.to_vec();
+            env.push(("BUNKER_PORT", port.to_string()));
+            let child = host.command(&[], &env).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            let mut running = Running { child, port, client: reqwest::Client::new(), admin: host.admin.public_key().to_hex() };
+            match running.listening().await {
+                Ok(()) => {
+                    // Let the relay client subscribe.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    return running;
+                }
+                // Dropping it reaps the exited child.
+                Err(status) => exits.push(format!("port {}: {}", port, status)),
+            }
+        }
+        panic!("the bunker exited before listening on all {} attempts: {}", ports::ATTEMPTS, exits.join("; "));
+    }
+
+    /// Waits for `/health`. Err with the exit status if the child exits first, as it does when
+    /// another socket took its port (#114): the locked bunker returns the bind error, the unlocked
+    /// one logs it and exits 0. The child is checked again once `/health` answers, a cheap guard
+    /// against taking another test's bunker on the same port for this one.
+    async fn listening(&mut self) -> Result<(), std::process::ExitStatus> {
         for _ in 0..100 {
-            if running.client.get(running.url("/health")).send().await.is_ok() {
-                // Let the relay client subscribe.
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                return running;
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return Err(status);
+            }
+            if self.client.get(self.url("/health")).send().await.is_ok() {
+                return match self.child.try_wait().unwrap() {
+                    Some(status) => Err(status),
+                    None => Ok(()),
+                };
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("the bunker did not start listening");
+        panic!("the bunker did not start listening on port {}", self.port);
     }
 
     fn url(&self, path: &str) -> String {
@@ -179,7 +202,7 @@ async fn a_backup_of_a_running_bunker_restores_to_a_working_bunker_on_a_clean_ho
     let bunker = Keys::generate();
     let npub = bunker.public_key().to_bech32().unwrap();
     let admin = Keys::generate();
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let nip46 = [("NIP46_ENABLED", "true".to_string()), ("NIP46_RELAYS", relay.url())];
 
     // The original host: a signer and a viewer beside the administrator, a connected app, and an
@@ -350,7 +373,7 @@ async fn a_second_identity_added_at_the_command_line_signs_as_itself_and_survive
     let bunker = Keys::generate();
     let brand = Keys::generate();
     let admin = Keys::generate();
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let nip46 = [("NIP46_ENABLED", "true".to_string()), ("NIP46_RELAYS", relay.url())];
 
     let original = Host::new(&admin);

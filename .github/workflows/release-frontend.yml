@@ -37,6 +37,14 @@ jobs:
   release:
     needs: targets
     if: needs.targets.outputs.targets != '[]'
+    # What release-image.yml may use, and no more: a called workflow cannot exceed its caller.
+    # contents: write is used only to attach a release's SBOM and digest; id-token and
+    # attestations only to sign and attest a release image (#104).
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
