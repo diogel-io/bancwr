@@ -5,6 +5,8 @@
 // members, and logs and exports naming the identity.
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../support/ports.rs"]
+mod ports;
 
 use bunker::approvals::Scheme;
 use bunker::connections_api::{ConnectionResponse, IssueTokenResponse};
@@ -13,7 +15,6 @@ use bunker::nip46::{Nip46Outcome, Nip46Request, NOT_CONNECTED};
 use bunker::registry::Role;
 use bunker::relay::RelayClient;
 use nostr_connect::prelude::*;
-use nostr_relay_builder::MockRelay;
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -78,7 +79,7 @@ async fn an_administrator_sees_every_identity_and_a_signer_only_those_granted() 
 
 #[tokio::test]
 async fn a_connection_issued_for_a_second_identity_signs_as_it_over_the_relay() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let brand = Keys::generate();
     let app = common::spawn_with_identities(true, Some(vec![relay.url()]), &[("Brand B", brand.clone())]).await;
     start_relay_client(&app, &relay.url()).await;
