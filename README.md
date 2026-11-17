@@ -59,6 +59,31 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:0.1.0
 podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
 ```
 
+### Verifying an image
+
+Release images are signed and carry signed build provenance and an SBOM, all keyless from
+Bancwr's release workflow (#104). Trunk images are not signed. Each GitHub release lists every
+image's digest, SBOM and their checksums. Verify the digest before you deploy it, never a tag,
+with cosign 3 or later and the GitHub CLI:
+
+```bash
+gh release download v0.3.0 -R diogel-io/bancwr -p 'bancwr-diogel-backend-0.3.0.*'
+sha256sum -c bancwr-diogel-backend-0.3.0.sha256
+IMAGE=$(cat bancwr-diogel-backend-0.3.0.digest)
+
+cosign verify "$IMAGE" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/diogel-io/bancwr/\.github/workflows/release-image\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$'
+gh attestation verify "oci://$IMAGE" -R diogel-io/bancwr \
+  --signer-workflow diogel-io/bancwr/.github/workflows/release-image.yml
+gh attestation verify "oci://$IMAGE" -R diogel-io/bancwr \
+  --signer-workflow diogel-io/bancwr/.github/workflows/release-image.yml \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
+
+Do the same for `bancwr-diogel-frontend`. [docs/releasing.md](docs/releasing.md#verifying-an-image)
+explains each check, and how to pin `compose.yaml` to the digest you verified.
+
 ## Running the Environment
 
 For local development in a JetBrains IDE, including the one-time bunker key setup, see
