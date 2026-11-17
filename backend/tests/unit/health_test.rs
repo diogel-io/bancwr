@@ -1,5 +1,8 @@
 // The bunker's health model (#27). Failures are induced, not asserted from a literal: a real
 // relay that is up, a port nothing listens on, a database whose table is gone.
+#[path = "../support/ports.rs"]
+mod ports;
+
 use bunker::config::Config;
 use bunker::db::Database;
 use bunker::registry::Role;
@@ -8,7 +11,6 @@ use bunker::relay::RelayClient;
 use bunker::signer::Signer;
 use bunker::state::AppState;
 use nostr::prelude::*;
-use nostr_relay_builder::MockRelay;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -138,7 +140,7 @@ async fn a_database_that_lost_its_audit_log_fails_and_names_no_path() {
 
 #[tokio::test]
 async fn one_relay_up_and_one_down_is_degraded_and_names_the_one_down() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let down = closed_relay();
     let urls = vec![relay.url(), down.clone()];
     let state = state(Database::new(":memory:").unwrap(), true, urls.clone());
@@ -157,7 +159,7 @@ async fn one_relay_up_and_one_down_is_degraded_and_names_the_one_down() {
 
 #[tokio::test]
 async fn every_relay_up_is_healthy() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let state = state(Database::new(":memory:").unwrap(), true, vec![relay.url()]);
     start_relays(&state, vec![relay.url()]).await;
 
