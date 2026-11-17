@@ -6,6 +6,8 @@
 // approval before signing (#102): approved, rejected and timed out, over the relay.
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../support/ports.rs"]
+mod ports;
 
 use bunker::connections_api::{ConnectionResponse, IssueTokenResponse, TokenResponse};
 use bunker::registry::Role;
@@ -39,7 +41,7 @@ async fn start_bunker_relay_client(app: &common::TestApp, relay: &str) {
 
 #[tokio::test]
 async fn a_standard_nip46_client_connects_with_an_issued_token_and_signs_only_what_was_granted() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     let user = app.register(Role::Signer);
     start_bunker_relay_client(&app, &relay.url()).await;
@@ -79,7 +81,7 @@ async fn a_standard_nip46_client_connects_with_an_issued_token_and_signs_only_wh
 
 #[tokio::test]
 async fn a_connection_survives_a_bunker_restart() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     let token: IssueTokenResponse = issue(&app, &app.admin.public_key().to_hex(), json!({ "label": "Phone", "kinds": [1] })).await.json().await.unwrap();
@@ -208,7 +210,7 @@ async fn issuing_is_validated_and_refused_with_nip46_off() {
 
 #[tokio::test]
 async fn a_standard_nip46_client_encrypts_and_decrypts_only_with_the_methods_granted() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     let user = app.register(Role::Signer);
     start_bunker_relay_client(&app, &relay.url()).await;
@@ -250,7 +252,7 @@ async fn a_standard_nip46_client_encrypts_and_decrypts_only_with_the_methods_gra
 
 #[tokio::test]
 async fn a_standard_nip46_client_encrypts_and_decrypts_nip04() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     let token: IssueTokenResponse = issue(&app, &app.admin.public_key().to_hex(), json!({ "label": "Old app", "kinds": [4], "methods": ["nip04_encrypt", "nip04_decrypt"] })).await.json().await.unwrap();
@@ -294,7 +296,7 @@ async fn nip44_request(client: &Client, keys: &Keys, bunker: PublicKey, method: 
 
 #[tokio::test]
 async fn a_nip44_client_is_answered_in_nip44_with_kind_24133() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     let token: IssueTokenResponse = issue(&app, &app.admin.public_key().to_hex(), json!({ "label": "nostr-tools", "kinds": [1] })).await.json().await.unwrap();
@@ -315,7 +317,7 @@ async fn a_nip44_client_is_answered_in_nip44_with_kind_24133() {
 
 #[tokio::test]
 async fn a_standard_nip46_client_on_a_connection_with_a_lifetime_signs_and_is_shown_its_end() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     let admin = app.admin.public_key().to_hex();
@@ -346,7 +348,7 @@ async fn a_standard_nip46_client_on_a_connection_with_a_lifetime_signs_and_is_sh
 
 #[tokio::test]
 async fn an_expired_connection_is_refused_over_the_relay_and_listed_as_expired() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     let admin = app.admin.public_key().to_hex();
@@ -637,7 +639,7 @@ async fn a_rate_limit_is_issued_reported_on_the_token_and_connection_and_default
 
 #[tokio::test]
 async fn a_standard_nip46_client_past_its_burst_is_refused_over_the_relay_and_counted() {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     let admin = app.admin.public_key().to_hex();
@@ -701,7 +703,7 @@ async fn waiting(app: &common::TestApp) -> bunker::approvals_api::ApprovalRespon
 }
 
 async fn spawn_relay_app() -> (MockRelay, common::TestApp) {
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let app = common::spawn_with(true, Some(vec![relay.url()])).await;
     start_bunker_relay_client(&app, &relay.url()).await;
     (relay, app)

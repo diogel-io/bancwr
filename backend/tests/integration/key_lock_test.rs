@@ -2,11 +2,13 @@
 // `bunker import-key`, and the locked bunker refusing to sign, with `/health`, `bunker healthcheck`
 // and the status saying why, for a plain key still set, a missing or wrong root credential and a
 // tampered key file. Ends with a healthy start that signs a NIP-46 request with the imported key.
+#[path = "../support/ports.rs"]
+mod ports;
+
 use bunker::health::{Check, CheckStatus, Overall, LOCKED_RELAYS};
 use bunker::key_store::{KeyStoreError, PLAIN_KEY_NOT_IMPORTED, PLAIN_KEY_STILL_SET};
 use bunker::proxy_auth::{proxy_signature, IDENTITY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use nostr_connect::prelude::*;
-use nostr_relay_builder::MockRelay;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -65,10 +67,6 @@ impl Deployment {
     }
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
 /// A running `bunker serve`, killed when dropped.
 struct Running {
     child: Child,
@@ -86,19 +84,42 @@ impl Drop for Running {
 }
 
 impl Running {
+    /// `bunker serve` on a free port, started again on a new port if it exits before listening.
     async fn start(deployment: &Deployment, env: &[(&str, String)]) -> Running {
-        let port = free_port();
-        let mut env = env.to_vec();
-        env.push(("BUNKER_PORT", port.to_string()));
-        let child = deployment.command(&[], &env).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let running = Running { child, port, client: reqwest::Client::new(), admin: deployment.admin.public_key().to_hex() };
+        let mut exits = Vec::new();
+        for _ in 0..ports::ATTEMPTS {
+            let port = ports::free_port();
+            let mut env = env.to_vec();
+            env.push(("BUNKER_PORT", port.to_string()));
+            let child = deployment.command(&[], &env).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            let mut running = Running { child, port, client: reqwest::Client::new(), admin: deployment.admin.public_key().to_hex() };
+            match running.listening().await {
+                Ok(()) => return running,
+                // Dropping it reaps the exited child.
+                Err(status) => exits.push(format!("port {}: {}", port, status)),
+            }
+        }
+        panic!("the bunker exited before listening on all {} attempts: {}", ports::ATTEMPTS, exits.join("; "));
+    }
+
+    /// Waits for `/health`. Err with the exit status if the child exits first, as it does when
+    /// another socket took its port (#114): the locked bunker returns the bind error, the unlocked
+    /// one logs it and exits 0. The child is checked again once `/health` answers, a cheap guard
+    /// against taking another test's bunker on the same port for this one.
+    async fn listening(&mut self) -> Result<(), std::process::ExitStatus> {
         for _ in 0..100 {
-            if running.client.get(running.url("/health")).send().await.is_ok() {
-                return running;
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return Err(status);
+            }
+            if self.client.get(self.url("/health")).send().await.is_ok() {
+                return match self.child.try_wait().unwrap() {
+                    Some(status) => Err(status),
+                    None => Ok(()),
+                };
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("the bunker did not start listening");
+        panic!("the bunker did not start listening on port {}", self.port);
     }
 
     fn url(&self, path: &str) -> String {
@@ -185,7 +206,7 @@ async fn a_0_1_0_deployment_migrates_and_signs_with_the_encrypted_key() {
     let bunker = Keys::generate();
     let npub = bunker.public_key().to_bech32().unwrap();
     let deployment = Deployment::new(&bunker);
-    let relay = MockRelay::run().await.unwrap();
+    let relay = ports::run_mock_relay().await;
     let nip46 = [("NIP46_ENABLED", "true".to_string()), ("NIP46_RELAYS", relay.url())];
     let plain_file = ("BUNKER_NSEC_FILE", deployment.path("secrets/bunker_nsec").display().to_string());
     let root = root_env(&deployment, "secrets/root");
