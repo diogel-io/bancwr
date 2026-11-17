@@ -1,3 +1,6 @@
+#[path = "../support/ports.rs"]
+mod ports;
+
 use bunker::db::Database;
 use bunker::relay::RelayClient;
 use bunker::signer::Signer;
@@ -55,7 +58,6 @@ async fn test_relay_client_empty_relays() {
 mod set_relays {
     use super::*;
     use bunker::relay::NIP46_KIND;
-    use nostr_relay_builder::MockRelay;
     use nostr_sdk::{Client, RelayPoolNotification, RelayStatus};
     use std::time::Duration;
 
@@ -125,8 +127,8 @@ mod set_relays {
 
     #[tokio::test]
     async fn adds_and_removes_relays_on_a_running_client_and_answers_through_the_new_ones() {
-        let first = MockRelay::run().await.unwrap();
-        let second = MockRelay::run().await.unwrap();
+        let first = crate::ports::run_mock_relay().await;
+        let second = crate::ports::run_mock_relay().await;
         let (state, keys) = state();
 
         // Started with no relays (NIP-46 on, nothing configured yet): it must still run.

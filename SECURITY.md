@@ -142,6 +142,9 @@ A change to any of these needs the security review:
 - [ ] Every new dependency is justified in the pull request and the lockfile change is reviewed.
 - [ ] Workflow and image changes keep the test and Trivy gates in front of publishing, keep
       secrets out of logs, and do not widen token permissions without a reason (T12).
+- [ ] Every release image stays signed, with provenance and an SBOM, by the digest that was
+      scanned, and is checked with `.github/scripts/verify-image.sh` before the release finishes.
+      A changed signer identity is changed in that script and the docs together (T12; #104).
 
 **Tests**
 
