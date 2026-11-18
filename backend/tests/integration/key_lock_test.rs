@@ -7,7 +7,7 @@ mod ports;
 
 use bunker::health::{Check, CheckStatus, Overall, LOCKED_RELAYS};
 use bunker::key_store::{KeyStoreError, PLAIN_KEY_NOT_IMPORTED, PLAIN_KEY_STILL_SET};
-use bunker::proxy_auth::{proxy_signature, IDENTITY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
+use bunker::proxy_auth::{proxy_signature, Signed, IDENTITY_HEADER, NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use nostr_connect::prelude::*;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -127,13 +127,29 @@ impl Running {
     }
 
     fn signed(&self, method: reqwest::Method, path: &str, identity: &str) -> reqwest::RequestBuilder {
+        self.signed_body(method, path, identity, Vec::new())
+    }
+
+    /// A signed request with a JSON body: the signature covers the body's exact bytes.
+    fn signed_json(&self, method: reqwest::Method, path: &str, identity: &str, body: &Value) -> reqwest::RequestBuilder {
+        let bytes = serde_json::to_vec(body).unwrap();
+        self.signed_body(method, path, identity, bytes).header("content-type", "application/json")
+    }
+
+    fn signed_body(&self, method: reqwest::Method, path: &str, identity: &str, body: Vec<u8>) -> reqwest::RequestBuilder {
         let timestamp = chrono::Utc::now().timestamp();
-        let signature = proxy_signature(SECRET.as_bytes(), timestamp, method.as_str(), path, identity);
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let signature = proxy_signature(
+            SECRET.as_bytes(),
+            &Signed { timestamp, nonce: &nonce, method: method.as_str(), path, identity, body: &body },
+        );
         self.client
             .request(method, self.url(path))
             .header(IDENTITY_HEADER, identity)
             .header(TIMESTAMP_HEADER, timestamp.to_string())
+            .header(NONCE_HEADER, nonce)
             .header(SIGNATURE_HEADER, signature)
+            .body(body)
     }
 
     async fn health(&self) -> (u16, Value) {
@@ -179,7 +195,7 @@ impl Running {
 
         // Nothing else answers, and no connection token can be issued.
         let admin = self.admin.clone();
-        let res = self.signed(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin).json(&json!({ "label": "x", "kinds": [1] })).send().await.unwrap();
+        let res = self.signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin, &json!({ "label": "x", "kinds": [1] })).send().await.unwrap();
         assert_eq!(res.status(), 503);
         assert_eq!(self.signed(reqwest::Method::GET, "/api/bunker/config", &admin).send().await.unwrap().status(), 503);
     }
@@ -259,8 +275,7 @@ async fn a_0_1_0_deployment_migrates_and_signs_with_the_encrypted_key() {
 
     tokio::time::sleep(Duration::from_millis(500)).await; // let the relay client subscribe
     let res = running
-        .signed(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin)
-        .json(&json!({ "label": "Migration test", "kinds": [1] }))
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &admin, &json!({ "label": "Migration test", "kinds": [1] }))
         .send()
         .await
         .unwrap();
@@ -292,6 +307,36 @@ async fn a_missing_or_wrong_credential_or_a_tampered_file_locks_the_bunker() {
     {
         let env = [nip46[0].clone(), nip46[1].clone(), root.clone()];
         Running::start(&deployment, &env).await.assert_locked(KeyStoreError::KeyFileMissing.reason(), "").await;
+    }
+
+    // The locked bunker accepts each signed request once, as the unlocked one does.
+    let env = [nip46[0].clone(), nip46[1].clone(), root.clone()];
+    let captured = {
+        let running = Running::start(&deployment, &env).await;
+        let status = running.signed(reqwest::Method::GET, "/api/bunker/status", "service").build().unwrap();
+        assert_eq!(running.client.execute(status.try_clone().unwrap()).await.unwrap().status(), 200);
+        let again = running.client.execute(status).await.unwrap();
+        assert_eq!(again.status(), 401);
+        let body: Value = again.json().await.unwrap();
+        assert_eq!((body["error"].as_str(), body["reason"].as_str()), (Some("not_authenticated"), Some("replayed")));
+
+        // Signed while this process runs, and never sent to it.
+        running.signed(reqwest::Method::GET, "/api/bunker/status", "service").build().unwrap()
+    };
+
+    // Nor does a restart let a request signed before it through: still inside the time window,
+    // but from before the new process started.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    {
+        let running = Running::start(&deployment, &env).await;
+        let mut replay = captured;
+        *replay.url_mut() = running.url("/api/bunker/status").parse().unwrap();
+        let res = running.client.execute(replay).await.unwrap();
+        assert_eq!(res.status(), 401);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["reason"], "stale");
+        // A request signed now passes.
+        assert_eq!(running.signed(reqwest::Method::GET, "/api/bunker/status", "service").send().await.unwrap().status(), 200);
     }
 
     assert_eq!(deployment.import(&[plain_file, root.clone()]).status.code(), Some(0));

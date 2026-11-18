@@ -128,6 +128,16 @@ impl RootKey {
         }
     }
 
+    /// A 32-byte key for one purpose, derived from the root credential: HMAC-SHA256 keyed with the
+    /// root credential over `label`. Each label gives an independent key, and none of them is the
+    /// key file's encryption key.
+    pub fn derive_subkey(&self, label: &str) -> Zeroizing<[u8; 32]> {
+        use hmac::{Hmac, Mac};
+        let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(self.0.as_ref()).expect("HMAC takes a key of any length");
+        mac.update(label.as_bytes());
+        Zeroizing::new(mac.finalize().into_bytes().into())
+    }
+
     fn cipher(&self) -> XChaCha20Poly1305 {
         XChaCha20Poly1305::new(self.0.as_ref().into())
     }

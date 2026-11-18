@@ -101,6 +101,7 @@ impl Database {
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 5000;
+             PRAGMA trusted_schema = OFF;
              PRAGMA journal_mode = WAL;",
         )?;
 
@@ -1304,8 +1305,9 @@ impl Database {
     /// After a restore (#95): revokes every active NIP-46 connection (`restored`) and every token
     /// neither used nor revoked, in one transaction, so apps pair again with new tokens and nothing
     /// shut out after the backup comes back. Members, roles, the signing log and the relays are
-    /// untouched. Returns how many connections and tokens it revoked.
-    pub fn revoke_all_for_restore(&self, now: DateTime<Utc>) -> anyhow::Result<(usize, usize)> {
+    /// untouched. The audit event records when the restored backup was taken, `backup_created_at`.
+    /// Returns how many connections and tokens it revoked.
+    pub fn revoke_all_for_restore(&self, backup_created_at: DateTime<Utc>, now: DateTime<Utc>) -> anyhow::Result<(usize, usize)> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let members: Vec<String> = {
@@ -1324,7 +1326,15 @@ impl Database {
         }
         audit::record(
             &tx,
-            &Audit { detail: Some(format!("connections={};tokens={}", connections, tokens)), ..Audit::new(action::RESTORED) },
+            &Audit {
+                detail: Some(format!(
+                    "connections={};tokens={};backup_created_at={}",
+                    connections,
+                    tokens,
+                    backup_created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                )),
+                ..Audit::new(action::RESTORED)
+            },
             now,
         )?;
         tx.commit()?;

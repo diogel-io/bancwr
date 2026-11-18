@@ -42,14 +42,18 @@ the member lookup that sign-in needs answer; every other route answers `503`. Un
 
 `bunker backup` writes an encrypted archive of a consistent database snapshot and the key file to
 standard output, safe while the bunker runs. `bunker restore` reads one from standard input into an
-empty data directory and revokes every NIP-46 connection and unused token (#95). Both read the
+empty data directory, revoking every NIP-46 connection and unused token before the database is put
+there (#95). Both read the
 backup passphrase, 16 characters or more and not the root credential, from the file
-`BANCWR_BACKUP_KEY_FILE` names; `restore` also needs the root credential, and checks that it
-decrypts the archived key before writing anything:
+`BANCWR_BACKUP_KEY_FILE` names, and the root credential from `BANCWR_ROOT_KEY_FILE`: an archive is
+encrypted under the passphrase and authenticated under the root credential. `restore` checks that
+the root credential decrypts the archived key and verifies the archive, and that its database holds
+only tables and indexes, before writing anything:
 
 ```bash
 (umask 077; openssl rand -base64 24 > secrets/bancwr_backup_key)
-BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key cargo run -- backup > bancwr.bcwr
+BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key \
+  cargo run -- backup > bancwr.bcwr
 BANCWR_BACKUP_KEY_FILE=secrets/bancwr_backup_key BANCWR_ROOT_KEY_FILE=secrets/bancwr_root_key \
   DATABASE_PATH=restored/bancwr.db cargo run -- restore < bancwr.bcwr
 ```
@@ -83,11 +87,14 @@ The browser never calls the bunker: it calls the frontend's Nitro server, which 
 | Header | Value |
 |--------|-------|
 | `x-bancwr-identity` | the signed-in user's pubkey, lowercase hex, or `service` (the frontend acting for itself during sign-in) |
-| `x-bancwr-timestamp` | Unix time, within 30 s of the bunker's clock |
-| `x-bancwr-signature` | lowercase hex HMAC-SHA256 of `v1\n<timestamp>\n<METHOD>\n<path?query>\n<identity>` under `BANCWR_PROXY_SECRET` |
+| `x-bancwr-timestamp` | Unix time, within 30 s of the bunker's clock and not before the bunker process started (401 `stale` otherwise) |
+| `x-bancwr-nonce` | 32 lowercase hex characters, new for every request |
+| `x-bancwr-signature` | lowercase hex HMAC-SHA256 of `v2\n<timestamp>\n<nonce>\n<METHOD>\n<path?query>\n<identity>\n<body-sha256>` under `BANCWR_PROXY_SECRET`, where `<body-sha256>` is the lowercase hex SHA-256 of the body's exact bytes (of nothing, for no body) |
 
-The frontend holds the same secret as `NUXT_PROXY_SECRET`. The bunker then looks the pubkey up in
-the vault on every request.
+The frontend holds the same secret as `NUXT_PROXY_SECRET`. The bunker accepts each nonce once, so a
+signed request cannot be sent again, or with another body; a reused nonce is 401 with reason
+`replayed`, and a body over 2 MiB is 413. The bunker then looks the pubkey up in the vault on every
+request.
 
 #### Access by role (#77)
 
@@ -306,7 +313,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `retention_changed` | An administrator sets the retention policy | `max_age_days=…;max_rows=…` |
 | `logs_pruned` | The policy deleted rows | `signatures=…;audit_events=…` |
 | `logs_exported` | An administrator exports | `format=…;from=…;to=…` |
-| `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…` |
+| `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…;backup_created_at=…`, when the restored backup was taken (RFC 3339, UTC) |
 | `nip44_decrypt`, `nip04_decrypt` | A NIP-46 app asks the bunker to decrypt (#97) | `peer=…`: the hex key of the other party |
 | `approval_requested` | A `sign_event` of a kind that needs approval is held (#102) | `request=…;kind=…;event_id=…` |
 | `approval_approved`, `approval_rejected` | An administrator decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;note=…` when given |

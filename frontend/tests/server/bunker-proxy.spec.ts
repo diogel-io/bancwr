@@ -18,7 +18,7 @@ const forwarded = vi.fn(async (_url: string, _init: { method: string, body?: unk
 let handle: (request: Request) => Promise<Response>
 
 beforeAll(async () => {
-  for (const name of ['defineEventHandler', 'getMethod', 'getHeader', 'getRequestURL', 'createError', 'readBody', 'setResponseHeaders', 'sendStream'] as const) {
+  for (const name of ['defineEventHandler', 'getMethod', 'getHeader', 'getRequestURL', 'createError', 'readRawBody', 'setResponseHeaders', 'sendStream'] as const) {
     vi.stubGlobal(name, h3[name])
   }
   vi.stubGlobal('$fetch', forwarded)
@@ -54,7 +54,8 @@ describe('the proxy to the bunker', () => {
     expect(forwarded).toHaveBeenCalledOnce()
     const [url, init] = forwarded.mock.calls[0]!
     expect(url).toBe('http://bunker:3000/api/bunker/team')
-    expect(init.body).toEqual({ name: 'a' })
+    // As the exact string that arrived: the signature covers it (GHSA-cmg4-5gjv-6rrr).
+    expect(init.body).toBe('{"name":"a"}')
     expect(init.headers['Content-Type']).toBe('application/json; charset=utf-8')
   })
 

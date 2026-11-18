@@ -6,23 +6,36 @@
 //!   the two are kept apart, so an archive and its passphrase together still hold no usable key.
 //! - An archive is a header line, then a 24-byte nonce and the XChaCha20-Poly1305 ciphertext:
 //!
-//!   `bancwr-backup v1 <log_n> <r> <p> <salt hex> <public key hex> <schema version> <created at>`
+//!   `bancwr-backup v2 <log_n> <r> <p> <salt hex> <public key hex> <schema version> <created at>`
 //!
 //!   The archive key is scrypt of the passphrase with the salt and the parameters given. The whole
 //!   header line is the AEAD's associated data, so changing any field fails decryption.
 //! - The plaintext is the database snapshot and the key file's text, each prefixed with its length
-//!   as eight big-endian bytes. The key file is copied as it is, so the archive holds the signing
-//!   key only as ciphertext under the root credential, which is never in an archive.
+//!   as eight big-endian bytes, then a 32-byte tag. The key file is copied as it is, so the archive
+//!   holds the signing key only as ciphertext under the root credential, which is never in an
+//!   archive.
+//! - The tag is HMAC-SHA256 of the header line, a newline and the two length-prefixed fields, under
+//!   a key derived from the root credential (`RootKey::derive_subkey` with `MAC_LABEL`). So an
+//!   archive is authenticated under both secrets: a restore needs the passphrase to decrypt it and
+//!   the root credential that made it to verify it, and only then writes anything. Version 1
+//!   archives, which had no tag, are refused.
+//! - A restored database may hold only tables and indexes, which is all the migrations create.
+//! - A restore migrates the staged copy, revokes every connection and unused token in it and
+//!   records the `restored` audit event, all before the copy is linked into the data directory. So
+//!   a database a restore leaves in the data directory never holds access the restore revokes.
 //!
 //! Every error has fixed operator wording (`BackupError::reason`), which never names a path or
 //! includes key material.
 
+use crate::db::Database;
 use crate::key_store::{self, KeyStoreError, RootKey};
 use crate::migrations;
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use chacha20poly1305::aead::rand_core::RngCore;
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use nostr::prelude::*;
 use nostr::util::hex;
 use rusqlite::{Connection, OpenFlags};
@@ -42,7 +55,10 @@ pub const MIN_PASSPHRASE_CHARS: usize = 16;
 pub const RESTORED_REASON: &str = "restored";
 
 const MAGIC: &str = "bancwr-backup";
-const VERSION: &str = "v1";
+const VERSION: &str = "v2";
+/// The label the tag's key is derived from the root credential with.
+const MAC_LABEL: &str = "bancwr-backup-mac v1";
+const TAG_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 const SALT_LEN: usize = 32;
 const KEY_LEN: usize = 32;
@@ -99,8 +115,12 @@ pub enum BackupError {
     CostTooHigh,
     #[error("the passphrase does not decrypt the archive: wrong passphrase, or an altered archive")]
     WrongPassphraseOrTampered,
+    #[error("the archive does not verify under the root credential")]
+    NotMadeUnderRootKey,
     #[error("the archive's database fails its integrity check")]
     DatabaseDamaged,
+    #[error("the archive's database holds a trigger, view or virtual table")]
+    UnexpectedSchema,
     #[error("the archive's key file does not match the archive's public key")]
     KeyMismatch,
     #[error("the archive's database is newer than this bunker")]
@@ -136,7 +156,9 @@ impl BackupError {
             Self::UnsupportedVersion => "This archive was made by a version of Bancwr that this bunker cannot read.",
             Self::CostTooHigh => "The archive asks for more memory or time than a restore allows, so it was not made by Bancwr.",
             Self::WrongPassphraseOrTampered => "The backup passphrase does not decrypt the archive: either it is the wrong passphrase, or the archive has been altered.",
+            Self::NotMadeUnderRootKey => "The archive does not verify under the root credential: either it was made under a different root credential, or it has been altered. Restore with the root credential the backup was made under.",
             Self::DatabaseDamaged => "The database in the archive fails its integrity check. Use another archive.",
+            Self::UnexpectedSchema => "The database in the archive holds a trigger, view or virtual table, which a Bancwr database never has. Use another archive.",
             Self::KeyMismatch => "The key file in the archive does not match the archive's public key, so the archive has been altered.",
             Self::SchemaTooNew => "The archive comes from a newer Bancwr. Restore it with that version or later.",
             Self::DataDirNotEmpty => "The data directory already holds a database or key file. Restore only into an empty data directory: stop the bunker and move its data aside first.",
@@ -215,8 +237,29 @@ impl fmt::Debug for Contents {
     }
 }
 
-/// Encrypts `contents` under `passphrase` into an archive, with a fresh salt and nonce.
-pub fn seal(passphrase: &Passphrase, contents: &Contents, cost: Cost) -> Result<Vec<u8>, BackupError> {
+/// The two length-prefixed fields: the database, then the key file.
+fn fields(database: &[u8], key_file: &[u8]) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(database.len() + key_file.len() + 16 + TAG_LEN));
+    out.extend_from_slice(&(database.len() as u64).to_be_bytes());
+    out.extend_from_slice(database);
+    out.extend_from_slice(&(key_file.len() as u64).to_be_bytes());
+    out.extend_from_slice(key_file);
+    out
+}
+
+/// The tag's HMAC over the header line, a newline and the fields, keyed from the root credential.
+fn tag_mac(root: &RootKey, header: &str, fields: &[u8]) -> Hmac<Sha256> {
+    let key = root.derive_subkey(MAC_LABEL);
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key.as_ref()).expect("HMAC takes a key of any length");
+    mac.update(header.as_bytes());
+    mac.update(b"\n");
+    mac.update(fields);
+    mac
+}
+
+/// Encrypts `contents` under `passphrase` into an archive, with a fresh salt and nonce, and tags it
+/// under `root`, the root credential its key file is encrypted under.
+pub fn seal(passphrase: &Passphrase, root: &RootKey, contents: &Contents, cost: Cost) -> Result<Vec<u8>, BackupError> {
     let mut salt = [0u8; SALT_LEN];
     OsRng.fill_bytes(&mut salt);
     let key = passphrase.derive(&salt, cost)?;
@@ -232,11 +275,9 @@ pub fn seal(passphrase: &Passphrase, contents: &Contents, cost: Cost) -> Result<
         contents.schema_version,
         contents.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     );
-    let mut plaintext = Zeroizing::new(Vec::with_capacity(contents.database.len() + contents.key_file.len() + 16));
-    plaintext.extend_from_slice(&(contents.database.len() as u64).to_be_bytes());
-    plaintext.extend_from_slice(&contents.database);
-    plaintext.extend_from_slice(&(contents.key_file.len() as u64).to_be_bytes());
-    plaintext.extend_from_slice(contents.key_file.as_bytes());
+    let mut plaintext = fields(&contents.database, contents.key_file.as_bytes());
+    let tag = tag_mac(root, &header, &plaintext).finalize().into_bytes();
+    plaintext.extend_from_slice(&tag);
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     let ciphertext = XChaCha20Poly1305::new(key.as_ref().into())
         .encrypt(&nonce, Payload { msg: &plaintext, aad: header.as_bytes() })
@@ -306,8 +347,9 @@ fn take_field(bytes: &[u8]) -> Result<(&[u8], &[u8]), BackupError> {
 }
 
 /// Decrypts an archive and checks that its parts agree: the key file must record the archive's
-/// public key, and the schema must be one this bunker knows. Does not touch the disk.
-pub fn open(passphrase: &Passphrase, archive: &[u8]) -> Result<Contents, BackupError> {
+/// public key, `root` must decrypt it, the tag must verify under `root`, and the schema must be one
+/// this bunker knows. Does not touch the disk.
+pub fn open(passphrase: &Passphrase, root: &RootKey, archive: &[u8]) -> Result<Contents, BackupError> {
     let (header, body) = parse_header(archive)?;
     if body.len() < NONCE_LEN {
         return Err(BackupError::NotAnArchive);
@@ -319,7 +361,11 @@ pub fn open(passphrase: &Passphrase, archive: &[u8]) -> Result<Contents, BackupE
             .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad: header.line.as_bytes() })
             .map_err(|_| BackupError::WrongPassphraseOrTampered)?,
     );
-    let (database, rest) = take_field(&plaintext)?;
+    if plaintext.len() < TAG_LEN {
+        return Err(BackupError::WrongPassphraseOrTampered);
+    }
+    let (body, tag) = plaintext.split_at(plaintext.len() - TAG_LEN);
+    let (database, rest) = take_field(body)?;
     let (key_file, rest) = take_field(rest)?;
     if !rest.is_empty() {
         return Err(BackupError::WrongPassphraseOrTampered);
@@ -329,6 +375,9 @@ pub fn open(passphrase: &Passphrase, archive: &[u8]) -> Result<Contents, BackupE
         Ok(recorded) if recorded == header.public_key => {}
         _ => return Err(BackupError::KeyMismatch),
     }
+    // The root credential first, so the wrong one is named as such, then the tag, in constant time.
+    root_decrypts(root, &key_file)?;
+    tag_mac(root, header.line, body).verify_slice(tag).map_err(|_| BackupError::NotMadeUnderRootKey)?;
     if header.schema_version > migrations::LATEST_VERSION {
         return Err(BackupError::SchemaTooNew);
     }
@@ -339,6 +388,15 @@ pub fn open(passphrase: &Passphrase, archive: &[u8]) -> Result<Contents, BackupE
         schema_version: header.schema_version,
         created_at: header.created_at,
     })
+}
+
+/// Checks that `root` decrypts `key_file`.
+fn root_decrypts(root: &RootKey, key_file: &str) -> Result<(), BackupError> {
+    match key_store::decrypt(root, key_file) {
+        Ok(_) => Ok(()),
+        Err(KeyStoreError::WrongRootKeyOrTampered) | Err(KeyStoreError::PublicKeyMismatch) => Err(BackupError::RootKeyDoesNotDecrypt),
+        Err(error) => Err(BackupError::RootKey(error)),
+    }
 }
 
 /// What a snapshot holds, for the summary `bunker backup` prints.
@@ -370,9 +428,20 @@ impl Temporary {
 }
 
 impl Drop for Temporary {
+    /// Removes the file and any journal SQLite left beside it.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let _ = fs::remove_file(with_suffix(&self.0, suffix));
+        }
     }
+}
+
+/// `path` with `suffix` appended to its file name, as SQLite names a database's journals.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 fn directory_of(path: &Path) -> PathBuf {
@@ -388,8 +457,27 @@ fn snapshot_error(error: impl fmt::Display) -> BackupError {
 
 /// Opens one of the plain copies made on the way, never creating it. Read-write, so a copy left in
 /// WAL mode needs no `-shm` file to exist first.
+/// With `trusted_schema` off, so nothing in the copy's schema runs anything but innocuous functions.
 fn open_copy(path: &Path) -> Result<Connection, String> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "trusted_schema", "OFF").map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+/// Whether a database file holds only tables and indexes, which is all the migrations create
+/// (indexes include SQLite's own `sqlite_autoindex_*`): no trigger, view or virtual table.
+fn only_tables_and_indexes(path: &Path) -> Result<bool, String> {
+    let conn = open_copy(path)?;
+    let others: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type NOT IN ('table', 'index')
+                OR (type = 'table' AND upper(ltrim(coalesce(sql, ''))) LIKE 'CREATE VIRTUAL%')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(others == 0)
 }
 
 /// Checks a database file: `PRAGMA integrity_check` must say `ok`. Returns its schema version.
@@ -451,32 +539,61 @@ pub fn snapshot(db_path: &Path, key_path: &Path, now: DateTime<Utc>) -> Result<(
 
 /// The files a data directory must not hold before a restore.
 fn occupied(db_path: &Path, key_path: &Path) -> bool {
-    let with_suffix = |suffix: &str| {
-        let mut name = db_path.as_os_str().to_owned();
-        name.push(suffix);
-        PathBuf::from(name)
-    };
-    [db_path.to_path_buf(), with_suffix("-wal"), with_suffix("-shm"), with_suffix("-journal"), key_path.to_path_buf()]
+    [db_path.to_path_buf(), with_suffix(db_path, "-wal"), with_suffix(db_path, "-shm"), with_suffix(db_path, "-journal"), key_path.to_path_buf()]
         .iter()
         .any(|path| path.exists())
 }
 
+/// What a restore revoked, and how many members it brought back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Restored {
+    pub connections: usize,
+    pub tokens: usize,
+    pub members: usize,
+}
+
+/// Migrates the staged copy at `path`, revokes every connection and unused token in it, records
+/// the `restored` audit event, and leaves it one self-contained file with no journal beside it.
+fn revoke_staged(path: &Path, backup_created_at: DateTime<Utc>, now: DateTime<Utc>) -> Result<Restored, BackupError> {
+    let failed = |e: anyhow::Error| BackupError::OpenRestored(e.to_string());
+    let text = path.to_str().ok_or_else(|| BackupError::OpenRestored("the data directory's path is not UTF-8".to_string()))?;
+    let db = Database::new(text).map_err(failed)?;
+    let (connections, tokens) = db.revoke_all_for_restore(backup_created_at, now).map_err(failed)?;
+    let members = db.get_team_members().map_err(failed)?.len();
+    // Out of WAL, so everything is in the one file that is linked in; the bunker turns WAL back on.
+    let mode: String = db
+        .lock()
+        .map_err(failed)?
+        .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        .map_err(|e| BackupError::OpenRestored(e.to_string()))?;
+    drop(db);
+    if !mode.eq_ignore_ascii_case("delete") || with_suffix(path, "-wal").exists() {
+        return Err(BackupError::OpenRestored("the restored database could not leave WAL mode".to_string()));
+    }
+    fs::File::open(path).and_then(|file| file.sync_all()).map_err(BackupError::WriteRestore)?;
+    Ok(Restored { connections, tokens, members })
+}
+
 /// Puts an opened archive's database and key file into an empty data directory, after checking
-/// that the root credential decrypts the key and that the database passes its integrity check.
-/// Nothing is written until every check passes; a failure while writing removes what it wrote.
-/// The caller then opens the database and revokes its connections.
-pub fn place(contents: &Contents, root: Result<RootKey, KeyStoreError>, db_path: &Path, key_path: &Path) -> Result<(), BackupError> {
+/// that the root credential decrypts the key, that the database holds only tables and indexes, and
+/// that it passes its integrity check. Then, still on a staged copy outside the data directory's
+/// names, migrates it, revokes every NIP-46 connection and unused token as at `now`, and records
+/// the restore. Only then is it linked in, so the data directory never holds the restored database
+/// with that access still live.
+/// Nothing is written into the data directory until all of that succeeds; a failure while writing
+/// removes what it wrote.
+pub fn place(
+    contents: &Contents,
+    root: Result<RootKey, KeyStoreError>,
+    db_path: &Path,
+    key_path: &Path,
+    now: DateTime<Utc>,
+) -> Result<Restored, BackupError> {
     if occupied(db_path, key_path) {
         return Err(BackupError::DataDirNotEmpty);
     }
     let root = root.map_err(BackupError::RootKey)?;
-    match key_store::decrypt(&root, &contents.key_file) {
-        Ok(_) => {}
-        Err(KeyStoreError::WrongRootKeyOrTampered) | Err(KeyStoreError::PublicKeyMismatch) => {
-            return Err(BackupError::RootKeyDoesNotDecrypt)
-        }
-        Err(error) => return Err(BackupError::RootKey(error)),
-    }
+    root_decrypts(&root, &contents.key_file)?;
 
     let dir = directory_of(db_path);
     if !dir.exists() {
@@ -492,10 +609,17 @@ pub fn place(contents: &Contents, root: Result<RootKey, KeyStoreError>, db_path:
     let (staged, mut file) = Temporary::create(&dir, "restore").map_err(BackupError::WriteRestore)?;
     file.write_all(&contents.database).and_then(|_| file.sync_all()).map_err(BackupError::WriteRestore)?;
     drop(file);
+    // The schema first, so nothing else reads a file that holds anything but tables and indexes.
+    match only_tables_and_indexes(&staged.0) {
+        Ok(true) => {}
+        Ok(false) => return Err(BackupError::UnexpectedSchema),
+        Err(_) => return Err(BackupError::DatabaseDamaged),
+    }
     match check_database(&staged.0) {
         Ok(version) if version == contents.schema_version => {}
         _ => return Err(BackupError::DatabaseDamaged),
     }
+    let restored = revoke_staged(&staged.0, contents.created_at, now)?;
     // A hard link fails if the database appeared meanwhile, so nothing is ever replaced.
     fs::hard_link(&staged.0, db_path).map_err(|error| match error.kind() {
         io::ErrorKind::AlreadyExists => BackupError::DataDirNotEmpty,
@@ -513,5 +637,5 @@ pub fn place(contents: &Contents, root: Result<RootKey, KeyStoreError>, db_path:
     if let Ok(dir) = fs::File::open(&dir) {
         let _ = dir.sync_all();
     }
-    Ok(())
+    Ok(restored)
 }

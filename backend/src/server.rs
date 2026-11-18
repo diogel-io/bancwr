@@ -2,7 +2,7 @@ use crate::health::{Check, Overall};
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
 use crate::db::{RemoveOutcome, RoleChangeOutcome};
-use crate::proxy_auth::{Access, Guard};
+use crate::proxy_auth::{Access, Guard, Nonces};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -441,10 +441,12 @@ pub fn create_router(state: AppState) -> Router {
         .clone()
         .map(|secret| -> std::sync::Arc<[u8]> { secret.into_bytes().into() });
 
-    // Each group of /api/bunker/* routes, behind the guard for who may call it (#25).
+    // Each group of /api/bunker/* routes, behind the guard for who may call it (#25). One set of
+    // used nonces for all of them, so a signed request cannot be sent twice to any route.
+    let nonces = std::sync::Arc::new(Nonces::default());
     let guarded = |routes: Router<AppState>, access: Access| match &secret {
         Some(secret) => routes.route_layer(axum::middleware::from_fn_with_state(
-            Guard { secret: secret.clone(), db: state.db.clone(), access },
+            Guard { secret: secret.clone(), db: state.db.clone(), access, nonces: nonces.clone() },
             crate::proxy_auth::guard,
         )),
         None => routes,
@@ -558,9 +560,11 @@ async fn locked_fallback(State(state): State<LockedState>) -> (StatusCode, Json<
 /// administrator can sign in and read why; every other route answers 503.
 pub fn create_locked_router(state: LockedState, proxy_secret: Option<String>) -> Router {
     let secret = proxy_secret.map(|secret| -> std::sync::Arc<[u8]> { secret.into_bytes().into() });
+    // One set of used nonces for both guarded routes, as in `create_router`.
+    let nonces = std::sync::Arc::new(Nonces::default());
     let guarded = |routes: Router<LockedState>, access: Access| match &secret {
         Some(secret) => routes.route_layer(axum::middleware::from_fn_with_state(
-            Guard { secret: secret.clone(), db: state.db.clone(), access },
+            Guard { secret: secret.clone(), db: state.db.clone(), access, nonces: nonces.clone() },
             crate::proxy_auth::guard,
         )),
         None => routes,
