@@ -5,9 +5,12 @@
 #   push to the default branch   one trunk target (:edge)
 #   push of a v* tag             one release target; latest only if it is the highest stable tag
 #   schedule                     the default branch, and the newest stable v* tag if there is one
-#   workflow_dispatch            INPUT_REF: the default branch (empty means it) or a v* tag
+#   workflow_dispatch            INPUT_REF: the default branch (empty means it) or a v* tag,
+#                                dispatched from the default branch only
 #
-# Anything else (another branch) yields no targets, so nothing is published from it.
+# Anything else (another branch) yields no targets, so nothing is published from it. A dispatch
+# runs the workflow file of the branch it was started from, so one started from another branch
+# fails: that branch's workflow is unreviewed, and the signing identity would name it.
 # Environment: EVENT, REF (github.ref), SHA, DEFAULT_BRANCH, INPUT_REF. Tags are read from git,
 # so the checkout must have them (fetch-depth: 0).
 set -euo pipefail
@@ -46,6 +49,10 @@ case "${EVENT}" in
     if [[ -n "${newest}" ]]; then targets+=("$(release "${newest}")"); fi
     ;;
   workflow_dispatch)
+    if [[ "${REF}" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+      echo "::error::dispatch from ${DEFAULT_BRANCH}, not '${REF}'" >&2
+      exit 1
+    fi
     ref=${INPUT_REF:-${DEFAULT_BRANCH}}
     ref=${ref#refs/heads/}
     ref=${ref#refs/tags/}

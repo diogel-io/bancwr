@@ -179,16 +179,19 @@ CLI, signed in.
    ```bash
    cosign verify "$IMAGE" \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     --certificate-identity-regexp '^https://github\.com/diogel-io/bancwr/\.github/workflows/release-image\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$'
+     --certificate-identity-regexp '^https://github\.com/diogel-io/bancwr/\.github/workflows/release-image\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$'
    ```
 
-3. Check the build provenance and the SBOM attestation:
+3. Check the build provenance and the SBOM attestation against the same identity, which pins the
+   workflow and the ref it ran from:
 
    ```bash
    gh attestation verify "oci://$IMAGE" -R diogel-io/bancwr \
-     --signer-workflow diogel-io/bancwr/.github/workflows/release-image.yml
+     --cert-oidc-issuer https://token.actions.githubusercontent.com \
+     --cert-identity-regex '^https://github\.com/diogel-io/bancwr/\.github/workflows/release-image\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$'
    gh attestation verify "oci://$IMAGE" -R diogel-io/bancwr \
-     --signer-workflow diogel-io/bancwr/.github/workflows/release-image.yml \
+     --cert-oidc-issuer https://token.actions.githubusercontent.com \
+     --cert-identity-regex '^https://github\.com/diogel-io/bancwr/\.github/workflows/release-image\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
      --predicate-type https://spdx.dev/Document/v2.3
    ```
 
