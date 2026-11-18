@@ -201,7 +201,17 @@ impl RelayClient {
             }
         };
         info!("Received NIP-46 request event: {}", event.id.to_hex());
-        let request: Nip46Request = serde_json::from_str(&decrypted)?;
+        let request: Nip46Request = match serde_json::from_str(&decrypted) {
+            Ok(request) => request,
+            Err(e) => {
+                // Not answered, but its sender is still recorded, as the handler records every
+                // sender it answers: the encryption methods refuse that key as a peer.
+                if let Err(record_error) = self.state.db.record_nip46_sender(&event.pubkey.to_hex(), chrono::Utc::now()).map(|_| ()) {
+                    warn!("Failed to record the sender {} of a NIP-46 request: {}", event.pubkey, record_error);
+                }
+                return Err(e.into());
+            }
+        };
         let scheme = if nip04 { Scheme::Nip04 } else { Scheme::Nip44 };
 
         let response = match self.state.nip46_handler.handle_for(request, event.pubkey, scheme, identity.clone()).await {

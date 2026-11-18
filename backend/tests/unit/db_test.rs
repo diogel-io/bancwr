@@ -1,4 +1,4 @@
-use bunker::db::{ClientMetadata, Database, RemoveOutcome, RoleChangeOutcome, SeedOutcome};
+use bunker::db::{ClientMetadata, Database, RedeemRefusal, RemoveOutcome, RoleChangeOutcome, SeedOutcome, TokenOptions};
 use bunker::registry::Role;
 use chrono::Utc;
 use nostr::prelude::*;
@@ -469,4 +469,146 @@ fn a_member_is_found_by_id_and_an_unknown_id_finds_nobody() {
     let found = db.find_member_by_id(id).unwrap().unwrap();
     assert_eq!((found.name.as_str(), found.pubkey.as_str(), found.role()), ("Alice", alice.as_str(), Some(Role::Signer)));
     assert!(db.find_member_by_id(uuid::Uuid::new_v4()).unwrap().is_none());
+}
+
+// A `connect` refused once its secret matched a live token uses the token up.
+
+/// Issues a token allowing kind 1 for `member`, for `identity` (None: the primary); returns its
+/// secret's hash.
+fn token_for(db: &Database, member: &str, identity: Option<&str>) -> String {
+    let now = Utc::now();
+    let hash = bunker::nip46::hash_secret(&format!("secret-{}", new_pubkey()));
+    let options = TokenOptions { identity_pubkey: identity.map(str::to_string), ..TokenOptions::default() };
+    db.create_nip46_token_with(&hash, member, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1), options).unwrap();
+    hash
+}
+
+fn redeem(db: &Database, hash: &str, identity: Option<&str>, client: &str, requested: Option<&str>) -> Result<bunker::db::Nip46Connection, RedeemRefusal> {
+    db.redeem_nip46_token_for(hash, identity, client, requested, &ClientMetadata::default(), Utc::now()).unwrap()
+}
+
+/// Asserts the token is used, its refusal recorded with the app's key, and a later `connect` with
+/// the right identity and permissions is refused as used.
+fn assert_used_up(db: &Database, hash: &str, identity: Option<&str>, client: &str, refusal: &str) {
+    let token = db.list_nip46_tokens().unwrap().into_iter().find(|t| t.used_at.is_some() && t.revoked_at.is_none()).expect("used");
+    let events = db.audit_events().unwrap();
+    let event = events.iter().find(|e| e.action == "token_revoked" && e.token_id.as_deref() == Some(token.id.as_str())).expect("recorded");
+    assert_eq!(event.detail.as_deref(), Some(format!("reason=connect_refused;refusal={}", refusal).as_str()));
+    assert_eq!(event.client_pubkey.as_deref(), Some(client));
+    assert_eq!(event.actor_pubkey, None);
+    assert_eq!(redeem(db, hash, identity, &new_pubkey(), None).err(), Some(RedeemRefusal::Used));
+    assert!(db.list_nip46_connections(None).unwrap().is_empty(), "nothing connected");
+}
+
+#[test]
+fn a_connect_asking_for_nothing_the_token_allows_uses_it_up() {
+    let db = Database::new(":memory:").unwrap();
+    let member = new_pubkey();
+    db.add_team_member("Sam", &member, Role::Signer).unwrap();
+    let hash = token_for(&db, &member, None);
+    let client = new_pubkey();
+    assert_eq!(redeem(&db, &hash, None, &client, Some("sign_event:4")).err(), Some(RedeemRefusal::NothingGrantable));
+    assert_used_up(&db, &hash, None, &client, "nothing_grantable");
+}
+
+#[test]
+fn a_connect_to_another_identity_uses_the_token_up() {
+    let db = Database::new(":memory:").unwrap();
+    let member = new_pubkey();
+    db.add_team_member("Ann", &member, Role::Administrator).unwrap();
+    let brand = new_pubkey();
+    db.add_identity(&brand, "Brand B", "line", Utc::now()).unwrap().unwrap();
+    let hash = token_for(&db, &member, Some(&brand));
+    let client = new_pubkey();
+    assert_eq!(redeem(&db, &hash, None, &client, None).err(), Some(RedeemRefusal::OtherIdentity));
+    assert_used_up(&db, &hash, Some(&brand), &client, "other_identity");
+}
+
+#[test]
+fn a_connect_for_a_member_no_longer_in_the_vault_uses_the_token_up() {
+    let db = Database::new(":memory:").unwrap();
+    // A token stored by a path other than the API, which only issues for members.
+    let gone = new_pubkey();
+    let hash = token_for(&db, &gone, None);
+    let client = new_pubkey();
+    assert_eq!(redeem(&db, &hash, None, &client, None).err(), Some(RedeemRefusal::MemberRemoved));
+    assert_used_up(&db, &hash, None, &client, "member_removed");
+}
+
+#[test]
+fn a_connect_for_a_viewer_uses_the_token_up() {
+    let db = Database::new(":memory:").unwrap();
+    let viewer = new_pubkey();
+    db.add_team_member("Vic", &viewer, Role::Viewer).unwrap();
+    let hash = token_for(&db, &viewer, None);
+    let client = new_pubkey();
+    assert_eq!(redeem(&db, &hash, None, &client, None).err(), Some(RedeemRefusal::MemberCannotSign));
+    assert_used_up(&db, &hash, None, &client, "member_cannot_sign");
+}
+
+#[test]
+fn a_connect_for_a_member_without_the_identity_uses_the_token_up() {
+    let db = Database::new(":memory:").unwrap();
+    db.ensure_primary_identity(&new_pubkey(), Utc::now()).unwrap();
+    let signer = new_pubkey();
+    db.add_team_member("Sam", &signer, Role::Signer).unwrap();
+    let brand = new_pubkey();
+    db.add_identity(&brand, "Brand B", "line", Utc::now()).unwrap().unwrap();
+    let hash = token_for(&db, &signer, Some(&brand));
+    let client = new_pubkey();
+    assert_eq!(redeem(&db, &hash, Some(&brand), &client, None).err(), Some(RedeemRefusal::NoIdentityAccess));
+    assert_used_up(&db, &hash, Some(&brand), &client, "no_identity_access");
+}
+
+#[test]
+fn an_unknown_expired_or_revoked_secret_changes_no_token() {
+    let db = Database::new(":memory:").unwrap();
+    let member = new_pubkey();
+    db.add_team_member("Sam", &member, Role::Signer).unwrap();
+    let now = Utc::now();
+    db.create_nip46_token("expired", &member, "", "x", &["sign_event:1".to_string()], now - chrono::Duration::hours(2), now - chrono::Duration::hours(1))
+        .unwrap();
+    let revoked = db.create_nip46_token("revoked", &member, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1)).unwrap();
+    db.revoke_nip46_token(&revoked.id, now).unwrap();
+    assert_eq!(redeem(&db, "unknown", None, &new_pubkey(), None).err(), Some(RedeemRefusal::UnknownSecret));
+    assert_eq!(redeem(&db, "expired", None, &new_pubkey(), None).err(), Some(RedeemRefusal::Expired));
+    assert_eq!(redeem(&db, "revoked", None, &new_pubkey(), None).err(), Some(RedeemRefusal::Revoked));
+    assert!(db.list_nip46_tokens().unwrap().iter().all(|t| t.used_at.is_none()));
+    assert!(!db.audit_events().unwrap().iter().any(|e| e.detail.as_deref().is_some_and(|d| d.starts_with("reason=connect_refused"))));
+}
+
+#[test]
+fn any_key_that_sent_a_nip46_request_counts_as_a_nip46_client() {
+    let db = Database::new(":memory:").unwrap();
+    let (sender, stranger) = (new_pubkey(), new_pubkey());
+    assert!(!db.is_nip46_client(&sender).unwrap());
+    db.record_nip46_sender(&sender, Utc::now()).unwrap();
+    db.record_nip46_sender(&sender, Utc::now()).unwrap();
+    assert!(db.is_nip46_client(&sender).unwrap());
+    assert!(!db.is_nip46_client(&stranger).unwrap());
+    // As before, so does any key that connected.
+    let member = new_pubkey();
+    db.add_team_member("Sam", &member, Role::Signer).unwrap();
+    assert!(db.is_nip46_client(&connect(&db, &member)).unwrap());
+}
+
+#[test]
+fn records_at_most_the_hourly_limit_of_new_nip46_senders() {
+    use bunker::db::NEW_NIP46_SENDERS_PER_HOUR;
+    let db = Database::new(":memory:").unwrap();
+    let now = Utc::now();
+    let known = new_pubkey();
+    assert!(db.record_nip46_sender(&known, now - chrono::Duration::hours(2)).unwrap());
+    for _ in 0..NEW_NIP46_SENDERS_PER_HOUR {
+        assert!(db.record_nip46_sender(&new_pubkey(), now).unwrap());
+    }
+    // One more new key this hour is not recorded, and its request is refused.
+    let late = new_pubkey();
+    assert!(!db.record_nip46_sender(&late, now).unwrap());
+    assert!(!db.is_nip46_client(&late).unwrap());
+    // A key already recorded is still accepted.
+    assert!(db.record_nip46_sender(&known, now).unwrap());
+    // An hour on, new keys are recorded again.
+    assert!(db.record_nip46_sender(&late, now + chrono::Duration::hours(1) + chrono::Duration::seconds(1)).unwrap());
+    assert!(db.is_nip46_client(&late).unwrap());
 }

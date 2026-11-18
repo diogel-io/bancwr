@@ -11,7 +11,11 @@
 //! The encryption methods (#97) are the same: each is a permission of its own, named as NIP-46
 //! names it, and the bunker encrypts and decrypts with its own key. Every decrypt is recorded as an
 //! audit event before it happens. A peer that is a NIP-46 app's key is refused, because the
-//! traffic between apps and the bunker is encrypted with that same key.
+//! traffic between apps and the bunker is encrypted with that same key: any key that has sent the
+//! bunker a NIP-46 request counts, whether or not it ever connected.
+//!
+//! A `connect` whose secret matches a live token but is refused (for its identity, its member or
+//! the permissions it asks for) uses the token up: it is never redeemed afterwards.
 //!
 //! Each connection is rate limited (#101, `rate_limit.rs`): the methods that use the key for the
 //! app count, checked once the connection is found and before anything else, so a refused request
@@ -87,6 +91,11 @@ pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token 
 /// Shown when a connection's identity is not unlocked in this bunker (#103): it was added after
 /// the bunker started, which a restart fixes.
 pub const IDENTITY_UNAVAILABLE: &str = "This identity is not available in this bunker yet: it loads when the bunker restarts";
+
+/// The refusal of a request from a new key once `NEW_NIP46_SENDERS_PER_HOUR` were recorded.
+pub const TOO_MANY_NEW_SENDERS: &str = "Too many new apps this hour: try again later";
+/// Added to a `connect` refusal that used up its token (`RedeemRefusal::uses_up_token`).
+pub const TOKEN_USED_UP: &str = ". The token is now used up: ask an administrator for a new one";
 
 /// Shown once to a client whose connection has just reached its expiry (#98). After that it is a
 /// revoked connection like any other, and gets `NOT_CONNECTED`.
@@ -282,6 +291,20 @@ impl Nip46Handler {
     /// read it from the request's `p` tag. A connection answers only for its own identity.
     pub async fn handle_for(&self, request: Nip46Request, client_pubkey: PublicKey, scheme: Scheme, identity: Option<String>) -> Nip46Outcome {
         info!("Handling NIP-46 request: method={}, id={}", request.method, request.id);
+        // Every sender is recorded before its request is handled, connect included, so the
+        // encryption methods refuse its key as a peer whatever becomes of the request. If that
+        // cannot be written, the request is refused.
+        match self.db.record_nip46_sender(&client_pubkey.to_hex(), Utc::now()) {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!("Too many new NIP-46 senders this hour; refused a request from {}", client_pubkey);
+                return Nip46Outcome::Reply(Nip46Response::err(request.id, TOO_MANY_NEW_SENDERS));
+            }
+            Err(e) => {
+                warn!("Failed to record the sender {} of a NIP-46 request, so it is refused: {}", client_pubkey, e);
+                return Nip46Outcome::Reply(Nip46Response::err(request.id, "Internal error"));
+            }
+        }
         if request.method == "connect" {
             // An app reconnecting after its connection expired (#98): mark that one `expired`
             // first, rather than `replaced`.
@@ -361,7 +384,7 @@ impl Nip46Handler {
             }
             Ok(Err(refusal)) => {
                 warn!("NIP-46 connect from {} refused: {:?}", client_pubkey, refusal);
-                Nip46Response::err(request.id, match refusal {
+                let reason = match refusal {
                     RedeemRefusal::UnknownSecret => "Invalid secret",
                     RedeemRefusal::Used => "This connection token has already been used",
                     RedeemRefusal::Revoked => "This connection token has been revoked",
@@ -371,7 +394,12 @@ impl Nip46Handler {
                     RedeemRefusal::NothingGrantable => "None of the requested permissions are allowed by this connection token",
                     RedeemRefusal::NoIdentityAccess => "This connection token's member may no longer sign as this identity",
                     RedeemRefusal::OtherIdentity => "This connection token is for another identity",
-                })
+                };
+                if refusal.uses_up_token() {
+                    Nip46Response::err(request.id, format!("{}{}", reason, TOKEN_USED_UP))
+                } else {
+                    Nip46Response::err(request.id, reason)
+                }
             }
             Err(e) => {
                 warn!("Failed to redeem a NIP-46 connection token from {}: {}", client_pubkey, e);
@@ -614,7 +642,8 @@ impl Nip46Handler {
 
 impl Nip46Handler {
     /// `nip44_*` and `nip04_*` (#97): `[third_party_pubkey, payload]`, with the bunker's key.
-    /// Refused without the method's permission, and for a peer that is a NIP-46 app's key. A
+    /// Refused without the method's permission, and for a peer that is a NIP-46 app's key: one
+    /// that has connected or sent the bunker any request (`Database::is_nip46_client`). A
     /// decrypt is recorded first, and nothing is decrypted if that fails.
     async fn handle_crypto(&self, request: Nip46Request, connection: &Nip46Connection) -> Nip46Response {
         let method = request.method.as_str();
@@ -669,11 +698,26 @@ impl Nip46Handler {
             warn!("Failed to record NIP-46 connection use: {}", e);
         }
         match result {
+            // NIP-46 traffic is encrypted with the identity's key, so a decrypt never returns it,
+            // whichever peer is named: this covers a request the bunker never received, such as
+            // one sent while it was stopped.
+            Ok(output) if decrypt_action.is_some() && is_nip46_message(&output) => {
+                Nip46Response::err(request.id, format!("Forbidden: {} does not return NIP-46 messages", method))
+            }
             Ok(output) => Nip46Response::ok(request.id, output),
             // `Signer` words these without the payload.
             Err(e) => Nip46Response::err(request.id, e.to_string()),
         }
     }
+}
+
+/// Whether `plaintext` is a NIP-46 request or response: a JSON object with an `id` and a `method`,
+/// `result` or `error`.
+fn is_nip46_message(plaintext: &str) -> bool {
+    let Ok(serde_json::Value::Object(object)) = serde_json::from_str::<serde_json::Value>(plaintext.trim()) else {
+        return false;
+    };
+    object.contains_key("id") && ["method", "result", "error"].iter().any(|key| object.contains_key(*key))
 }
 
 /// NIP-46 client metadata: a JSON object with optional `name`, `url` and `image`. Self-reported

@@ -5,7 +5,7 @@
 use bunker::db::{Database, TokenOptions};
 use bunker::rate_limit::RateLimit;
 use bunker::approvals::Scheme;
-use bunker::nip46::{hash_secret, sign_permission, ApprovalError, Nip46Handler, Nip46Outcome, Nip46Request, Nip46Response, ENCRYPTION_METHODS, EXPIRED, NOT_CONNECTED};
+use bunker::nip46::{hash_secret, sign_permission, ApprovalError, Nip46Handler, Nip46Outcome, Nip46Request, Nip46Response, ENCRYPTION_METHODS, EXPIRED, NOT_CONNECTED, TOKEN_USED_UP, TOO_MANY_NEW_SENDERS};
 use bunker::registry::Role;
 use bunker::signer::Signer;
 use chrono::{Duration, SubsecRound, Utc};
@@ -158,15 +158,19 @@ async fn grants_only_what_both_the_token_and_the_request_allow() {
     assert_eq!(s.db.active_nip46_connection(&client.public_key().to_hex()).unwrap().unwrap().perms, vec!["sign_event:1"]);
     assert!(sign(&s, &client, Kind::Reaction).await.error.is_some());
 
-    // Asking only for what the token does not allow connects nothing, and leaves the token unused.
+    // Asking only for what the token does not allow connects nothing, and uses the token up: a
+    // retry asking for what it allows is refused as used.
     let other = issue(&s, &[1], 24);
     let mut params = connect_params(&s, &other);
     params.push("sign_event:4".to_string());
     let refused = connect(&s, &Keys::generate(), params).await;
-    assert_eq!(refused.error.as_deref(), Some("None of the requested permissions are allowed by this connection token"));
+    assert_eq!(
+        refused.error.as_deref(),
+        Some(format!("None of the requested permissions are allowed by this connection token{}", TOKEN_USED_UP).as_str())
+    );
     let mut retry = connect_params(&s, &other);
     retry.push(String::new());
-    assert_eq!(connect(&s, &Keys::generate(), retry).await.result.as_deref(), Some("ack"));
+    assert_eq!(connect(&s, &Keys::generate(), retry).await.error.as_deref(), Some("This connection token has already been used"));
 }
 
 #[tokio::test]
@@ -400,6 +404,91 @@ async fn refuses_a_nip46_app_key_as_the_peer_active_or_not() {
         }
     }
     assert!(decrypt_events(&s).is_empty());
+}
+
+/// Asserts every encryption method naming `peer` is refused for `client`, and nothing is decrypted.
+async fn assert_refused_as_peer(s: &Setup, client: &Keys, peer: &Keys) {
+    let transport = nip44::encrypt(peer.secret_key(), &s.bunker.public_key(), r#"{"id":"1","method":"connect","params":[]}"#, nip44::Version::V2).unwrap();
+    for method in ENCRYPTION_METHODS {
+        let refused = call(s, client, method, &peer.public_key(), &transport).await;
+        assert_eq!(refused.result, None, "{}", method);
+        assert_eq!(refused.error.unwrap(), format!("Forbidden: {} is not allowed with a NIP-46 app key", method));
+    }
+    assert!(decrypt_events(s).is_empty());
+}
+
+#[tokio::test]
+async fn refuses_as_the_peer_an_app_whose_connect_was_refused() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"]).await;
+    let refused_app = Keys::generate();
+    let secret = issue(&s, &[1], 24);
+    let mut params = connect_params(&s, &secret);
+    params.push("sign_event:4".to_string());
+    assert!(connect(&s, &refused_app, params).await.error.is_some());
+    assert!(!s.db.list_nip46_connections(None).unwrap().iter().any(|c| c.client_pubkey == refused_app.public_key().to_hex()), "it never connected");
+
+    assert_refused_as_peer(&s, &client, &refused_app).await;
+    // And its token is used up, so the right parameters do not connect it later either.
+    assert_eq!(connect(&s, &Keys::generate(), connect_params(&s, &secret)).await.error.as_deref(), Some("This connection token has already been used"));
+}
+
+#[tokio::test]
+async fn refuses_as_the_peer_a_key_that_sent_any_request_without_connecting() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"]).await;
+    let pinger = Keys::generate();
+    assert_eq!(s.handler.handle_request(request("ping", vec![]), pinger.public_key()).await.error.as_deref(), Some(NOT_CONNECTED));
+    let wrong_secret = Keys::generate();
+    assert!(connect(&s, &wrong_secret, connect_params(&s, "wrong")).await.error.is_some());
+    let elsewhere = Keys::generate();
+    assert!(connect(&s, &elsewhere, vec![Keys::generate().public_key().to_hex(), "x".into()]).await.error.is_some());
+
+    for peer in [&pinger, &wrong_secret, &elsewhere] {
+        assert_refused_as_peer(&s, &client, peer).await;
+    }
+}
+
+#[tokio::test]
+async fn never_decrypts_a_nip46_message_even_from_a_key_the_bunker_has_not_seen() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_decrypt", "nip04_decrypt"]).await;
+    // A connect the bunker never received, such as one sent while it was stopped.
+    let unseen = Keys::generate();
+    let connect = serde_json::json!({ "id": "1", "method": "connect", "params": [s.bunker.public_key().to_hex(), "a-secret"] }).to_string();
+    let response = serde_json::json!({ "id": "2", "result": "ack" }).to_string();
+    for plaintext in [&connect, &response] {
+        let nip44_text = nip44::encrypt(unseen.secret_key(), &s.bunker.public_key(), plaintext, nip44::Version::V2).unwrap();
+        let refused = call(&s, &client, "nip44_decrypt", &unseen.public_key(), &nip44_text).await;
+        assert!(refused.result.is_none());
+        assert_eq!(refused.error.as_deref(), Some("Forbidden: nip44_decrypt does not return NIP-46 messages"));
+        let nip04_text = nip04::encrypt(unseen.secret_key(), &s.bunker.public_key(), plaintext).unwrap();
+        let refused = call(&s, &client, "nip04_decrypt", &unseen.public_key(), &nip04_text).await;
+        assert!(refused.result.is_none());
+        assert!(!refused.error.unwrap_or_default().contains("a-secret"));
+    }
+    // Other JSON still decrypts.
+    let other = r#"{"id":"3","kind":1}"#;
+    let text = nip44::encrypt(unseen.secret_key(), &s.bunker.public_key(), other, nip44::Version::V2).unwrap();
+    assert_eq!(call(&s, &client, "nip44_decrypt", &unseen.public_key(), &text).await.result.as_deref(), Some(other));
+}
+
+#[tokio::test]
+async fn the_bunkers_own_key_and_a_key_that_never_sent_a_request_still_work_as_the_peer() {
+    let s = setup();
+    let client = connected_with(&s, &["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"]).await;
+    // Other keys have sent requests, which changes nothing for these.
+    s.handler.handle_request(request("ping", vec![]), Keys::generate().public_key()).await;
+    let friend = Keys::generate();
+
+    let incoming = nip44::encrypt(friend.secret_key(), &s.bunker.public_key(), "hello brand", nip44::Version::V2).unwrap();
+    assert_eq!(call(&s, &client, "nip44_decrypt", &friend.public_key(), &incoming).await.result.as_deref(), Some("hello brand"));
+    let incoming = nip04::encrypt(friend.secret_key(), &s.bunker.public_key(), "hello again").unwrap();
+    assert_eq!(call(&s, &client, "nip04_decrypt", &friend.public_key(), &incoming).await.result.as_deref(), Some("hello again"));
+    assert!(call(&s, &client, "nip04_encrypt", &friend.public_key(), "x").await.result.is_some());
+
+    let own = call(&s, &client, "nip44_encrypt", &s.bunker.public_key(), "private list").await.result.unwrap();
+    assert_eq!(call(&s, &client, "nip44_decrypt", &s.bunker.public_key(), &own).await.result.as_deref(), Some("private list"));
 }
 
 #[tokio::test]
@@ -933,4 +1022,23 @@ async fn a_kind_not_granted_is_refused_rather_than_held() {
     let refused = sign(&s, &client, Kind::Metadata).await;
     assert!(refused.error.unwrap().starts_with("Forbidden"));
     assert!(s.handler.pending_approvals(None).is_empty());
+}
+
+#[tokio::test]
+async fn past_the_hourly_limit_of_new_senders_a_new_app_is_refused_and_a_known_one_answered() {
+    use bunker::db::NEW_NIP46_SENDERS_PER_HOUR;
+    let s = setup();
+    let known = Keys::generate();
+    let secret = issue(&s, &[1], 24);
+    assert_eq!(connect(&s, &known, connect_params(&s, &secret)).await.result.as_deref(), Some("ack"));
+    for _ in 1..NEW_NIP46_SENDERS_PER_HOUR {
+        assert!(s.db.record_nip46_sender(&Keys::generate().public_key().to_hex(), Utc::now()).unwrap());
+    }
+    // A new key is refused before its request is handled: its token stays unused.
+    let fresh = issue(&s, &[1], 24);
+    let refused = connect(&s, &Keys::generate(), connect_params(&s, &fresh)).await;
+    assert_eq!(refused.error.as_deref(), Some(TOO_MANY_NEW_SENDERS));
+    assert_eq!(s.db.list_nip46_tokens().unwrap().iter().filter(|t| t.used_at.is_none()).count(), 1);
+    // An app already known is still answered.
+    assert!(sign(&s, &known, Kind::TextNote).await.result.unwrap().contains("\"sig\""));
 }

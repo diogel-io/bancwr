@@ -11,7 +11,7 @@ mod ports;
 use bunker::approvals::Scheme;
 use bunker::connections_api::{ConnectionResponse, IssueTokenResponse};
 use bunker::identities_api::IdentityResponse;
-use bunker::nip46::{Nip46Outcome, Nip46Request, NOT_CONNECTED};
+use bunker::nip46::{Nip46Outcome, Nip46Request, NOT_CONNECTED, TOKEN_USED_UP};
 use bunker::registry::Role;
 use bunker::relay::RelayClient;
 use nostr_connect::prelude::*;
@@ -195,9 +195,23 @@ async fn an_app_connected_to_one_identity_is_not_connected_to_another() {
     // A token for Brand B does not connect to the primary.
     let token: IssueTokenResponse = issue(&app, json!({ "label": "x", "kinds": [1], "identity": brand.public_key().to_hex() })).await.json().await.unwrap();
     let secret = token.uri.split("secret=").nth(1).unwrap().to_string();
-    let request = Nip46Request { id: "c".into(), method: "connect".into(), params: vec![app.bunker.public_key().to_hex(), secret] };
+    let request = Nip46Request { id: "c".into(), method: "connect".into(), params: vec![app.bunker.public_key().to_hex(), secret.clone()] };
     let Nip46Outcome::Reply(refused) = app.state.nip46_handler.handle_for(request, Keys::generate().public_key(), Scheme::Nip44, None).await else { panic!() };
-    assert_eq!(refused.error.as_deref(), Some("This connection token is for another identity"));
+    assert_eq!(refused.error.as_deref(), Some(format!("This connection token is for another identity{}", TOKEN_USED_UP).as_str()));
+
+    // That used the token up: addressed to Brand B afterwards, it is refused as used, and the
+    // token list shows it used.
+    let request = Nip46Request { id: "c".into(), method: "connect".into(), params: vec![brand.public_key().to_hex(), secret] };
+    let Nip46Outcome::Reply(again) =
+        app.state.nip46_handler.handle_for(request, Keys::generate().public_key(), Scheme::Nip44, Some(brand.public_key().to_hex())).await
+    else {
+        panic!()
+    };
+    assert_eq!(again.error.as_deref(), Some("This connection token has already been used"));
+    let tokens: Vec<Value> =
+        app.signed(Method::GET, "/api/bunker/connections/tokens", &app.admin.public_key().to_hex()).send().await.unwrap().json().await.unwrap();
+    let listed = tokens.iter().find(|t| t["id"] == json!(token.id)).unwrap();
+    assert!(listed["used_at"].is_string() && listed["revoked_at"].is_null(), "{}", listed);
 }
 
 #[tokio::test]

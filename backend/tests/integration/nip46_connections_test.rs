@@ -315,6 +315,68 @@ async fn a_nip44_client_is_answered_in_nip44_with_kind_24133() {
     assert_eq!(key["result"], bunker.to_hex());
 }
 
+/// A raw client on `relay` listening for answers to `keys`.
+async fn raw_client(relay: &str, keys: &Keys) -> Client {
+    let client = Client::builder().signer(keys.clone()).build();
+    client.add_relay(relay).await.unwrap();
+    client.connect().await;
+    client.subscribe(Filter::new().kind(Kind::from(24133)).pubkey(keys.public_key()), None).await.unwrap();
+    client
+}
+
+#[tokio::test]
+async fn over_the_relay_a_refused_connect_uses_up_its_token_and_no_sender_can_be_decrypted() {
+    let relay = MockRelay::run().await.unwrap();
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_bunker_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+    let bunker = app.bunker.public_key();
+
+    // A connected app that may decrypt.
+    let reader: IssueTokenResponse = issue(&app, &admin, json!({ "label": "Reader", "methods": ["nip44_decrypt", "nip04_decrypt"] })).await.json().await.unwrap();
+    let reader = NostrConnect::new(NostrConnectURI::parse(&reader.uri).unwrap(), Keys::generate(), Duration::from_secs(10), None).unwrap();
+    reader.get_public_key().await.unwrap();
+
+    // Another app connects asking only for a kind its token does not allow, and is refused.
+    let token: IssueTokenResponse = issue(&app, &admin, json!({ "label": "Phone", "kinds": [1] })).await.json().await.unwrap();
+    let secret = token.uri.split("secret=").nth(1).unwrap().to_string();
+    let phone = Keys::generate();
+    let phone_client = raw_client(&relay.url(), &phone).await;
+    let body = json!({ "id": "c", "method": "connect", "params": [bunker.to_hex(), secret, "sign_event:4"] }).to_string();
+    let refused = nip44_request(&phone_client, &phone, bunker, "connect", vec![bunker.to_hex(), secret.clone(), "sign_event:4".into()]).await;
+    assert!(refused["error"].as_str().unwrap().ends_with(bunker::nip46::TOKEN_USED_UP), "{}", refused);
+
+    // A key whose request the bunker could read but not parse.
+    let garbled = Keys::generate();
+    let content = nip44::encrypt(garbled.secret_key(), &bunker, r#"{"id":"g","method":"connect","params":[null]}"#, nip44::Version::V2).unwrap();
+    let event = EventBuilder::new(Kind::from(24133), content).tag(Tag::public_key(bunker)).sign_with_keys(&garbled).unwrap();
+    raw_client(&relay.url(), &garbled).await.send_event(event).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !app.db.is_nip46_client(&garbled.public_key().to_hex()).unwrap() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("recorded within 10 s");
+
+    // Neither key is a peer the reader may decrypt with, whatever it sent.
+    for sender in [&phone, &garbled] {
+        let sent = nip44::encrypt(sender.secret_key(), &bunker, &body, nip44::Version::V2).unwrap();
+        assert!(reader.nip44_decrypt(&sender.public_key(), &sent).await.is_err());
+        let sent = nip04::encrypt(sender.secret_key(), &bunker, &body).unwrap();
+        assert!(reader.nip04_decrypt(&sender.public_key(), &sent).await.is_err());
+    }
+    assert!(app.db.audit_events().unwrap().iter().all(|e| !e.action.ends_with("_decrypt")), "nothing was decrypted");
+
+    // The token is listed as used, not as waiting, and connecting with it as issued is refused.
+    let tokens: Vec<TokenResponse> = app.signed(Method::GET, "/api/bunker/connections/tokens", &admin).send().await.unwrap().json().await.unwrap();
+    let listed = tokens.iter().find(|t| t.id == token.id).unwrap();
+    assert!(listed.used_at.is_some() && listed.revoked_at.is_none());
+    let again = nip44_request(&phone_client, &phone, bunker, "connect", vec![bunker.to_hex(), secret]).await;
+    assert_eq!(again["error"], "This connection token has already been used", "{}", again);
+    assert!(!connections(&app, &admin).await.iter().any(|c| c.client_pubkey == phone.public_key().to_hex()));
+}
+
 #[tokio::test]
 async fn a_standard_nip46_client_on_a_connection_with_a_lifetime_signs_and_is_shown_its_end() {
     let relay = ports::run_mock_relay().await;
