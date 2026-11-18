@@ -52,7 +52,9 @@ check 'a pre-release never takes latest' '[{"ref":"refs/tags/v1.0.0-rc.1","kind"
 check 'schedule: trunk and the newest stable release' \
   '[{"ref":"refs/heads/master","kind":"trunk","tag":"","latest":false},{"ref":"refs/tags/v0.10.0","kind":"release","tag":"v0.10.0","latest":true}]' \
   "$(targets schedule refs/heads/master)"
-check 'dispatch, default: trunk' '[{"ref":"refs/heads/master","kind":"trunk","tag":"","latest":false}]' "$(targets workflow_dispatch refs/heads/feature)"
+check 'dispatch, default: trunk' '[{"ref":"refs/heads/master","kind":"trunk","tag":"","latest":false}]' "$(targets workflow_dispatch refs/heads/master)"
+check 'dispatch from another branch fails' 'failed' "$(targets workflow_dispatch refs/heads/feature 2>/dev/null || echo failed)"
+check 'dispatch of a tag from another branch fails' 'failed' "$(targets workflow_dispatch refs/heads/feature v0.2.0 2>/dev/null || echo failed)"
 check 'dispatch of a tag' '[{"ref":"refs/tags/v0.2.0","kind":"release","tag":"v0.2.0","latest":false}]' "$(targets workflow_dispatch refs/heads/master v0.2.0)"
 check 'dispatch of anything else fails' 'failed' "$(targets workflow_dispatch refs/heads/master feature 2>/dev/null || echo failed)"
 
@@ -79,6 +81,10 @@ check 'verify-image.sh has an identity' yes "$([[ -n "${identity}" ]] && echo ye
 for doc in docs/releasing.md README.md; do
   check "${doc} gives verify-image.sh's identity" yes \
     "$(grep -qF -- "--certificate-identity-regexp '${identity}'" "${root}/${doc}" && echo yes || echo no)"
+  check "${doc} pins both attestation checks to the same identity" 2 \
+    "$(grep -cF -- "--cert-identity-regex '${identity}'" "${root}/${doc}")"
+  check "${doc} does not check attestations by workflow alone" 0 \
+    "$(grep -c -- '--signer-workflow' "${root}/${doc}" || true)"
 done
 
 if (( failures > 0 )); then
