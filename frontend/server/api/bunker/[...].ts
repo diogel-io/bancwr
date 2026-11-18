@@ -2,12 +2,22 @@
 // Imported rather than left to Nitro's auto-import: nothing in this file's type context
 // resolves auto-imports, so an explicit path keeps our own symbols checkable.
 import { resolveBackendUrl, BackendTargetError } from '../../utils/backend'
+import { hasBody, jsonBodyRefusal } from '../../utils/auth/origin'
 import { proxyHeaders } from '../../utils/auth/proxy-signature'
 import { sessionPubkey } from '../../utils/auth/session'
 import { downloadHeaders, isDownload } from '../../utils/download'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
+  const method = getMethod(event)
+
+  // A body is forwarded only as JSON, so a plain HTML form can never produce one. Checked here, on
+  // the request this handler forwards, so the rule holds however the router matched the path.
+  const contentType = getHeader(event, 'content-type')
+  const forwardsBody = method !== 'GET'
+    && hasBody(getHeader(event, 'content-length'), getHeader(event, 'transfer-encoding'))
+  const notJson = forwardsBody ? jsonBodyRefusal({ hasBody: true, contentType }) : undefined
+  if (notJson) throw createError(notJson)
 
   // No inline fallback: runtimeConfig already supplies the default, and two of them hide which
   // one is in force. resolveBackendUrl refuses a target that is this server — see #20. Its own
@@ -42,8 +52,7 @@ export default defineEventHandler(async (event) => {
 
   // Forward the request. The body goes on as the exact string that arrived, never parsed and
   // re-serialised: the signature covers its hash, and the bunker hashes what it receives.
-  const method = getMethod(event)
-  const body = method !== 'GET' ? (await readRawBody(event, 'utf8')) ?? '' : ''
+  const body = forwardsBody ? (await readRawBody(event, 'utf8')) ?? '' : ''
 
   // A download (#96) is streamed through rather than parsed, keeping only its content type and
   // file name. A refusal is JSON, forwarded as any other error is.
@@ -65,7 +74,8 @@ export default defineEventHandler(async (event) => {
       method,
       body: body || undefined,
       headers: {
-        'Content-Type': 'application/json',
+        // The type the browser declared, checked above to be JSON; none when there is no body.
+        ...(forwardsBody && contentType ? { 'Content-Type': contentType } : {}),
         // Built here from the session, never copied from the browser's request.
         ...proxyHeaders(config.proxySecret, pubkey, method, target, body),
       },

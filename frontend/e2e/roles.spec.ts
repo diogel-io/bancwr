@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { test, expect } from './fixtures'
+import { test, expect, sameOrigin } from './fixtures'
 
 // What each role is offered and refused (#77, which replaced #26's roles). The bunker enforces the
 // same matrix (#25); these check the UI neither offers nor opens what it would refuse, and that a
@@ -56,7 +56,7 @@ test.describe('signer', () => {
     await page.goto('/')
     const exported = await page.request.get('/api/bunker/logs/export?format=csv&from=2026-01-01&to=2026-12-31')
     expect(exported.status()).toBe(403)
-    const retention = await page.request.put('/api/bunker/logs/retention', { data: { max_age_days: 30, max_rows: null } })
+    const retention = await page.request.put('/api/bunker/logs/retention', { headers: sameOrigin, data: { max_age_days: 30, max_rows: null } })
     expect(retention.status()).toBe(403)
   })
 
@@ -99,7 +99,7 @@ test.describe('viewer', () => {
     await page.goto('/')
     const exported = await page.request.get('/api/bunker/logs/export?format=csv&from=2026-01-01&to=2026-12-31')
     expect(exported.status()).toBe(403)
-    const retention = await page.request.put('/api/bunker/logs/retention', { data: { max_age_days: 30, max_rows: null } })
+    const retention = await page.request.put('/api/bunker/logs/retention', { headers: sameOrigin, data: { max_age_days: 30, max_rows: null } })
     expect(retention.status()).toBe(403)
   })
 
@@ -145,11 +145,11 @@ test.describe('viewer', () => {
     expect(refused).toEqual([])
 
     // And the bunker refuses a change outright.
-    const added = await page.request.post('/api/bunker/team', { data: { name: 'Nope', pubkey: 'npub1nope', role: 'viewer' } })
+    const added = await page.request.post('/api/bunker/team', { headers: sameOrigin, data: { name: 'Nope', pubkey: 'npub1nope', role: 'viewer' } })
     expect(added.status()).toBe(403)
     const team = await (await page.request.get('/api/bunker/team')).json() as { id: string, name: string }[]
     const signer = team.find(member => member.name === 'e2e signer')!
-    const changed = await page.request.patch(`/api/bunker/team/${signer.id}`, { data: { role: 'viewer' } })
+    const changed = await page.request.patch(`/api/bunker/team/${signer.id}`, { headers: sameOrigin, data: { role: 'viewer' } })
     expect(changed.status()).toBe(403)
   })
 

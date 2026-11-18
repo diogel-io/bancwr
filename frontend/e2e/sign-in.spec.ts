@@ -151,7 +151,7 @@ test.describe('across a frontend restart (#100)', () => {
     await restartFrontend()
     expect((await session()).status).toBe(200)
 
-    expect((await fetch(`${baseUrl()}/api/auth/logout`, { method: 'POST', headers: { cookie: copy } })).status).toBe(200)
+    expect((await fetch(`${baseUrl()}/api/auth/logout`, { method: 'POST', headers: { cookie: copy, Origin: new URL(baseUrl()).origin } })).status).toBe(200)
     expect((await session()).status).toBe(401)
 
     await restartFrontend()

@@ -1,93 +1,96 @@
 // @vitest-environment node
-// The /api/bunker/* proxy route forwards the body exactly as it arrived and signs exactly those
-// bytes: the bunker hashes what it receives, so a body parsed and re-serialised on the way would
-// no longer match its signature (#25).
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mockNuxtImport } from '@nuxt/test-utils/runtime'
-import { PROXY_HEADERS, proxySignature } from '../../server/utils/auth/proxy-signature'
+// The proxy to the bunker, routed as Nitro routes it: h3's router matches the decoded path, so
+// /api/%62unker/team reaches this handler. The rule that a body is forwarded only as JSON is the
+// handler's own, so it holds for every path that reaches it.
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import * as h3 from 'h3'
 
-vi.mock('../../server/utils/auth/session', () => ({
-  sessionPubkey: vi.fn(async () => 'ab'.repeat(32))
+vi.mock('../../server/utils/auth/session', () => ({ sessionPubkey: async () => 'a'.repeat(64) }))
+// The test environment auto-imports useRuntimeConfig from the Nuxt app, not from Nitro.
+vi.mock('#app/nuxt', async importOriginal => ({
+  ...await importOriginal<object>(),
+  useRuntimeConfig: () => ({ apiBase: 'http://bunker:3000', proxySecret: 'secret' })
 }))
+vi.mock('../../server/utils/auth/proxy-signature', () => ({ proxyHeaders: () => ({ 'X-Bancwr-Identity': 'a'.repeat(64) }) }))
 
-const SECRET = 'bancwr-test-proxy-secret'
-const PUBKEY = 'ab'.repeat(32)
-const PATH = '/api/bunker/connections/tokens'
+const forwarded = vi.fn(async (_url: string, _init: { method: string, body?: unknown, headers: Record<string, string> }) => ({ ok: true }))
 
-interface FakeRequest {
-  method: string
-  path: string
-  rawBody: string | undefined
-}
+let handle: (request: Request) => Promise<Response>
 
-// The route reads its config through the auto-imported useRuntimeConfig.
-mockNuxtImport('useRuntimeConfig', () => () => ({ apiBase: 'http://bunker:3000', proxySecret: 'bancwr-test-proxy-secret' }))
+beforeAll(async () => {
+  for (const name of ['defineEventHandler', 'getMethod', 'getHeader', 'getRequestURL', 'createError', 'readRawBody', 'setResponseHeaders', 'sendStream'] as const) {
+    vi.stubGlobal(name, h3[name])
+  }
+  vi.stubGlobal('$fetch', forwarded)
 
-let request: FakeRequest
-const $fetch = vi.fn(async (..._args: unknown[]) => ({ ok: true }))
-
-beforeEach(() => {
-  $fetch.mockClear()
-  vi.stubGlobal('defineEventHandler', (handler: unknown) => handler)
-  vi.stubGlobal('getRequestURL', () => new URL(`http://console.example${request.path}`))
-  vi.stubGlobal('getMethod', () => request.method)
-  vi.stubGlobal('readRawBody', async () => request.rawBody)
-  vi.stubGlobal('createError', (input: { statusCode: number }) => Object.assign(new Error('error'), input))
-  vi.stubGlobal('$fetch', $fetch)
+  const { default: proxy } = await import('../../server/api/bunker/[...]')
+  const app = h3.createApp()
+  const router = h3.createRouter().use('/api/bunker/**', proxy)
+  app.use(router.handler)
+  handle = h3.toWebHandler(app)
 })
 
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
+beforeEach(() => forwarded.mockClear())
 
-async function proxy(method: string, path: string, rawBody: string | undefined) {
-  request = { method, path, rawBody }
-  const { default: handler } = await import('../../server/api/bunker/[...]')
-  await (handler as (event: unknown) => Promise<unknown>)({})
-  expect($fetch).toHaveBeenCalledTimes(1)
-  const [url, options] = $fetch.mock.calls[0] as [string, { method: string, body?: string, headers: Record<string, string> }]
-  return { url, options }
-}
-
-/** The signature the bunker expects for a request with these headers and this body. */
-function expected(headers: Record<string, string>, method: string, path: string, body: string) {
-  return proxySignature(SECRET, {
-    timestamp: Number(headers[PROXY_HEADERS.timestamp]),
-    nonce: headers[PROXY_HEADERS.nonce]!,
-    method,
-    path,
-    identity: headers[PROXY_HEADERS.identity]!,
+/** POSTs as Node's HTTP server would hand it to Nitro: a body comes with its Content-Length. */
+function post(path: string, init: { contentType?: string, body?: string } = {}) {
+  // Bytes, not a string, so the Request adds no content type of its own.
+  const body = init.body === undefined ? undefined : new TextEncoder().encode(init.body)
+  return handle(new Request(`http://bancwr.example${path}`, {
+    method: 'POST',
+    headers: {
+      ...(init.contentType ? { 'Content-Type': init.contentType } : {}),
+      ...(body ? { 'Content-Length': String(body.byteLength) } : {})
+    },
     body
-  })
+  }))
 }
 
-describe('the bunker proxy route', () => {
-  it('forwards the raw body unchanged and signs exactly it', async () => {
-    // Spacing, key order and non-ASCII text that parsing and re-serialising would change.
-    const raw = '{ "label" : "Café ☕",\n  "kinds":[1, 0] ,"label2":"x" }'
-    const { url, options } = await proxy('POST', `${PATH}?x=1`, raw)
+describe('the proxy to the bunker', () => {
+  it('forwards a JSON body with the type it was declared with', async () => {
+    const response = await post('/api/bunker/team', { contentType: 'application/json; charset=utf-8', body: '{"name":"a"}' })
 
-    expect(url).toBe(`http://bunker:3000${PATH}?x=1`)
-    expect(options.method).toBe('POST')
-    expect(options.body).toBe(raw)
-    expect(options.headers[PROXY_HEADERS.identity]).toBe(PUBKEY)
-    expect(options.headers[PROXY_HEADERS.nonce]).toMatch(/^[0-9a-f]{32}$/)
-    expect(options.headers[PROXY_HEADERS.signature]).toBe(expected(options.headers, 'POST', `${PATH}?x=1`, raw))
-    // Not a signature over the body as JSON would re-serialise it.
-    const reserialised = JSON.stringify(JSON.parse(raw))
-    expect(reserialised).not.toBe(raw)
-    expect(options.headers[PROXY_HEADERS.signature]).not.toBe(expected(options.headers, 'POST', `${PATH}?x=1`, reserialised))
+    expect(response.status).toBe(200)
+    expect(forwarded).toHaveBeenCalledOnce()
+    const [url, init] = forwarded.mock.calls[0]!
+    expect(url).toBe('http://bunker:3000/api/bunker/team')
+    // As the exact string that arrived: the signature covers it (GHSA-cmg4-5gjv-6rrr).
+    expect(init.body).toBe('{"name":"a"}')
+    expect(init.headers['Content-Type']).toBe('application/json; charset=utf-8')
   })
 
-  it('sends no body for an empty one and signs the empty body', async () => {
-    const { options } = await proxy('POST', PATH, undefined)
-    expect(options.body).toBeUndefined()
-    expect(options.headers[PROXY_HEADERS.signature]).toBe(expected(options.headers, 'POST', PATH, ''))
+  it('forwards a request with no body without a content type', async () => {
+    const response = await post('/api/bunker/approvals/1/reject')
+
+    expect(response.status).toBe(200)
+    const [, init] = forwarded.mock.calls[0]!
+    expect(init.body).toBeUndefined()
+    expect(init.headers['Content-Type']).toBeUndefined()
   })
 
-  it('signs a GET over an empty body without reading one', async () => {
-    const { options } = await proxy('GET', '/api/bunker/team', 'ignored')
-    expect(options.body).toBeUndefined()
-    expect(options.headers[PROXY_HEADERS.signature]).toBe(expected(options.headers, 'GET', '/api/bunker/team', ''))
+  for (const path of ['/api/bunker/team', '/api/%62unker/team', '/api/bunker/%74eam']) {
+    for (const contentType of [undefined, 'text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x']) {
+      it(`refuses a ${contentType ?? 'untyped'} body for ${path}, and forwards nothing`, async () => {
+        const response = await post(path, { contentType, body: '{"name":"a"}' })
+
+        expect(response.status).toBe(415)
+        expect(await response.json()).toMatchObject({ data: { error: 'unsupported_media_type' } })
+        expect(forwarded).not.toHaveBeenCalled()
+      })
+    }
+  }
+
+  it('refuses a chunked body that is not JSON', async () => {
+    const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('a=b')); controller.close() } })
+    const response = await handle(new Request('http://bancwr.example/api/%62unker/team', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'Transfer-Encoding': 'chunked' },
+      body,
+      // @ts-expect-error -- Node's fetch needs this for a stream body; the DOM types lack it.
+      duplex: 'half'
+    }))
+
+    expect(response.status).toBe(415)
+    expect(forwarded).not.toHaveBeenCalled()
   })
 })
