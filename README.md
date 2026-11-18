@@ -6,6 +6,15 @@
 [![Release Frontend](https://github.com/diogel-io/bancwr/actions/workflows/release-frontend.yml/badge.svg)](https://github.com/diogel-io/bancwr/actions/workflows/release-frontend.yml)
 [![Trivy Security Scan](https://github.com/diogel-io/bancwr/actions/workflows/trivy-security.yml/badge.svg)](https://github.com/diogel-io/bancwr/actions/workflows/trivy-security.yml)
 
+## Status
+
+Bancwr 0.1.0, the first release, is free and published for testing and public review: install it,
+try it with your team and your apps, and tell us what breaks, what is unclear and what is missing.
+
+- Bugs, questions and feedback: [open an issue](https://github.com/diogel-io/bancwr/issues).
+- Vulnerabilities: report them privately, as [Security](#security) describes, never in a public
+  issue.
+
 ## Podman Images
 
 Images are published to GitHub Container Registry (GHCR). Backend and frontend share one version
