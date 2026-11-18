@@ -2,10 +2,13 @@
 // signature in flight, then `bunker restore` onto a clean host. The restored bunker unlocks as the
 // same key with the same members and roles, every connection and unused token is revoked, the old
 // app cannot sign, and a new token connects. Every refusal writes nothing.
+#[path = "../common/mod.rs"]
+mod common;
 #[path = "../support/ports.rs"]
 mod ports;
 
 use bunker::backup::{BackupError, RESTORED_REASON};
+use bunker::key_store::KeyStoreError;
 use bunker::proxy_auth::{proxy_signature, Signed, IDENTITY_HEADER, NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use nostr_connect::prelude::*;
 use serde_json::{json, Value};
@@ -257,7 +260,7 @@ async fn a_backup_of_a_running_bunker_restores_to_a_working_bunker_on_a_clean_ho
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(stderr(&output).contains(&npub), "{}", stderr(&output));
     let archive = output.stdout;
-    assert!(archive.starts_with(b"bancwr-backup v1 17 8 1 "));
+    assert!(archive.starts_with(b"bancwr-backup v2 17 8 1 "));
     let text = String::from_utf8_lossy(&archive);
     assert!(!text.contains(&bunker.secret_key().to_bech32().unwrap()) && !text.contains(&bunker.secret_key().to_secret_hex()));
     assert!(original.data_files().iter().all(|name| !name.ends_with(".tmp")), "{:?}", original.data_files());
@@ -340,6 +343,32 @@ async fn a_tampered_or_wrong_key_archive_is_refused_and_writes_nothing() {
     let output = original.backup(&[("BANCWR_ROOT_KEY_FILE", original.secret("root")), ("BANCWR_BACKUP_KEY_FILE", original.secret("root"))]);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains(BackupError::PassphraseIsRootKey.reason()));
+    // The root credential must be set, and must be the one the key is under.
+    let output = original.backup(&[("BANCWR_BACKUP_KEY_FILE", original.secret("backup"))]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains(KeyStoreError::RootKeyNotSet.reason()), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+    let output = original.backup(&[("BANCWR_ROOT_KEY_FILE", original.secret("wrong_root")), ("BANCWR_BACKUP_KEY_FILE", original.secret("backup"))]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains(KeyStoreError::WrongRootKeyOrTampered.reason()), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+
+    // The archive's database replaced with one that adds an administrator, resealed under the
+    // backup passphrase alone.
+    let swapped = {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("copy.db");
+        rusqlite::Connection::open(original.path("data/bancwr.db")).unwrap().execute("VACUUM INTO ?1", [path.to_str().unwrap()]).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES ('x', 'Extra', ?1, 'administrator', '2026-01-01T00:00:00Z')",
+            [Keys::generate().public_key().to_hex()],
+        )
+        .unwrap();
+        conn.pragma_update(None, "journal_mode", "DELETE").unwrap();
+        drop(conn);
+        common::reseal_with_database(&archive, PASSPHRASE, &std::fs::read(&path).unwrap())
+    };
 
     let target = Host::new(&admin);
     let mut tampered = archive.clone();
@@ -358,6 +387,16 @@ async fn a_tampered_or_wrong_key_archive_is_refused_and_writes_nothing() {
             BackupError::RootKeyDoesNotDecrypt.reason(),
         ),
         (archive[..archive.len() / 2].to_vec(), target.secrets(), BackupError::WrongPassphraseOrTampered.reason()),
+        (swapped, target.secrets(), BackupError::NotMadeUnderRootKey.reason()),
+        (
+            {
+                let end = archive.iter().position(|&b| b == b'\n').unwrap();
+                let line = std::str::from_utf8(&archive[..end]).unwrap().replacen(" v2 ", " v1 ", 1);
+                [line.as_bytes(), &archive[end..]].concat()
+            },
+            target.secrets(),
+            BackupError::UnsupportedVersion.reason(),
+        ),
         (b"not an archive\n".to_vec(), target.secrets(), BackupError::NotAnArchive.reason()),
     ];
     for (input, env, reason) in cases {

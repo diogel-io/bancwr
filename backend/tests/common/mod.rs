@@ -199,3 +199,32 @@ impl TestApp {
         keys
     }
 }
+
+/// What someone holding only the backup passphrase can do to a backup archive: decrypt it, put
+/// `database` in place of its database, keep the rest of the plaintext (the key file and the tag
+/// after it) as it is, and encrypt it again under the same header with a fresh nonce.
+pub fn reseal_with_database(archive: &[u8], passphrase: &str, database: &[u8]) -> Vec<u8> {
+    use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+    let end = archive.iter().position(|&b| b == b'\n').unwrap();
+    let header = &archive[..end];
+    let fields: Vec<&str> = std::str::from_utf8(header).unwrap().split(' ').collect();
+    let params = scrypt::Params::new(fields[2].parse().unwrap(), fields[3].parse().unwrap(), fields[4].parse().unwrap(), 32).unwrap();
+    let salt = nostr::util::hex::decode(fields[5]).unwrap();
+    let mut key = [0u8; 32];
+    scrypt::scrypt(passphrase.trim().as_bytes(), &salt, &params, &mut key).unwrap();
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let (nonce, ciphertext) = archive[end + 1..].split_at(24);
+    let plaintext = cipher.decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad: header }).unwrap();
+    let database_len = u64::from_be_bytes(plaintext[..8].try_into().unwrap()) as usize;
+    let mut swapped = (database.len() as u64).to_be_bytes().to_vec();
+    swapped.extend_from_slice(database);
+    swapped.extend_from_slice(&plaintext[8 + database_len..]);
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher.encrypt(&nonce, Payload { msg: &swapped, aad: header }).unwrap();
+    let mut out = header.to_vec();
+    out.push(b'\n');
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ciphertext);
+    out
+}

@@ -182,10 +182,14 @@ fn relays_and_a_restore_are_recorded() {
     connect(&db, "hash-1");
     let now = Utc::now();
     db.create_nip46_token("hash-2", SIGNER, ADMIN, "y", &["sign_event:1".to_string()], now, now + Duration::hours(1)).unwrap();
-    assert_eq!(db.revoke_all_for_restore(now).unwrap(), (1, 1));
+    let taken = Utc.with_ymd_and_hms(2026, 11, 13, 3, 15, 0).unwrap();
+    assert_eq!(db.revoke_all_for_restore(taken, now).unwrap(), (1, 1));
     let events = db.audit_events().unwrap();
     let restored = events.last().unwrap();
-    assert_eq!((restored.action.as_str(), restored.detail.as_deref()), (action::RESTORED, Some("connections=1;tokens=1")));
+    assert_eq!(
+        (restored.action.as_str(), restored.detail.as_deref()),
+        (action::RESTORED, Some("connections=1;tokens=1;backup_created_at=2026-11-13T03:15:00Z"))
+    );
     assert_eq!(events.iter().filter(|e| e.detail.as_deref() == Some("reason=restored")).count(), 2);
 }
 

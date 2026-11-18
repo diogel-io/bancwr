@@ -232,6 +232,11 @@ The archive is encrypted with XChaCha20-Poly1305 under a key derived with scrypt
 passphrase in `./secrets/bancwr_backup_key`. Inside it, the bunker's key is still encrypted under
 the root credential, so an archive and its passphrase together are not the key.
 
+The archive is also authenticated under the root credential: it carries an HMAC-SHA256 tag over
+its header and contents, keyed from the root credential. So `bunker backup` needs both secrets.
+Run in the bunker's container, as below, it has them already. It checks that the root credential
+decrypts the key file before it writes anything.
+
 To recover a bunker you need three things, and each should be kept apart from the others:
 
 1. an archive;
@@ -328,15 +333,27 @@ next section.
 
 `bunker restore` reads an archive from standard input. Before it writes anything it checks that:
 
-- the backup passphrase decrypts the archive, which also proves the archive was not altered;
-- the database in it passes SQLite's integrity check, and is not from a newer Bancwr;
+- the backup passphrase decrypts the archive;
 - the key file in it matches the archive's public key;
 - the root credential decrypts that key, so the restored bunker will unlock;
+- the archive's tag verifies under the root credential, which proves the archive was made under
+  it and not altered since;
+- the database in it passes SQLite's integrity check, is not from a newer Bancwr, and holds only
+  tables and indexes: no triggers, views or virtual tables, which a Bancwr database never has;
 - the data directory holds no database and no key file.
 
-If any check fails it exits non-zero, says why, and writes nothing. If they all pass, it writes the
-database and key file, then revokes every connected app and every unused connection token. Members,
-their roles, the signing log and the bunker relays come back as they were in the archive.
+So a restore needs the same root credential that made the backup. That was already the case: the
+root credential has to decrypt the archive's key file, which is encrypted under one root credential.
+
+Archives are in format version 2. A version 1 archive, made before archives were authenticated
+under the root credential, is refused: take a new backup.
+
+If any check fails it exits non-zero, says why, and writes nothing. If they all pass, it revokes
+every connected app and every unused connection token in a staged copy of the database, and records
+the restore there, before it puts the database and key file into the data directory. So if a
+restore fails partway, the data directory is left empty, never holding a database whose apps and
+tokens still work. Members, their roles, the signing log and the bunker relays come back as they
+were in the archive.
 
 ### On a clean host
 
@@ -385,7 +402,8 @@ Then follow steps 2 and 3 above. Once you are sure the restore is good, delete `
 Kept, as at the backup:
 
 - members and their roles;
-- the signing log and the audit events, to which the restore adds one saying what it revoked;
+- the signing log and the audit events, to which the restore adds one saying what it revoked and
+  when the backup was taken;
 - the bunker relays and the log retention policy.
 
 Revoked:
