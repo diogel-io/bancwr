@@ -538,7 +538,8 @@ fn nip46_senders(tx: &Transaction) -> anyhow::Result<()> {
         "CREATE TABLE IF NOT EXISTS nip46_senders (
             pubkey TEXT PRIMARY KEY,
             first_seen_at TEXT NOT NULL
-        );",
+        );
+        CREATE INDEX IF NOT EXISTS idx_nip46_senders_first_seen ON nip46_senders (first_seen_at);",
     )?;
     Ok(())
 }

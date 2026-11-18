@@ -591,3 +591,24 @@ fn any_key_that_sent_a_nip46_request_counts_as_a_nip46_client() {
     db.add_team_member("Sam", &member, Role::Signer).unwrap();
     assert!(db.is_nip46_client(&connect(&db, &member)).unwrap());
 }
+
+#[test]
+fn records_at_most_the_hourly_limit_of_new_nip46_senders() {
+    use bunker::db::NEW_NIP46_SENDERS_PER_HOUR;
+    let db = Database::new(":memory:").unwrap();
+    let now = Utc::now();
+    let known = new_pubkey();
+    assert!(db.record_nip46_sender(&known, now - chrono::Duration::hours(2)).unwrap());
+    for _ in 0..NEW_NIP46_SENDERS_PER_HOUR {
+        assert!(db.record_nip46_sender(&new_pubkey(), now).unwrap());
+    }
+    // One more new key this hour is not recorded, and its request is refused.
+    let late = new_pubkey();
+    assert!(!db.record_nip46_sender(&late, now).unwrap());
+    assert!(!db.is_nip46_client(&late).unwrap());
+    // A key already recorded is still accepted.
+    assert!(db.record_nip46_sender(&known, now).unwrap());
+    // An hour on, new keys are recorded again.
+    assert!(db.record_nip46_sender(&late, now + chrono::Duration::hours(1) + chrono::Duration::seconds(1)).unwrap());
+    assert!(db.is_nip46_client(&late).unwrap());
+}

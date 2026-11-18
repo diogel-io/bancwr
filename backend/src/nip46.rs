@@ -92,6 +92,8 @@ pub const NOT_CONNECTED: &str = "Not connected: connect with a connection token 
 /// the bunker started, which a restart fixes.
 pub const IDENTITY_UNAVAILABLE: &str = "This identity is not available in this bunker yet: it loads when the bunker restarts";
 
+/// The refusal of a request from a new key once `NEW_NIP46_SENDERS_PER_HOUR` were recorded.
+pub const TOO_MANY_NEW_SENDERS: &str = "Too many new apps this hour: try again later";
 /// Added to a `connect` refusal that used up its token (`RedeemRefusal::uses_up_token`).
 pub const TOKEN_USED_UP: &str = ". The token is now used up: ask an administrator for a new one";
 
@@ -292,9 +294,16 @@ impl Nip46Handler {
         // Every sender is recorded before its request is handled, connect included, so the
         // encryption methods refuse its key as a peer whatever becomes of the request. If that
         // cannot be written, the request is refused.
-        if let Err(e) = self.db.record_nip46_sender(&client_pubkey.to_hex(), Utc::now()) {
-            warn!("Failed to record the sender {} of a NIP-46 request, so it is refused: {}", client_pubkey, e);
-            return Nip46Outcome::Reply(Nip46Response::err(request.id, "Internal error"));
+        match self.db.record_nip46_sender(&client_pubkey.to_hex(), Utc::now()) {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!("Too many new NIP-46 senders this hour; refused a request from {}", client_pubkey);
+                return Nip46Outcome::Reply(Nip46Response::err(request.id, TOO_MANY_NEW_SENDERS));
+            }
+            Err(e) => {
+                warn!("Failed to record the sender {} of a NIP-46 request, so it is refused: {}", client_pubkey, e);
+                return Nip46Outcome::Reply(Nip46Response::err(request.id, "Internal error"));
+            }
         }
         if request.method == "connect" {
             // An app reconnecting after its connection expired (#98): mark that one `expired`

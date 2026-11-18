@@ -5,7 +5,7 @@
 use bunker::db::{Database, TokenOptions};
 use bunker::rate_limit::RateLimit;
 use bunker::approvals::Scheme;
-use bunker::nip46::{hash_secret, sign_permission, ApprovalError, Nip46Handler, Nip46Outcome, Nip46Request, Nip46Response, ENCRYPTION_METHODS, EXPIRED, NOT_CONNECTED, TOKEN_USED_UP};
+use bunker::nip46::{hash_secret, sign_permission, ApprovalError, Nip46Handler, Nip46Outcome, Nip46Request, Nip46Response, ENCRYPTION_METHODS, EXPIRED, NOT_CONNECTED, TOKEN_USED_UP, TOO_MANY_NEW_SENDERS};
 use bunker::registry::Role;
 use bunker::signer::Signer;
 use chrono::{Duration, SubsecRound, Utc};
@@ -1022,4 +1022,23 @@ async fn a_kind_not_granted_is_refused_rather_than_held() {
     let refused = sign(&s, &client, Kind::Metadata).await;
     assert!(refused.error.unwrap().starts_with("Forbidden"));
     assert!(s.handler.pending_approvals(None).is_empty());
+}
+
+#[tokio::test]
+async fn past_the_hourly_limit_of_new_senders_a_new_app_is_refused_and_a_known_one_answered() {
+    use bunker::db::NEW_NIP46_SENDERS_PER_HOUR;
+    let s = setup();
+    let known = Keys::generate();
+    let secret = issue(&s, &[1], 24);
+    assert_eq!(connect(&s, &known, connect_params(&s, &secret)).await.result.as_deref(), Some("ack"));
+    for _ in 1..NEW_NIP46_SENDERS_PER_HOUR {
+        assert!(s.db.record_nip46_sender(&Keys::generate().public_key().to_hex(), Utc::now()).unwrap());
+    }
+    // A new key is refused before its request is handled: its token stays unused.
+    let fresh = issue(&s, &[1], 24);
+    let refused = connect(&s, &Keys::generate(), connect_params(&s, &fresh)).await;
+    assert_eq!(refused.error.as_deref(), Some(TOO_MANY_NEW_SENDERS));
+    assert_eq!(s.db.list_nip46_tokens().unwrap().iter().filter(|t| t.used_at.is_none()).count(), 1);
+    // An app already known is still answered.
+    assert!(sign(&s, &known, Kind::TextNote).await.result.unwrap().contains("\"sig\""));
 }

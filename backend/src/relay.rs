@@ -206,7 +206,7 @@ impl RelayClient {
             Err(e) => {
                 // Not answered, but its sender is still recorded, as the handler records every
                 // sender it answers: the encryption methods refuse that key as a peer.
-                if let Err(record_error) = self.state.db.record_nip46_sender(&event.pubkey.to_hex(), chrono::Utc::now()) {
+                if let Err(record_error) = self.state.db.record_nip46_sender(&event.pubkey.to_hex(), chrono::Utc::now()).map(|_| ()) {
                     warn!("Failed to record the sender {} of a NIP-46 request: {}", event.pubkey, record_error);
                 }
                 return Err(e.into());

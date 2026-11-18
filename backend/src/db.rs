@@ -662,6 +662,9 @@ pub struct ClientMetadata {
     pub image: Option<String>,
 }
 
+/// The most new NIP-46 sender keys recorded in any hour (`Database::record_nip46_sender`).
+pub const NEW_NIP46_SENDERS_PER_HOUR: i64 = 1000;
+
 /// Why `redeem_nip46_token` refused a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedeemRefusal {
@@ -1229,10 +1232,27 @@ impl Database {
 
     /// Records `pubkey` (hex) as the sender of a NIP-46 request, the first time it sends one; later
     /// requests change nothing. Called for every request the bunker reads, before it is handled.
-    pub fn record_nip46_sender(&self, pubkey: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+    ///
+    /// Anyone can send a request from a new key, and a recorded key is never forgotten (it would
+    /// become usable as an encryption peer again), so at most `NEW_NIP46_SENDERS_PER_HOUR` new keys
+    /// are recorded in any hour. False when `pubkey` is new and that many already were: its request
+    /// is then not handled.
+    pub fn record_nip46_sender(&self, pubkey: &str, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let known: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM nip46_senders WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
+        if known {
+            return Ok(true);
+        }
+        let recent: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nip46_senders WHERE first_seen_at > ?1",
+            params![db_time(now - chrono::Duration::hours(1))],
+            |row| row.get(0),
+        )?;
+        if recent >= NEW_NIP46_SENDERS_PER_HOUR {
+            return Ok(false);
+        }
         conn.execute("INSERT OR IGNORE INTO nip46_senders (pubkey, first_seen_at) VALUES (?1, ?2)", params![pubkey, db_time(now)])?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn touch_nip46_connection(&self, id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
