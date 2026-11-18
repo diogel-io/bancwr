@@ -31,10 +31,17 @@ export const anonymousTest = base.extend<{ bunkerNpub: string, guard: undefined 
   }, { auto: true }]
 })
 
+/**
+ * The console's own origin as an `Origin` header. A request context sends none, and the server
+ * refuses a change that carries the session cookie without it, so every page.request call that
+ * changes something passes this, as the console's page would.
+ */
+export const sameOrigin = { Origin: new URL(baseUrl()).origin }
+
 /** POSTs through a Playwright request context, which shares its cookies with the page. */
 export function contextPost(request: APIRequestContext): PostLike {
   return async (url, init) => {
-    const response = await request.post(url, { headers: init.headers, data: init.body })
+    const response = await request.post(url, { headers: { ...sameOrigin, ...init.headers }, data: init.body })
     return { status: response.status(), json: () => response.json() }
   }
 }

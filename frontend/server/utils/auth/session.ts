@@ -7,13 +7,16 @@ import { useSession } from 'h3'
 import { SESSION_MAX_AGE_SECONDS } from './constants'
 import { sessionRegistry } from './sessions'
 
+/** The session cookie's name. The origin check (middleware/origin.ts) looks for it too. */
+export const SESSION_COOKIE = 'bancwr-session'
+
 interface SessionCookie {
   sid?: string
 }
 
 function cookieSession(event: H3Event) {
   return useSession<SessionCookie>(event, {
-    name: 'bancwr-session',
+    name: SESSION_COOKIE,
     password: useRuntimeConfig(event).sessionPassword,
     maxAge: SESSION_MAX_AGE_SECONDS,
     cookie: { httpOnly: true, secure: true, sameSite: 'strict', path: '/' }
