@@ -1237,10 +1237,16 @@ impl Database {
     /// Anyone can send a request from a new key, and a recorded key is never forgotten (it would
     /// become usable as an encryption peer again), so at most `NEW_NIP46_SENDERS_PER_HOUR` new keys
     /// are recorded in any hour. False when `pubkey` is new and that many already were: its request
-    /// is then not handled.
+    /// is then not handled. A key with a connection, live or not, is never new: it is already
+    /// refused as a peer through that connection, including one made before senders were recorded.
     pub fn record_nip46_sender(&self, pubkey: &str, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let known: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM nip46_senders WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
+        let known: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM nip46_senders WHERE pubkey = ?1)
+                 OR EXISTS(SELECT 1 FROM nip46_connections WHERE client_pubkey = ?1)",
+            params![pubkey],
+            |row| row.get(0),
+        )?;
         if known {
             return Ok(true);
         }

@@ -612,3 +612,19 @@ fn records_at_most_the_hourly_limit_of_new_nip46_senders() {
     assert!(db.record_nip46_sender(&late, now + chrono::Duration::hours(1) + chrono::Duration::seconds(1)).unwrap());
     assert!(db.is_nip46_client(&late).unwrap());
 }
+
+#[test]
+fn an_app_with_a_connection_is_answered_past_the_hourly_limit_of_new_senders() {
+    use bunker::db::NEW_NIP46_SENDERS_PER_HOUR;
+    let db = Database::new(":memory:").unwrap();
+    let member = new_pubkey();
+    db.add_team_member("Sam", &member, Role::Signer).unwrap();
+    // Connected without a sender row, as an app that connected before senders were recorded.
+    let connected = connect(&db, &member);
+    let now = Utc::now();
+    for _ in 0..NEW_NIP46_SENDERS_PER_HOUR {
+        assert!(db.record_nip46_sender(&new_pubkey(), now).unwrap());
+    }
+    assert!(!db.record_nip46_sender(&new_pubkey(), now).unwrap());
+    assert!(db.record_nip46_sender(&connected, now).unwrap());
+}
