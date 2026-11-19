@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Tests for release-targets.sh, image-tags.sh (#15) and verify-image.sh (#104): which commits are
-# built, which tags each publishes, and what a release image is verified against. Above all,
-# :latest only ever goes to the highest stable release.
+# Tests for release-targets.sh, image-tags.sh (#15), verify-image.sh (#104) and the release-please
+# config: which commits are built, which tags each publishes, what a release image is verified
+# against, and that a release stays a draft until its assets are attached. Above all, :latest only
+# ever goes to the highest stable release.
 # Run from anywhere: bash .github/scripts/test-release-scripts.sh
 set -euo pipefail
 
@@ -86,6 +87,14 @@ for doc in docs/releasing.md README.md; do
   check "${doc} does not check attestations by workflow alone" 0 \
     "$(grep -c -- '--signer-workflow' "${root}/${doc}" || true)"
 done
+
+# Releases are immutable once published (docs/releasing.md), so release-please must create each
+# one as a draft, with its tag, for the image runs to attach their assets before release.yml
+# publishes it.
+config="${root}/release-please-config.json"
+check 'release-please creates a draft release' true "$(jq -r '.draft' "${config}")"
+check 'release-please creates the tag with the draft' true "$(jq -r '."force-tag-creation"' "${config}")"
+check 'release-please never marks a release a pre-release' false "$(jq -r '.prerelease' "${config}")"
 
 if (( failures > 0 )); then
   echo "${failures} failed"
