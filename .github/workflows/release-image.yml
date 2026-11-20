@@ -1,13 +1,14 @@
 name: Release image
 
-# Builds, scans and publishes one image for one target (#15), shared by release-backend.yml and
-# release-frontend.yml so their tags cannot drift apart. Nothing is published unless the tests
-# (#36) and the vulnerability gate (#16) pass for the target's own commit. With publish: false
-# the run stops after printing the tags it would push.
+# Builds, scans and publishes one image for one target (#15), shared by release.yml,
+# release-backend.yml and release-frontend.yml so their tags cannot drift apart. Nothing is
+# published unless the tests (#36) and the vulnerability gate (#16) pass for the target's own
+# commit. With publish: false the run stops after printing the tags it would push.
 #
 # A release target's image is then signed, and given build provenance and an SBOM, all keyless
 # under this workflow's GitHub OIDC identity, and the SBOM and digest are added to the GitHub
-# release (#104). Trunk images are not signed. docs/releasing.md, "Verifying an image".
+# release while it is still a draft (#104). Trunk images are not signed. docs/releasing.md,
+# "Verifying an image".
 on:
   workflow_call:
     inputs:
@@ -251,8 +252,9 @@ jobs:
           retention-days: 7
 
   # The SBOM, the digest and their checksums on the GitHub release (#104). Its own job, so only
-  # this one can write to the repository. A rebuild replaces them: the release always lists the
-  # digest its version tag points at now.
+  # this one can write to the repository. Releases are immutable once published, so assets go on
+  # a draft only: release.yml creates the release as a draft and publishes it once both images
+  # have added theirs. A later rebuild (weekly, or by hand) leaves a published release as it is.
   release-assets:
     needs: release
     if: inputs.publish && inputs.kind == 'release'
@@ -276,8 +278,13 @@ jobs:
           set -euo pipefail
           # A tag pushed by hand has no GitHub release (docs/releasing.md): the image is still
           # signed and attested, so say so rather than fail.
-          if ! gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          if ! draft=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>/dev/null); then
             echo "::warning::No GitHub release for ${TAG}, so its SBOM and digest were not attached."
+            exit 0
+          fi
+          # A published release is immutable: its assets name the digest it was published with.
+          if [[ "${draft}" != true ]]; then
+            echo "::notice::${TAG} is published, and immutable, so its assets were left as they are. This build is ${IMAGE}@${DIGEST}, signed and attested like the first."
             exit 0
           fi
           mv sbom.spdx.json "${NAME}.spdx.json"

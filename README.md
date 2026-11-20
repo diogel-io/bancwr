@@ -71,9 +71,10 @@ podman pull ghcr.io/diogel-io/bancwr-diogel-frontend:edge
 ### Verifying an image
 
 Release images are signed and carry signed build provenance and an SBOM, all keyless from
-Bancwr's release workflow (#104). Trunk images are not signed. Each GitHub release lists every
-image's digest, SBOM and their checksums. Verify the digest before you deploy it, never a tag,
-with cosign 3 or later and the GitHub CLI:
+Bancwr's release workflow (#104). Trunk images are not signed. Each GitHub release after
+`v0.1.0` lists every image's digest, SBOM and their checksums. `v0.1.0` has none, so read its
+digests from the registry, as [docs/releasing.md](docs/releasing.md#the-commands) shows. Verify
+the digest before you deploy it, never a tag, with cosign 3 or later and the GitHub CLI:
 
 ```bash
 gh release download v0.3.0 -R diogel-io/bancwr -p 'bancwr-diogel-backend-0.3.0.*'

@@ -91,7 +91,8 @@ the first release, neither package should have a `latest` tag at all.
 The rules live in two scripts, tested by `.github/scripts/test-release-scripts.sh` (CI's
 `release-scripts` job): `release-targets.sh` decides which commits a run builds, and
 `image-tags.sh` which tags each gets. `release-image.yml` builds, gates and publishes one image for
-one target; `release-backend.yml` and `release-frontend.yml` only call it.
+one target; `release-backend.yml` and `release-frontend.yml` only call it, and so does
+`release.yml` for a new release.
 
 - **`latest` only moves forward.** It goes to a tag only if that tag is the highest stable
   `v<major>.<minor>.<patch>` by version (`0.10.0` is above `0.2.0`). A patch to an older line, such
@@ -139,8 +140,11 @@ what you run.
 
 ### What each release lists
 
-Each GitHub release has three assets per image, attached once the image is published, a few
-minutes after the release itself:
+Each GitHub release has three assets per image. The release is created as a draft, each image
+run attaches its assets to the draft, and the release is published only once it lists all six
+(see [Releasing](#releasing)). The organisation enforces
+[immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
+so once a release is published its assets and its tag cannot change:
 
 | Asset | Holds |
 | --- | --- |
@@ -149,9 +153,13 @@ minutes after the release itself:
 | `bancwr-diogel-<image>-<version>.sha256` | The SHA-256 of the two files above |
 
 The weekly rebuild republishes the newest release on fresh base images, so its digest changes
-(see [Image tags](#image-tags)). Each rebuild is signed and attested in the same way, and replaces
-the release's assets, so the `.digest` asset always names what the version tag points at now.
-Older digests keep their own signatures.
+(see [Image tags](#image-tags)). Each rebuild is signed and attested in the same way, but cannot
+change the published release, so the `.digest` asset names the image the release was published
+with, not necessarily what the version tag points at now. Read the current digest from the
+registry instead (step 1 below). Older digests keep their own signatures.
+
+`v0.1.0` has no assets: it was published before its images, and immutability then refused them.
+Its images are signed and attested like any other release's. Read their digests from the registry.
 
 ### The commands
 
@@ -167,7 +175,8 @@ CLI, signed in.
    IMAGE=$(cat bancwr-diogel-backend-0.3.0.digest)
    ```
 
-   To check the image a tag points at now instead, read its digest from the registry:
+   To check the image a tag points at now instead, after a weekly rebuild or for `v0.1.0`, read
+   its digest from the registry:
 
    ```bash
    IMAGE=ghcr.io/diogel-io/bancwr-diogel-backend@$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/diogel-io/bancwr-diogel-backend:0.3.0)
@@ -253,24 +262,33 @@ and reopen it, or push an empty commit to its branch, to get the checks.
 3. Review the release PR: the version, the `CHANGELOG.md` section and the `compose.yaml` bump. If a
    commit is in the wrong section (a breaking change without `!`, say), fix the commit message
    rather than editing the generated PR: see [Fixing the release notes](#fixing-the-release-notes).
-4. Merge the release PR. `.github/workflows/release.yml` then:
-   - creates the `v<version>` tag on the merge commit and the GitHub release, with the changelog
-     section as its notes, and relabels the PR `autorelease: tagged`;
-   - starts **Release Backend** and **Release Frontend** for the tag (by `workflow_dispatch`,
-     because a tag created with the workflow token does not start `on: push: tags` workflows);
+4. Merge the release PR. The **Release** run (`.github/workflows/release.yml`) on the merge
+   commit then:
+   - creates the `v<version>` tag on the merge commit and the GitHub release as a draft, with the
+     changelog section as its notes, and relabels the PR `autorelease: tagged`;
+   - builds, tests, scans, publishes and signs both images for the tag (`images (backend)` and
+     `images (frontend)`, each calling `release-image.yml`), and each attaches its `.digest`,
+     `.spdx.json` and `.sha256` to the draft;
+   - publishes the release once it lists all six assets (`publish-release`), marked latest if it
+     is the highest stable version;
    - closes the milestone named after the version.
-5. Wait for **Release Backend** and **Release Frontend** to finish on the tag and confirm both
-   images carry `0.1.0`, `0.1` and `latest` in GHCR, and that `latest` and `0.1.0` have the same
-   digest. Check that the release lists each image's `.digest`, `.spdx.json` and `.sha256` assets,
-   and that both images pass [Verifying an image](#verifying-an-image) with the documented
-   commands. Each runs the full test suite first (see [The test gate](#the-test-gate)); if a test
-   fails, nothing is published and the job graph shows `test` failed before `release`. Fix the
-   cause, then run the release by hand for the tag:
+
+   The images are built by this run itself rather than by **Release Backend** and **Release
+   Frontend**, so that `publish-release` can wait for both. A tag created with the workflow token
+   does not start their `on: push: tags` runs, so the tag is not built twice.
+5. Wait for the **Release** run to finish and confirm the release is published, not a draft, and
+   lists each image's `.digest`, `.spdx.json` and `.sha256`. Confirm both images carry `0.1.0`,
+   `0.1` and `latest` in GHCR, that `latest` and `0.1.0` have the same digest, and that both pass
+   [Verifying an image](#verifying-an-image) with the documented commands. Each image runs the full
+   test suite first (see [The test gate](#the-test-gate)); if a test fails, nothing is published,
+   the job graph shows `test` failed before `release`, and the release stays a draft that only
+   maintainers can see. Fix the cause, then re-run the **Release** run's failed jobs:
 
    ```bash
-   gh workflow run "Release Backend" -R diogel-io/bancwr -f ref=v0.1.0
-   gh workflow run "Release Frontend" -R diogel-io/bancwr -f ref=v0.1.0
+   gh run rerun <run-id> -R diogel-io/bancwr --failed
    ```
+
+   Never publish the draft by hand before it lists all six assets: it cannot be added to after.
 
 6. After a release whose review walked every control, open a `docs:` PR that moves the threat
    model's `Baseline:` to the `v<version>` tag. The baseline moves only when the whole document has
@@ -349,13 +367,13 @@ A workflow shown as `disabled_inactivity` is re-enabled with
 ### The test gate
 
 `.github/workflows/test.yml` runs `cargo test`, and the frontend's lint, typecheck and
-`pnpm test` ([#36](https://github.com/diogel-io/bancwr/issues/36)). Three workflows call it:
+`pnpm test` ([#36](https://github.com/diogel-io/bancwr/issues/36)). Four workflows call it:
 
 - **CI**, on every pull request and every push to `master`. Its `test / backend-test` and
   `test / frontend-check` checks are required before a pull request can merge into `master`.
-- **Release Backend** and **Release Frontend**, whose `release` job needs `test`. An image is
-  only published for a commit or tag whose tests pass. CI does not run on `v*` tags, so for a
-  release tag this is the only gate.
+- **Release**, **Release Backend** and **Release Frontend**, through `release-image.yml`, whose
+  `release` job needs `test`. An image is only published for a commit or tag whose tests pass. CI
+  does not run on `v*` tags, so for a release tag this is the only gate.
 
 ### Who releases
 
