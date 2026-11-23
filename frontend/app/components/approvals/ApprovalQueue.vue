@@ -6,6 +6,7 @@
 // Signers see their own requests waiting, without the buttons. Refreshed every few seconds.
 import type { PendingApproval } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
+import { bunkerRefusal } from '~/utils/bunker-error'
 import { kindLabel, relativeTime } from '~/utils/connections'
 
 const props = defineProps<{ focus?: string }>()
@@ -55,7 +56,7 @@ async function decide(request: PendingApproval, decision: 'approve' | 'reject') 
     decided.value = decision === 'approve' ? 'Approved: the bunker signed it and sent it to the app.' : 'Rejected: nothing was signed, and the app was told.'
     notes.value = Object.fromEntries(Object.entries(notes.value).filter(([id]) => id !== request.id))
   } catch (failure) {
-    const code = (failure as { data?: { error?: string } }).data?.error
+    const code = bunkerRefusal(failure).error
     actionError.value = (code && ERRORS[code]) ?? 'The bunker did not accept that. Try again.'
   } finally {
     busy.value = undefined
