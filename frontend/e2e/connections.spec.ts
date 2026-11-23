@@ -21,15 +21,21 @@ function within<T>(work: Promise<T>, ms = 15_000): Promise<T> {
   return Promise.race([work, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timed out')), ms))])
 }
 
-/** Issues a token on the page for `forName`; returns the bunker:// string shown once. */
+/**
+ * Issues a token on the page for `forName`; returns the bunker:// string shown once. The form and
+ * the result name the primary identity as the key the app signs as, whoever it is for (#137).
+ */
 async function issueOnPage(page: Page, forName: string | RegExp, label: string): Promise<string> {
+  const primary = process.env.E2E_BUNKER_NPUB
   const form = page.getByTestId('issue-token')
   await form.getByRole('combobox').first().click()
   await page.getByRole('option', { name: forName }).click()
+  if (primary) await expect(form.getByTestId('issue-token-signs-as')).toContainText(primary)
   await form.getByLabel('Label').fill(label)
   await form.getByRole('button', { name: 'Issue token' }).click()
   const uri = await page.getByTestId('issued-uri').textContent()
   await expect(page.getByTestId('issued-qr')).toBeVisible()
+  if (primary) await expect(page.getByTestId('issued-identity')).toContainText(primary)
   await page.getByRole('button', { name: 'Done' }).click()
   return uri!.trim()
 }

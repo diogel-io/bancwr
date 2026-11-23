@@ -48,8 +48,12 @@ registerEndpoint('/api/bunker/connections/tokens', {
       setResponseStatus(event, 409)
       return { error: 'nip46_disabled', message: 'off' }
     }
-    state.issued.push(await readBody(event))
-    return { id: 't9', uri: `bunker://${'e'.repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], connection_lifetime_hours: null, rate_per_minute: 60, rate_burst: 20, approval_kinds: [], expires_at: new Date(Date.now() + 86_400_000).toISOString() }
+    const body = await readBody(event)
+    state.issued.push(body)
+    // As the bunker answers: the host and identity_pubkey are the identity it signs as, the
+    // primary ('e'.repeat(64) here) unless one was chosen.
+    const identity = (body as { identity?: string }).identity ?? 'e'.repeat(64)
+    return { id: 't9', uri: `bunker://${identity}?relay=wss%3A%2F%2Frelay.example&secret=${'f'.repeat(64)}`, for_pubkey: me, kinds: [1, 7], methods: [], connection_lifetime_hours: null, rate_per_minute: 60, rate_burst: 20, approval_kinds: [], expires_at: new Date(Date.now() + 86_400_000).toISOString(), identity_pubkey: identity }
   }
 })
 registerEndpoint('/api/bunker/connections/c1', {
@@ -168,6 +172,8 @@ describe('Connections page', () => {
     expect(component.find('[data-testid="issued-uri"]').text()).toContain('secret=')
     expect(component.find('[data-testid="issued-qr"]').attributes('src')).toMatch(/^data:image\/svg\+xml/)
     expect(component.text()).toContain('Shown once')
+    // With no identities listed, the result still names the key, as an npub (#137).
+    expect(component.find('[data-testid="issued-identity"]').text()).toMatch(/^Signs as npub1[0-9a-z]+$/)
 
     await component.findAll('button').find(b => b.text() === 'Done')!.trigger('click')
     expect(component.find('[data-testid="issued-uri"]').exists()).toBe(false)
@@ -298,6 +304,56 @@ describe('Connections page', () => {
     expect(component.find('[data-testid="connection-identity"]').exists()).toBe(false)
   })
 
+  it('names the identity a token signs as on a bunker with one, for any member, before and after issuing (#137)', async () => {
+    // Bob is a signer with no grant: on a bunker with only the primary, every member may use it.
+    state.identities = [{ pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Bunker Admin', is_primary: true, available: true, members: [] } satisfies BunkerIdentity]
+    const component = await mount('administrator')
+    await flushPromises()
+    const form = component.find('[data-testid="issue-token"]')
+    expect(form.find('[data-testid="issue-token-signs-as"]').text()).toBe('Signs as Bunker Admin (npub1e)')
+
+    await form.find('#issue-token-for').trigger('click')
+    await flushPromises()
+    ;([...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === 'Bob') as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await flushPromises()
+    // The member chosen does not change the key that signs.
+    expect(form.find('[data-testid="issue-token-signs-as"]').text()).toBe('Signs as Bunker Admin (npub1e)')
+    expect(form.find('#issue-token-identity').exists()).toBe(false)
+
+    await form.find('input[maxlength="100"]').setValue('Primal for Bob')
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(component.find('[data-testid="issued-uri"]').exists(), component.text()).toBe(true))
+    expect(state.issued[0]).toMatchObject({ for_pubkey: other })
+    expect(state.issued[0]).not.toHaveProperty('identity')
+    expect(component.find('[data-testid="issued-identity"]').text()).toBe('Signs as Bunker Admin (npub1e)')
+  })
+
+  it('says the member chosen under For is not the key that signs (#137)', async () => {
+    const component = await mount('administrator')
+    await flushPromises()
+    const form = component.find('[data-testid="issue-token"]')
+    expect(form.text()).toContain('The member this token is issued to.')
+    expect(form.text()).toContain('The app does not sign as them.')
+    expect(form.text()).not.toContain('It signs as the bunker\'s key')
+  })
+
+  it('claims no key for a member granted none of several identities (#137)', async () => {
+    state.identities = [
+      { pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, members: [me] },
+      { pubkey: '9'.repeat(64), npub: 'npub1brand', label: 'Brand B', is_primary: false, available: true, members: [] }
+    ] satisfies BunkerIdentity[]
+    const component = await mount('administrator')
+    await flushPromises()
+    const form = component.find('[data-testid="issue-token"]')
+    await form.find('#issue-token-for').trigger('click')
+    await flushPromises()
+    ;([...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === 'Bob') as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await flushPromises()
+    const signsAs = form.find('[data-testid="issue-token-signs-as"]').text()
+    expect(signsAs).toContain('may not use any of this bunker\'s identities')
+    expect(signsAs).not.toContain('Primary')
+  })
+
   it('issues for the identity chosen, offering only those the member may use, and names it on rows (#103)', async () => {
     const brand = '9'.repeat(64)
     state.identities = [
@@ -321,10 +377,16 @@ describe('Connections page', () => {
     const offered = [...document.body.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
     expect(offered).toEqual(['Brand B'])
     ;([...document.body.querySelectorAll('[role="option"]')][0] as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await flushPromises()
+    // The form names the chosen identity's key before issuing (#137).
+    expect(form.find('[data-testid="issue-token-signs-as"]').text()).toBe('Signs as Brand B (npub1brand)')
     await form.find('input[maxlength="100"]').setValue('Bob on Brand B')
     await form.trigger('submit')
     await vi.waitFor(() => expect(state.issued).toHaveLength(1))
     expect(state.issued[0]).toMatchObject({ for_pubkey: other, identity: brand })
+    // And the result names the identity the response says it signs as.
+    await vi.waitFor(() => expect(component.find('[data-testid="issued-identity"]').exists()).toBe(true))
+    expect(component.find('[data-testid="issued-identity"]').text()).toBe('Signs as Brand B (npub1brand)')
   })
 
   it('shows the rate limit of each token and active connection (#101)', async () => {
