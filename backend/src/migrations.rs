@@ -31,6 +31,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("hold chosen kinds for approval", nip46_approval_perms),
     ("hold several identities", identities),
     ("record the senders of NIP-46 requests", nip46_senders),
+    ("let a member own an identity", owned_identities),
 ];
 
 /// The version a fully migrated database is at.
@@ -542,6 +543,15 @@ fn nip46_senders(tx: &Transaction) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_nip46_senders_first_seen ON nip46_senders (first_seen_at);",
     )?;
     Ok(())
+}
+
+/// 15. A member's own key held as an identity (#138, spike). `owner_pubkey` is the member it belongs
+///     to, hex, or NULL for the bunker's own identities, so every existing identity keeps its
+///     meaning. Only its owner may use an owned identity: no grant applies to it, and administrators
+///     have no access to it. It never counts as one of "several" identities, so a bunker whose
+///     only other identities are owned behaves as a single-key bunker for everyone else.
+fn owned_identities(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(tx, &[("identities", "owner_pubkey", "TEXT")])
 }
 
 /// Adds each `(table, column, type)` the table does not have yet, so a migration that adds columns

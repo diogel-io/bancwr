@@ -281,6 +281,14 @@ pub async fn add_team_member(
                 for key in keys {
                     let parsed = PublicKey::parse(key.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
                     let identity = state.keyring.identity_of(&parsed).await.ok_or((StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+                    // A member's own key (#138) is never granted to anyone.
+                    let owned = state.db.identity_owner(identity.as_deref()).map_err(|e| {
+                        error!("Failed to read identities: {}", e);
+                        (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
+                    })?;
+                    if owned.is_some() {
+                        return Err((StatusCode::BAD_REQUEST, "Invalid identity".to_string()));
+                    }
                     if !grants.contains(&identity) {
                         grants.push(identity);
                     }
@@ -490,6 +498,8 @@ pub fn create_router(state: AppState) -> Router {
     let signer = Router::new()
         .route("/api/bunker/connections", get(crate::connections_api::list_connections))
         .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection))
+        // A token that signs as the caller's own key (#138, spike): for themselves only.
+        .route("/api/bunker/connections/own-tokens", post(crate::connections_api::issue_own_token))
         .route("/api/bunker/logs/mine", get(get_my_logs))
         // Requests held for approval (#102): administrators see all, signers their own.
         .route("/api/bunker/approvals", get(crate::approvals_api::list_approvals))

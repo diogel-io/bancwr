@@ -776,12 +776,20 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
     value.as_deref().map(parse_time).transpose()
 }
 
-/// A condition on `nip46_connections c`: its member may use its identity (#103). Administrators
-/// may use every identity; with no identity but the primary, everyone may; otherwise the member
-/// needs a grant. Matches `may_use_identity`.
-const IDENTITY_ALLOWED: &str = "(EXISTS(SELECT 1 FROM team_members ma WHERE ma.pubkey = c.for_pubkey AND ma.role = 'administrator')
-       OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
-       OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = c.for_pubkey AND a.identity_pubkey = COALESCE(c.identity_pubkey, '')))";
+/// A condition on `identities`: one of the bunker's own beside the primary, not a member's own key
+/// (#138). Only these make grants matter.
+const SHARED_IDENTITY: &str = "is_primary = 0 AND owner_pubkey IS NULL";
+
+/// A condition on `nip46_connections c`: its member may use its identity (#103). A member's own key
+/// (#138) only its owner may use, administrators included. Of the bunker's own: administrators may
+/// use every one; with none but the primary, everyone may; otherwise the member needs a grant.
+/// Matches `may_use_identity`.
+const IDENTITY_ALLOWED: &str = "(CASE WHEN EXISTS(SELECT 1 FROM identities io WHERE io.pubkey = COALESCE(c.identity_pubkey, '') AND io.owner_pubkey IS NOT NULL)
+       THEN EXISTS(SELECT 1 FROM identities io WHERE io.pubkey = COALESCE(c.identity_pubkey, '') AND io.owner_pubkey = c.for_pubkey)
+       ELSE (EXISTS(SELECT 1 FROM team_members ma WHERE ma.pubkey = c.for_pubkey AND ma.role = 'administrator')
+         OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0 AND owner_pubkey IS NULL)
+         OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = c.for_pubkey AND a.identity_pubkey = COALESCE(c.identity_pubkey, '')))
+       END)";
 
 /// The key `identity_access` stores an identity under: its pubkey, or '' for the primary.
 fn access_key(identity: Option<&str>) -> &str {
@@ -791,9 +799,12 @@ fn access_key(identity: Option<&str>) -> &str {
 /// Whether `member` may use `identity` (#103), as `IDENTITY_ALLOWED` decides it.
 fn may_use_identity(conn: &Connection, member: &str, identity: Option<&str>) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1 AND role = 'administrator')
-             OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
-             OR EXISTS(SELECT 1 FROM identity_access WHERE member_pubkey = ?1 AND identity_pubkey = ?2)",
+        "SELECT CASE WHEN EXISTS(SELECT 1 FROM identities WHERE pubkey = ?2 AND owner_pubkey IS NOT NULL)
+             THEN EXISTS(SELECT 1 FROM identities WHERE pubkey = ?2 AND owner_pubkey = ?1)
+             ELSE (EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1 AND role = 'administrator')
+               OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0 AND owner_pubkey IS NULL)
+               OR EXISTS(SELECT 1 FROM identity_access WHERE member_pubkey = ?1 AND identity_pubkey = ?2))
+             END",
         params![member, access_key(identity)],
         |row| row.get(0),
     )
@@ -1452,6 +1463,8 @@ pub struct Identity {
     /// The primary's key is `bunker-key.enc`; every other identity's is in the database.
     pub is_primary: bool,
     pub added_at: DateTime<Utc>,
+    /// The member whose own key it is (#138), hex; None for the bunker's own identities.
+    pub owner_pubkey: Option<String>,
 }
 
 impl Identity {
@@ -1477,6 +1490,8 @@ pub enum AddIdentityRefusal {
     AlreadyAnIdentity,
     /// It is a team member's key, and an identity's key never signs in (T2).
     IsAMember,
+    /// The owner named for it is not a member who can sign (#138).
+    OwnerCannotSign,
 }
 
 /// The longest label an identity may have.
@@ -1488,6 +1503,7 @@ fn identity_from_row(row: &rusqlite::Row) -> rusqlite::Result<Identity> {
         label: row.get(1)?,
         is_primary: row.get::<_, i64>(2)? != 0,
         added_at: parse_time(&row.get::<_, String>(3)?)?,
+        owner_pubkey: row.get(4)?,
     })
 }
 
@@ -1517,7 +1533,7 @@ impl Database {
     /// Every identity: the primary first, then the others in the order they were added.
     pub fn list_identities(&self) -> anyhow::Result<Vec<Identity>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let mut stmt = conn.prepare("SELECT pubkey, label, is_primary, added_at FROM identities ORDER BY is_primary DESC, added_at, pubkey")?;
+        let mut stmt = conn.prepare("SELECT pubkey, label, is_primary, added_at, owner_pubkey FROM identities ORDER BY is_primary DESC, added_at, pubkey")?;
         let rows = stmt.query_map([], identity_from_row)?.collect::<Result<_, _>>()?;
         Ok(rows)
     }
@@ -1537,6 +1553,19 @@ impl Database {
     /// sign, in the same transaction, so nobody loses access when grants start to matter. Recorded
     /// as `identity_added`, with no actor: it is done at the bunker's own command line.
     pub fn add_identity(&self, pubkey: &str, label: &str, key_file: &str, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
+        self.insert_identity(pubkey, label, key_file, None, now)
+    }
+
+    /// Adds a member's own key as an identity only `owner` may use (#138, spike): `bunker
+    /// import-key --add --owner`. The owner must be a member who can sign, under a different key:
+    /// an identity's key never signs in (T2), so they sign in to the console with their own
+    /// console key. It grants nothing to anyone else, and is recorded as `identity_added` with the
+    /// owner as its member.
+    pub fn add_owned_identity(&self, pubkey: &str, label: &str, key_file: &str, owner: &str, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
+        self.insert_identity(pubkey, label, key_file, Some(owner), now)
+    }
+
+    fn insert_identity(&self, pubkey: &str, label: &str, key_file: &str, owner: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
@@ -1547,7 +1576,15 @@ impl Database {
         if member {
             return Ok(Err(AddIdentityRefusal::IsAMember));
         }
-        let first: bool = tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)", [], |row| row.get(0))?;
+        if let Some(owner) = owner {
+            let role: Option<String> = tx.query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![owner], |row| row.get(0)).optional()?;
+            if !role.is_some_and(|role| role.parse::<Role>().is_ok_and(|role| role.can_sign())) {
+                return Ok(Err(AddIdentityRefusal::OwnerCannotSign));
+            }
+        }
+        // Grants start to matter with the first identity of the bunker's own beside the primary;
+        // an owned one changes nothing for anyone but its owner.
+        let first: bool = owner.is_none() && tx.query_row(&format!("SELECT NOT EXISTS(SELECT 1 FROM identities WHERE {})", SHARED_IDENTITY), [], |row| row.get(0))?;
         if first {
             tx.execute(
                 &format!(
@@ -1559,10 +1596,14 @@ impl Database {
             )?;
         }
         tx.execute(
-            "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at) VALUES (?1, ?2, ?3, 0, ?4)",
-            params![pubkey, label, key_file, db_time(now)],
+            "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at, owner_pubkey) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+            params![pubkey, label, key_file, db_time(now), owner],
         )?;
-        audit::record(&tx, &Audit { identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_ADDED) }, now)?;
+        let detail = match owner {
+            Some(_) => format!("label={};owned=true", label),
+            None => format!("label={}", label),
+        };
+        audit::record(&tx, &Audit { identity: Some(pubkey), member: owner, detail: Some(detail), ..Audit::new(action::IDENTITY_ADDED) }, now)?;
         tx.commit()?;
         Ok(Ok(()))
     }
@@ -1571,7 +1612,7 @@ impl Database {
     pub fn find_identity(&self, pubkey: &str) -> anyhow::Result<Option<Identity>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         Ok(conn
-            .query_row("SELECT pubkey, label, is_primary, added_at FROM identities WHERE pubkey = ?1", params![pubkey], identity_from_row)
+            .query_row("SELECT pubkey, label, is_primary, added_at, owner_pubkey FROM identities WHERE pubkey = ?1", params![pubkey], identity_from_row)
             .optional()?)
     }
 
@@ -1587,10 +1628,22 @@ impl Database {
         Ok(changed > 0)
     }
 
-    /// Whether this bunker has an identity beside the primary, from when grants matter.
+    /// Whether this bunker has an identity of its own beside the primary, from when grants matter.
+    /// Members' own keys (#138) do not count.
     pub fn has_several_identities(&self) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)", [], |row| row.get(0))?)
+        Ok(conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM identities WHERE {})", SHARED_IDENTITY), [], |row| row.get(0))?)
+    }
+
+    /// The member whose own key `identity` is (#138), hex; None for the primary and the bunker's
+    /// own identities.
+    pub fn identity_owner(&self, identity: Option<&str>) -> anyhow::Result<Option<String>> {
+        let Some(identity) = identity else { return Ok(None) };
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(conn
+            .query_row("SELECT owner_pubkey FROM identities WHERE pubkey = ?1", params![identity], |row| row.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten())
     }
 
     /// Whether `member` may use `identity` (None: the primary).

@@ -8,7 +8,9 @@
 //! | `DELETE /api/bunker/identities/:pubkey/members/:member` | administrator |
 //!
 //! Identities are added at the bunker's command line (`bunker import-key --add`), never here, so a
-//! key never passes through the browser. Removing one is not supported yet.
+//! key never passes through the browser. Removing one is not supported yet. A member's own key
+//! (#138, spike: `--add --owner`) is listed with its owner, is never granted, and only its owner
+//! may use it.
 use crate::connections_api::{api_error, caller, database_error, ApiError};
 use crate::db::{Identity, MAX_IDENTITY_LABEL_CHARS};
 use crate::proxy_auth::Caller;
@@ -38,6 +40,9 @@ pub struct IdentityResponse {
     /// identity without a grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<String>>,
+    /// The member whose own key it is (#138), hex; absent for the bunker's own identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +59,7 @@ async fn response(state: &AppState, identity: Identity, members: Option<Vec<Stri
         is_primary: identity.is_primary,
         available,
         members,
+        owner: identity.owner_pubkey,
     }
 }
 
@@ -119,6 +125,9 @@ pub async fn grant_identity(
     Path((key, member)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let identity = find(&state, &key)?;
+    if identity.owner_pubkey.is_some() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "owned_identity", "That is a member's own key. Nobody else can be granted it."));
+    }
     let member = signing_member(&state, &member)?;
     let (by, _) = caller(who);
     let added = state.db.grant_identity(identity.reference(), &member, crate::audit::actor(&by), Utc::now()).map_err(database_error)?;

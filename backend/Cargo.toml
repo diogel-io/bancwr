@@ -74,6 +74,10 @@ name = "db_test"
 path = "tests/unit/db_test.rs"
 
 [[test]]
+name = "owned_identity_test"
+path = "tests/integration/owned_identity_test.rs"
+
+[[test]]
 name = "api_test"
 path = "tests/integration/api_test.rs"
 

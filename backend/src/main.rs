@@ -120,9 +120,15 @@ fn restore() -> i32 {
 
 /// `--label <text>` or `--label=<text>` among the command's arguments.
 fn label_argument(args: &[String]) -> Option<String> {
-    args.iter().enumerate().find_map(|(i, arg)| match arg.strip_prefix("--label=") {
+    named_argument(args, "--label")
+}
+
+/// `<name> <value>` or `<name>=<value>` among the command's arguments.
+fn named_argument(args: &[String], name: &str) -> Option<String> {
+    let prefix = format!("{}=", name);
+    args.iter().enumerate().find_map(|(i, arg)| match arg.strip_prefix(prefix.as_str()) {
         Some(value) => Some(value.to_string()),
-        None if arg == "--label" => args.get(i + 1).cloned(),
+        None if arg == name => args.get(i + 1).cloned(),
         None => None,
     })
 }
@@ -137,6 +143,18 @@ fn add_identity(args: &[String]) -> i32 {
         eprintln!("Could not add the identity: give it a label of up to 100 characters with --label, such as --label \"Brand B\".");
         return 1;
     }
+    // A member's own key (#138, spike): `--owner <npub or hex>` names the member, by the key they
+    // sign in to the console with, who alone may use it.
+    let owner = match named_argument(args, "--owner") {
+        None => None,
+        Some(value) => match bunker::registry::canonical_pubkey(value.trim()) {
+            Ok(hex) => Some(hex),
+            Err(_) => {
+                eprintln!("Could not add the identity: --owner must be the npub or hex key the member signs in with.");
+                return 1;
+            }
+        },
+    };
     let result = key_store::RootKey::from_env().and_then(|root| {
         let secret_key = key_store::read_plain_key()?;
         Ok((key_store::encrypt(&root, &secret_key), Keys::new(secret_key).public_key()))
@@ -155,8 +173,20 @@ fn add_identity(args: &[String]) -> i32 {
         eprintln!("Could not add the identity: that key is already this bunker's primary identity.");
         return 1;
     }
-    let added = Database::new(&db_path).and_then(|db| db.add_identity(&public_key.to_hex(), &label, &key_file, chrono::Utc::now()));
+    let added = Database::new(&db_path).and_then(|db| match &owner {
+        Some(owner) => db.add_owned_identity(&public_key.to_hex(), &label, &key_file, owner, chrono::Utc::now()),
+        None => db.add_identity(&public_key.to_hex(), &label, &key_file, chrono::Utc::now()),
+    });
     match added {
+        Ok(Ok(())) if owner.is_some() => {
+            println!("Added \"{}\", a member's own key, encrypted at rest. Only that member may use it.", label);
+            println!("Public key: {}", public_key.to_bech32().unwrap_or_default());
+            println!(
+                "Next: remove BUNKER_NSEC_FILE and BUNKER_NSEC, delete every plain copy of the key, and \
+                 restart the bunker. The member issues their own tokens for it."
+            );
+            0
+        }
         Ok(Ok(())) => {
             println!("Added the identity \"{}\", encrypted at rest.", label);
             println!("Public key: {}", public_key.to_bech32().unwrap_or_default());
@@ -173,6 +203,10 @@ fn add_identity(args: &[String]) -> i32 {
         }
         Ok(Err(bunker::db::AddIdentityRefusal::IsAMember)) => {
             eprintln!("Could not add the identity: that key is a team member's, and an identity's key can never sign in.");
+            1
+        }
+        Ok(Err(bunker::db::AddIdentityRefusal::OwnerCannotSign)) => {
+            eprintln!("Could not add the identity: --owner must be a team member who can sign, an admin or a signer.");
             1
         }
         Err(e) => {

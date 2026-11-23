@@ -243,6 +243,36 @@ pub async fn issue_token(
     Json(request): Json<IssueTokenRequest>,
 ) -> Result<Json<IssueTokenResponse>, ApiError> {
     let (caller_pubkey, _) = caller(who);
+    issue(state, caller_pubkey, request, Issuer::Administrator).await
+}
+
+/// Issue a connection token that signs as the caller's own key (#138, spike): for the caller only,
+/// and only for an identity they own. Administrators and signers; nobody can issue one for
+/// another member's own key, not even an administrator.
+/// POST /api/bunker/connections/own-tokens
+pub async fn issue_own_token(
+    State(state): State<AppState>,
+    who: Option<Extension<Caller>>,
+    Json(mut request): Json<IssueTokenRequest>,
+) -> Result<Json<IssueTokenResponse>, ApiError> {
+    let (caller_pubkey, _) = caller(who);
+    if caller_pubkey.is_empty() {
+        return Err(api_error(StatusCode::FORBIDDEN, "forbidden", "Only a signed-in member can issue a token for their own key."));
+    }
+    request.for_pubkey = Some(caller_pubkey.clone());
+    issue(state, caller_pubkey, request, Issuer::Owner).await
+}
+
+/// Which route a token is issued through (#138).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Issuer {
+    /// `POST /connections/tokens`: an administrator, for any member, on the bunker's own identities.
+    Administrator,
+    /// `POST /connections/own-tokens`: a member, for themselves, on their own key.
+    Owner,
+}
+
+async fn issue(state: AppState, caller_pubkey: String, request: IssueTokenRequest, issuer: Issuer) -> Result<Json<IssueTokenResponse>, ApiError> {
     // The relays in force (#78): NIP46_RELAYS, or the list saved in the console. A token always
     // carries the current list.
     let enabled = state.config.read().await.nip46_enabled;
@@ -340,6 +370,22 @@ pub async fn issue_token(
             ))
         }
         None => return Err(api_error(StatusCode::BAD_REQUEST, "not_registered", "Connections can only be issued for members of the vault.")),
+    }
+    // A member's own key (#138): only its owner issues for it, for themselves, on their own route.
+    let owner = state.db.identity_owner(identity.as_deref()).map_err(database_error)?;
+    match (issuer, owner.as_deref()) {
+        (Issuer::Administrator, Some(_)) => {
+            return Err(api_error(
+                StatusCode::FORBIDDEN,
+                "owned_identity",
+                "That is a member's own key. Only they can issue a token for it.",
+            ))
+        }
+        (Issuer::Owner, Some(owner)) if owner == caller_pubkey => {}
+        (Issuer::Owner, _) => {
+            return Err(api_error(StatusCode::FORBIDDEN, "not_your_identity", "You can only issue a token here for your own key."))
+        }
+        (Issuer::Administrator, None) => {}
     }
     if !state.db.may_use_identity(&for_pubkey, identity.as_deref()).map_err(database_error)? {
         return Err(api_error(StatusCode::BAD_REQUEST, "no_identity_access", "That member may not sign as this identity. Grant it on their team page first."));

@@ -46,6 +46,13 @@ pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> Te
 /// `bunker import-key --add` records it, and unlocked, as the bunker unlocks it at start. The
 /// administrator is registered before they are added, so they hold the primary's grant.
 pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)]) -> TestApp {
+    spawn_with_owned_identities(enforced, nip46_relays, others, &[]).await
+}
+
+/// As `spawn_with_identities`, also holding members' own keys (#138, spike): each `(label, key,
+/// owner)` is recorded as `bunker import-key --add --owner` records it, with `owner` (the key the
+/// member signs in to the console with) registered first as a signer named after the label.
+pub async fn spawn_with_owned_identities(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)], owned: &[(&str, Keys, Keys)]) -> TestApp {
     let bunker = Keys::generate();
     let admin = Keys::generate();
     let db = Database::new(":memory:").expect("in-memory database");
@@ -55,6 +62,12 @@ pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<Stri
     for (label, keys) in others {
         db.add_identity(&keys.public_key().to_hex(), label, "bancwr-key v1 (not used by these tests)", chrono::Utc::now())
             .expect("record the identity")
+            .expect("a new identity");
+    }
+    for (label, keys, owner) in owned {
+        db.add_team_member(label, &owner.public_key().to_hex(), Role::Signer).expect("register the owner");
+        db.add_owned_identity(&keys.public_key().to_hex(), label, "bancwr-key v1 (not used by these tests)", &owner.public_key().to_hex(), chrono::Utc::now())
+            .expect("record the owned identity")
             .expect("a new identity");
     }
 
@@ -69,7 +82,12 @@ pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<Stri
         approval_timeout_minutes: bunker::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES,
         console_url: None,
     };
-    let others: Vec<Signer> = others.iter().map(|(_, keys)| Signer::new(keys.secret_key().clone())).collect();
+    let others: Vec<Signer> = others
+        .iter()
+        .map(|(_, keys)| keys)
+        .chain(owned.iter().map(|(_, keys, _)| keys))
+        .map(|keys| Signer::new(keys.secret_key().clone()))
+        .collect();
     let state = AppState::with_identities(Signer::new(bunker.secret_key().clone()), others, db.clone(), config);
     let app = create_router(state.clone());
 
