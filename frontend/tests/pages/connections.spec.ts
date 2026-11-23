@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
-import { createError, readBody, setResponseStatus } from 'h3'
+import { createError, readBody } from 'h3'
 import { UApp } from '#components'
 import type { BunkerIdentity, Nip46Connection, Nip46Token, Role } from '#shared/types/bunker'
 import { signInAs } from '../helpers/session'
@@ -43,10 +43,10 @@ registerEndpoint('/api/bunker/connections/tokens', {
 registerEndpoint('/api/bunker/connections/tokens', {
   method: 'POST',
   handler: async (event) => {
-    // As the proxy passes the bunker's answer through: the body is { error, message }.
+    // As the proxy rethrows the bunker's refusal: an H3 error, with the bunker's { error, message }
+    // under its data and only the status text as its own message.
     if (state.issueStatus === 409) {
-      setResponseStatus(event, 409)
-      return { error: 'nip46_disabled', message: 'off' }
+      throw createError({ statusCode: 409, statusMessage: 'Conflict', data: { error: 'nip46_disabled', message: 'off' } })
     }
     const body = await readBody(event)
     state.issued.push(body)

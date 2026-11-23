@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
-import { readBody, setResponseStatus } from 'h3'
+import { createError, readBody } from 'h3'
 import { UApp } from '#components'
 import type { PendingApproval, Role } from '#shared/types/bunker'
 import { signInAs } from '../helpers/session'
@@ -33,9 +33,11 @@ for (const decision of ['approve', 'reject']) {
   registerEndpoint(`/api/bunker/approvals/p1/${decision}`, {
     method: 'POST',
     handler: async (event) => {
+      // As the proxy rethrows the bunker's refusal: an H3 error, with the bunker's { error, message }
+      // under its data.
       if (state.refuse) {
-        setResponseStatus(event, state.refuse === 'not_found' ? 404 : 409)
-        return { error: state.refuse, message: 'no' }
+        const statusCode = state.refuse === 'not_found' ? 404 : 409
+        throw createError({ statusCode, statusMessage: statusCode === 404 ? 'Not Found' : 'Conflict', data: { error: state.refuse, message: 'no' } })
       }
       state.decisions.push({ path: decision, body: await readBody(event) })
       state.pending = []

@@ -10,6 +10,7 @@ import { renderSVG } from 'uqr'
 import { npubEncode } from 'nostr-tools/nip19'
 import { canSign } from '#shared/types/bunker'
 import type { BunkerIdentity, EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
+import { bunkerRefusal } from '~/utils/bunker-error'
 import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
 
 const props = defineProps<{
@@ -163,8 +164,8 @@ async function submit() {
     })
     copied.value = false
   } catch (failure) {
-    const data = (failure as { data?: { error?: string, message?: string } }).data
-    error.value = (data?.error && ERRORS[data.error]) ?? data?.message ?? 'The token could not be issued.'
+    const refusal = bunkerRefusal(failure)
+    error.value = (refusal.error && ERRORS[refusal.error]) ?? refusal.message ?? 'The token could not be issued.'
   } finally {
     issuing.value = false
   }
