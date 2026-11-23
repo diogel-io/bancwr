@@ -4,8 +4,10 @@
 // connection lasts (#98), how fast it may use the key (#101) and which kinds need an
 // administrator's approval before signing (#102). The bunker:// string it
 // returns carries the token's secret and is shown once: the bunker keeps only its hash (#53), so it
-// cannot be shown again.
+// cannot be shown again. The form and the result name the identity the app signs as (#137): it is
+// always one of the bunker's identities, never the member the token is for.
 import { renderSVG } from 'uqr'
+import { npubEncode } from 'nostr-tools/nip19'
 import { canSign } from '#shared/types/bunker'
 import type { BunkerIdentity, EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
 import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
@@ -13,7 +15,7 @@ import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, ki
 const props = defineProps<{
   members: TeamMember[]
   self: string
-  /** The bunker's identities (#103). With more than one, the token says which it signs as. */
+  /** The bunker's identities (#103). The one the token signs as is always named (#137), and with more than one it is chosen. */
   identities?: BunkerIdentity[]
   issue: (request: IssueTokenRequest) => Promise<IssueTokenResponse>
 }>()
@@ -28,19 +30,35 @@ const forPubkey = ref(props.self)
 /** The identity it signs as (#103): a pubkey, or PRIMARY. A select item cannot be empty. */
 const PRIMARY = 'primary'
 const identity = ref(PRIMARY)
-// Only the identities the chosen member may use: an administrator every one, anyone else those
+const choosesIdentity = computed(() => (props.identities?.length ?? 0) > 1)
+// Only the identities the chosen member may use, as the bunker decides it (IDENTITY_ALLOWED): an
+// administrator every one, anyone on a bunker with only the primary that one, anyone else those
 // they are granted. The bunker refuses the rest (no_identity_access).
 const identityItems = computed(() => {
   const member = props.members.find(m => m.pubkey === forPubkey.value)
   const administrator = member?.role === 'administrator'
   return (props.identities ?? [])
-    .filter(i => administrator || (i.members ?? []).includes(forPubkey.value))
+    .filter(i => administrator || !choosesIdentity.value || (i.members ?? []).includes(forPubkey.value))
     .map(i => ({ label: i.label, value: i.is_primary ? PRIMARY : i.pubkey }))
 })
-const choosesIdentity = computed(() => (props.identities?.length ?? 0) > 1)
 watch(identityItems, (items) => {
   if (!items.some(i => i.value === identity.value)) identity.value = items[0]?.value ?? PRIMARY
 }, { immediate: true })
+
+/** "Label (npub)" for one of the bunker's keys, or its npub alone when it is not listed. */
+function describeIdentity(pubkey: string): string {
+  const known = props.identities?.find(i => i.pubkey === pubkey)
+  const npub = known?.npub ?? npubEncode(pubkey)
+  return known ? `${known.label} (${npub})` : npub
+}
+// The identity the app will sign as (#137). Undefined while the identities load, or when the
+// member may use none of them; the form then claims no key.
+const signsAs = computed(() => {
+  if (!identityItems.value.some(i => i.value === identity.value)) return undefined
+  const chosen = (props.identities ?? []).find(i => identity.value === PRIMARY ? i.is_primary : i.pubkey === identity.value)
+  return chosen && describeIdentity(chosen.pubkey)
+})
+const noIdentity = computed(() => (props.identities?.length ?? 0) > 0 && !identityItems.value.length)
 const label = ref('')
 const preset = ref<number | 'custom' | 'none'>(0)
 const custom = ref('')
@@ -95,6 +113,19 @@ function toggleMethod(method: EncryptionMethod, on: boolean | 'indeterminate') {
 }
 // An image, not injected markup: the SVG is uqr's own output, but nothing here needs v-html.
 const qr = computed(() => issued.value ? `data:image/svg+xml;utf8,${encodeURIComponent(renderSVG(issued.value.uri, { border: 1 }))}` : '')
+/** The identity the issued token signs as: the response's, or the bunker:// host, the same hex key. */
+const issuedSignsAs = computed(() => {
+  if (!issued.value) return undefined
+  let pubkey = issued.value.identity_pubkey
+  if (!pubkey) {
+    try {
+      pubkey = new URL(issued.value.uri).hostname
+    } catch {
+      return undefined
+    }
+  }
+  return /^[0-9a-f]{64}$/.test(pubkey) ? describeIdentity(pubkey) : undefined
+})
 
 const ERRORS: Record<string, string> = {
   nip46_disabled: 'NIP-46 is turned off on this bunker (NIP46_ENABLED=true turns it on), or it has no relays: an administrator adds them under Config, Bunker relays.',
@@ -177,6 +208,13 @@ function done() {
         data-testid="issued-qr"
       >
       <div class="min-w-0 flex-1 space-y-2">
+        <p
+          v-if="issuedSignsAs"
+          class="text-sm break-all"
+          data-testid="issued-identity"
+        >
+          Signs as {{ issuedSignsAs }}
+        </p>
         <code
           class="block rounded bg-elevated p-2 text-xs break-all"
           data-testid="issued-uri"
@@ -218,7 +256,7 @@ function done() {
     <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
       <UFormField
         label="For"
-        help="The member this app is connected for. It signs as the bunker's key."
+        help="The member this token is issued to. Their role, identity grants and approvals apply, and the log names them. The app does not sign as them."
       >
         <USelect
           id="issue-token-for"
@@ -228,17 +266,44 @@ function done() {
         />
       </UFormField>
       <UFormField
-        v-if="choosesIdentity"
-        label="Sign as"
-        help="The identity the app signs as. Only those this member may use are offered."
-        data-testid="issue-token-identity"
+        :label="choosesIdentity ? 'Sign as' : 'Identity'"
+        :help="choosesIdentity ? 'The identity the app signs as. Only those this member may use are offered.' : undefined"
+        data-testid="issue-token-signs-as-field"
       >
-        <USelect
-          id="issue-token-identity"
-          v-model="identity"
-          :items="identityItems"
-          class="w-full"
-        />
+        <div class="space-y-1.5">
+          <div
+            v-if="choosesIdentity"
+            data-testid="issue-token-identity"
+          >
+            <USelect
+              id="issue-token-identity"
+              v-model="identity"
+              :items="identityItems"
+              class="w-full"
+            />
+          </div>
+          <p
+            v-if="signsAs"
+            class="text-sm break-all"
+            data-testid="issue-token-signs-as"
+          >
+            Signs as {{ signsAs }}
+          </p>
+          <p
+            v-else-if="noIdentity"
+            class="text-sm text-error"
+            data-testid="issue-token-signs-as"
+          >
+            This member may not use any of this bunker's identities yet. Grant one on their team page first.
+          </p>
+          <p
+            v-else
+            class="text-sm"
+            data-testid="issue-token-signs-as"
+          >
+            Signs as the bunker's primary identity.
+          </p>
+        </div>
       </UFormField>
       <UFormField
         label="Label"

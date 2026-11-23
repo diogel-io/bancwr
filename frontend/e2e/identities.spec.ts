@@ -53,8 +53,11 @@ test('an administrator connects an app that signs as a second identity (#103)', 
   await page.getByRole('option', { name: 'e2e signer', exact: true }).click()
   await form.locator('#issue-token-identity').click()
   await page.getByRole('option', { name: 'e2e brand' }).click()
+  // The form and the result name the brand's key, not the signer's (#137).
+  await expect(form.getByTestId('issue-token-signs-as')).toHaveText(`Signs as e2e brand (${process.env.E2E_BRAND_NPUB})`)
   await form.getByLabel('Label').fill('e2e brand app')
   await form.getByRole('button', { name: 'Issue token' }).click()
+  await expect(page.getByTestId('issued-identity')).toHaveText(`Signs as e2e brand (${process.env.E2E_BRAND_NPUB})`)
   const uri = (await page.getByTestId('issued-uri').textContent())!.trim()
   await page.getByRole('button', { name: 'Done' }).click()
   expect(new URL(uri).hostname).toBe(brand)
