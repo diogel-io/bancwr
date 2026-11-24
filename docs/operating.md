@@ -443,6 +443,19 @@ A manual copy is not encrypted apart from the key file, and restoring it is just
 That brings back every connection and token as it was, including those revoked since. After
 restoring a manual copy, revoke under **Connections** every app and token you had shut out.
 
+## Signers connecting their own apps
+
+A signer connects their own apps under **Connections**, without asking an administrator (#142).
+Their form issues a token only for them, and offers only the identities they are granted. They see
+and revoke their own unused tokens there too.
+
+- A signer's token never needs approval: **Needs approval** is offered only to administrators. To
+  have a member's app checked before it signs, issue the token for them yourself, with the kinds
+  ticked.
+- A signer can issue a new token after you revoke one. To stop a member connecting apps at all,
+  make them a viewer or remove them, which also disconnects their apps.
+- Each token records who issued it, and the audit log names them.
+
 ## Apps with a time limit
 
 A contractor, a campaign or a bot often needs access for a set time. When issuing a token under
@@ -494,6 +507,7 @@ to sign one of them waits under **Approvals** until an administrator decides.
 - Signers see their own requests waiting, and cannot decide them. Any administrator can, their own
   apps' requests included.
 - Which kinds need approval cannot be changed on an existing connection: issue a new token.
+- Only an administrator can require approval. A signer's own tokens never need it (#142).
 
 ## More than one identity
 

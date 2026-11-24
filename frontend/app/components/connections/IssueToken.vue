@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// Issuing a connection token (#31, administrators): for which member, a label, what the app may
+// Issuing a connection token (#31): for which member, a label, what the app may
 // sign, which encryption methods it may call (#97), how long the token is valid, how long the
 // connection lasts (#98), how fast it may use the key (#101) and which kinds need an
 // administrator's approval before signing (#102). The bunker:// string it
 // returns carries the token's secret and is shown once: the bunker keeps only its hash (#53), so it
 // cannot be shown again. The form and the result name the identity the app signs as (#137): it is
-// always one of the bunker's identities, never the member the token is for.
+// always one of the bunker's identities, never the member the token is for. A signer issues their
+// own (#142): always for themselves, as an identity they are granted, and with no approval kinds,
+// which stay an administrator's control; the bunker refuses anything else.
 import { renderSVG } from 'uqr'
 import { npubEncode } from 'nostr-tools/nip19'
 import { canSign } from '#shared/types/bunker'
@@ -16,6 +18,8 @@ import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, ki
 const props = defineProps<{
   members: TeamMember[]
   self: string
+  /** Whether the signed-in member administers. A signer's form has no member select or approval (#142). */
+  administrator?: boolean
   /** The bunker's identities (#103). The one the token signs as is always named (#137), and with more than one it is chosen. */
   identities?: BunkerIdentity[]
   issue: (request: IssueTokenRequest) => Promise<IssueTokenResponse>
@@ -35,11 +39,12 @@ const choosesIdentity = computed(() => (props.identities?.length ?? 0) > 1)
 // Only the identities the chosen member may use, as the bunker decides it (IDENTITY_ALLOWED): an
 // administrator every one, anyone on a bunker with only the primary that one, anyone else those
 // they are granted. The bunker refuses the rest (no_identity_access).
+// A signer's list is already only those they may use, without `members` (#142): offer it whole.
 const identityItems = computed(() => {
   const member = props.members.find(m => m.pubkey === forPubkey.value)
   const administrator = member?.role === 'administrator'
   return (props.identities ?? [])
-    .filter(i => administrator || !choosesIdentity.value || (i.members ?? []).includes(forPubkey.value))
+    .filter(i => !props.administrator || administrator || !choosesIdentity.value || (i.members ?? []).includes(forPubkey.value))
     .map(i => ({ label: i.label, value: i.is_primary ? PRIMARY : i.pubkey }))
 })
 watch(identityItems, (items) => {
@@ -136,6 +141,8 @@ const ERRORS: Record<string, string> = {
   invalid_rate_limit: 'A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.',
   invalid_approval_kinds: 'Only kinds the app may sign can need approval.',
   no_identity_access: 'That member may not sign as this identity. Grant it on their team page first.',
+  forbidden_member: 'You can only issue connections for yourself.',
+  approval_admin_only: 'Only an administrator can require approval.',
   invalid_identity: 'That is not one of this bunker\'s identities.',
   invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.'
 }
@@ -152,14 +159,14 @@ async function submit() {
   error.value = undefined
   try {
     issued.value = await props.issue({
-      for_pubkey: forPubkey.value,
+      for_pubkey: props.administrator ? forPubkey.value : props.self,
       label: label.value.trim(),
       kinds: kinds.value.kinds,
       methods: methods.value,
       expires_in_hours: hours.value,
       ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {}),
       ...rateLimitRequest(),
-      ...(approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {}),
+      ...(props.administrator && approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {}),
       ...(identity.value !== PRIMARY ? { identity: identity.value } : {})
     })
     copied.value = false
@@ -256,6 +263,7 @@ function done() {
     />
     <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
       <UFormField
+        v-if="administrator"
         label="For"
         help="The member this token is issued to. Their role, identity grants and approvals apply, and the log names them. The app does not sign as them."
       >
@@ -268,7 +276,7 @@ function done() {
       </UFormField>
       <UFormField
         :label="choosesIdentity ? 'Sign as' : 'Identity'"
-        :help="choosesIdentity ? 'The identity the app signs as. Only those this member may use are offered.' : undefined"
+        :help="choosesIdentity ? (administrator ? 'The identity the app signs as. Only those this member may use are offered.' : 'The identity the app signs as. Only those you may use are offered.') : undefined"
         data-testid="issue-token-signs-as-field"
       >
         <div class="space-y-1.5">
@@ -295,7 +303,7 @@ function done() {
             class="text-sm text-error"
             data-testid="issue-token-signs-as"
           >
-            This member may not use any of this bunker's identities yet. Grant one on their team page first.
+            {{ administrator ? 'This member may not use any of this bunker\'s identities yet. Grant one on their team page first.' : 'You may not use any of this bunker\'s identities yet. Ask an administrator to grant you one.' }}
           </p>
           <p
             v-else
@@ -338,7 +346,7 @@ function done() {
         </div>
       </UFormField>
       <UFormField
-        v-if="chosenKinds.length"
+        v-if="administrator && chosenKinds.length"
         label="Needs approval"
         help="An administrator approves each of these on the Approvals page before the bunker signs it."
         data-testid="issue-token-approval"

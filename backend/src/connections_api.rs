@@ -2,9 +2,9 @@
 //!
 //! | Route | Who |
 //! |-------|-----|
-//! | `POST /api/bunker/connections/tokens` | administrator |
-//! | `GET /api/bunker/connections/tokens` | administrator |
-//! | `DELETE /api/bunker/connections/tokens/:id` | administrator |
+//! | `POST /api/bunker/connections/tokens` | administrator and signer: administrators for any member who can sign, signers only for themselves and without approval kinds (#142) |
+//! | `GET /api/bunker/connections/tokens` | administrator and signer: administrators see all, signers their own (#142) |
+//! | `DELETE /api/bunker/connections/tokens/:id` | administrator and signer: administrators any unused token, signers their own (#142) |
 //! | `GET /api/bunker/connections` | administrator and signer: administrators see all, signers their own |
 //! | `DELETE /api/bunker/connections/:id` | administrator and signer: administrators any, signers their own (#31) |
 //!
@@ -242,7 +242,7 @@ pub async fn issue_token(
     who: Option<Extension<Caller>>,
     Json(request): Json<IssueTokenRequest>,
 ) -> Result<Json<IssueTokenResponse>, ApiError> {
-    let (caller_pubkey, _) = caller(who);
+    let (caller_pubkey, administrator) = caller(who);
     // The relays in force (#78): NIP46_RELAYS, or the list saved in the console. A token always
     // carries the current list.
     let enabled = state.config.read().await.nip46_enabled;
@@ -313,12 +313,20 @@ pub async fn issue_token(
         }
     }
     approval_kinds.sort_unstable();
+    // Approval (#102) is an administrator's control: a signer issuing their own token sets none (#142).
+    if !administrator && !approval_kinds.is_empty() {
+        return Err(api_error(StatusCode::FORBIDDEN, "approval_admin_only", "Only an administrator can require approval."));
+    }
 
     let for_pubkey = match request.for_pubkey.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
         Some(key) => canonical_pubkey(key).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "That is not a valid npub or hex key."))?,
         None if !caller_pubkey.is_empty() => caller_pubkey.clone(),
         None => return Err(api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "Say which member the connection is for.")),
     };
+    // A signer issues only for themselves (#142); an administrator for any member who can sign.
+    if !administrator && for_pubkey != caller_pubkey {
+        return Err(api_error(StatusCode::FORBIDDEN, "forbidden_member", "You can only issue connections for yourself."));
+    }
     // The identity it signs as (#103): the primary unless another is named, and only one this
     // bunker holds and the member may use.
     let identity: Option<String> = match request.identity.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
@@ -389,10 +397,16 @@ pub async fn issue_token(
     }))
 }
 
-/// List connection tokens (never their secrets)
+/// List connection tokens (never their secrets): an administrator sees every one, a signer only
+/// those issued for their key (#142).
 /// GET /api/bunker/connections/tokens
-pub async fn list_tokens(State(state): State<AppState>) -> Result<Json<Vec<TokenResponse>>, ApiError> {
-    let tokens = state.db.list_nip46_tokens().map_err(database_error)?;
+pub async fn list_tokens(
+    State(state): State<AppState>,
+    who: Option<Extension<Caller>>,
+) -> Result<Json<Vec<TokenResponse>>, ApiError> {
+    let (pubkey, administrator) = caller(who);
+    let scope = if administrator { None } else { Some(pubkey.as_str()) };
+    let tokens = state.db.list_nip46_tokens_for(scope).map_err(database_error)?;
     let primary = state.signer.read().await.public_key_hex();
     Ok(Json(
         tokens
@@ -406,15 +420,17 @@ pub async fn list_tokens(State(state): State<AppState>) -> Result<Json<Vec<Token
     ))
 }
 
-/// Revoke an unused token
+/// Revoke an unused token: an administrator any, a signer only one issued for their key (#142).
+/// Someone else's token is a 404, as an unknown one is, so its existence is not revealed.
 /// DELETE /api/bunker/connections/tokens/:id
 pub async fn revoke_token(
     State(state): State<AppState>,
     who: Option<Extension<Caller>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let (by, _) = caller(who);
-    if state.db.revoke_nip46_token_as(&id, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
+    let (by, administrator) = caller(who);
+    let only_for = if administrator { None } else { Some(by.as_str()) };
+    if state.db.revoke_nip46_token_scoped(&id, crate::audit::actor(&by), only_for, Utc::now()).map_err(database_error)? {
         info!("Revoked NIP-46 connection token {}", id);
         Ok(Json(json!({ "success": true })))
     } else {

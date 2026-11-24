@@ -222,8 +222,7 @@ impl Nonces {
 pub enum Access {
     /// Bunker health: every registered role, and the service identity.
     Health,
-    /// Administrators only: logs, metrics, config, bunker relays, adding and removing members,
-    /// connection tokens.
+    /// Administrators only: logs, metrics, config, bunker relays, adding and removing members.
     Administrator,
     /// Administrators and viewers: reading the team (#77).
     TeamReader,
@@ -231,7 +230,7 @@ pub enum Access {
     /// before any session exists, and a viewer's member profile page (#77).
     TeamReaderOrService,
     /// Administrators and signers, not the service identity: routes that scope what they return
-    /// to the caller (#53's connection list, #77's own recent signatures).
+    /// to the caller (#53's connection list, #142's connection tokens, #77's own recent signatures).
     Signer,
 }
 

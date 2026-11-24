@@ -189,7 +189,8 @@ everywhere it was copied. A session lasts 12 hours, and restarting the frontend 
 ### Connecting apps (NIP-46)
 
 With `NIP46_ENABLED=true`, Nostr apps can use the bunker as a remote signer. None can until an
-administrator issues it a single-use connection token naming the member it is for, the event kinds
+administrator issues it a single-use connection token naming the member it is for, or a signer issues
+one for themselves (#142), with the event kinds
 it may sign, and whether it may encrypt and decrypt messages (NIP-44 or NIP-04, #97); every app
 signs, encrypts and decrypts as the bunker's key, never as the member's. An app allowed to decrypt
 can read every encrypted message sent to the brand, and each decrypt is recorded. A token can also
@@ -334,7 +335,7 @@ Only keys registered with the bunker can use it, each with one of three roles (#
 | Role | Can |
 |------|-----|
 | Admin | Everything: the dashboard with metrics and activity, Team (add and remove members, and change their roles), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer and a viewer can do. |
-| Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46). |
+| Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46), including issuing connection tokens for themselves, as the identities they are granted and without approval kinds (#142). |
 | Viewer | A dashboard with the bunker's health; the team list and each member's profile, read-only. A viewer never holds a NIP-46 connection. |
 
 An administrator changes a member's role from **Team** in one step. Making a member a viewer

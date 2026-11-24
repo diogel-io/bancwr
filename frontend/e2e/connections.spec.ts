@@ -3,7 +3,8 @@
 // library) connects with it and signs a granted kind, the user sees the app and revokes it, and the
 // app can sign no more. An app granted the encryption methods (#97) encrypts and decrypts NIP-44
 // with the brand's key, and each decrypt is in the export. A connection issued for 7 days (#98)
-// shows when it ends. A connection issued with a rate limit (#101) is refused past its burst. The
+// shows when it ends. A connection issued with a rate limit (#101) is refused past its burst. A
+// signer issues their own token on the page and connects an app with it (#142). The
 // bunker's relay is the in-process
 // one; from this process it is 127.0.0.1, from the container e2e-host.
 import type { Browser, Page } from '@playwright/test'
@@ -63,6 +64,30 @@ async function asSigner(browser: Browser): Promise<Page> {
 
 const note = () => ({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'from a connected app' })
 
+test('a signer connects an app for themselves, which signs only what they granted (#142)', async ({ browser }) => {
+  const user = await asSigner(browser)
+  await user.goto('/connections')
+  const form = user.getByTestId('issue-token')
+  await expect(form.getByTestId('issue-token-approval')).toHaveCount(0)
+  await form.getByLabel('Label').fill('e2e app the signer connected')
+  await form.getByRole('button', { name: 'Issue token' }).click()
+  const uri = (await user.getByTestId('issued-uri').textContent())!.trim()
+  expect(uri).toMatch(/^bunker:\/\/[0-9a-f]{64}\?relay=.+&secret=[0-9a-f]{64}$/)
+  await user.getByRole('button', { name: 'Done' }).click()
+
+  const app = await connectApp(uri)
+  await expect(within(app.signEvent(note()))).resolves.toHaveProperty('sig')
+  expect(await refusal(app.signEvent({ ...note(), kind: 0, content: '{}' }))).toContain('Forbidden')
+
+  await user.reload()
+  const mine = user.getByTestId('connections-list').locator('li')
+  await expect(mine.first()).toContainText('1 Note')
+  await mine.first().getByRole('button', { name: /^Revoke/ }).click()
+  await mine.first().getByRole('button', { name: 'Revoke', exact: true }).click()
+  expect(await refusal(app.signEvent(note()))).toContain('Not connected')
+  await app.close()
+})
+
 test('an administrator connects an app for a signer, who sees it and revokes it', async ({ page, browser }) => {
   await page.goto('/connections')
   await expect(page.getByTestId('connections-explainer')).toContainText('not your own')
@@ -90,7 +115,9 @@ test('an administrator connects an app for a signer, who sees it and revokes it'
   // The signer sees only theirs, and revokes it.
   const user = await asSigner(browser)
   await user.goto('/connections')
-  await expect(user.getByTestId('issue-token')).toHaveCount(0)
+  // A signer's own form issues only for them (#142): no member to choose.
+  await expect(user.getByTestId('issue-token')).toBeVisible()
+  await expect(user.locator('#issue-token-for')).toHaveCount(0)
   const mine = user.getByTestId('connections-list').locator('li')
   await expect(mine).toHaveCount(1)
   await expect(mine.first()).toContainText('1 Note')

@@ -122,6 +122,29 @@ async fn a_connection_issued_for_a_second_identity_signs_as_it_over_the_relay() 
 }
 
 #[tokio::test]
+async fn a_signer_issuing_their_own_token_signs_only_as_an_identity_they_are_granted() {
+    let brand = Keys::generate();
+    let other_brand = Keys::generate();
+    let app = common::spawn_with_identities(true, Some(vec!["wss://relay.example".into()]), &[("Brand B", brand.clone()), ("Brand C", other_brand.clone())]).await;
+    let signer = app.register(Role::Signer);
+    assert_eq!(grant(&app, &brand, &signer).await, StatusCode::OK);
+    let own = |identity: &Keys| json!({ "label": "Mine", "kinds": [1], "identity": identity.public_key().to_hex() });
+    let as_signer = |body: Value| app.signed(Method::POST, "/api/bunker/connections/tokens", &signer.public_key().to_hex()).json(&body).send();
+
+    let res = as_signer(own(&brand)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let issued: IssueTokenResponse = res.json().await.unwrap();
+    assert_eq!(issued.identity_pubkey, brand.public_key().to_hex());
+    assert!(issued.uri.starts_with(&format!("bunker://{}?", brand.public_key().to_hex())));
+
+    // Not granted: Brand C, nor the primary once there are several identities.
+    let refused = as_signer(own(&other_brand)).await.unwrap();
+    assert_eq!(refused.json::<Value>().await.unwrap()["error"], "no_identity_access");
+    let refused = as_signer(json!({ "label": "Mine", "kinds": [1] })).await.unwrap();
+    assert_eq!(refused.json::<Value>().await.unwrap()["error"], "no_identity_access");
+}
+
+#[tokio::test]
 async fn a_member_granted_only_one_identity_cannot_sign_as_another() {
     let brand = Keys::generate();
     let app = common::spawn_with_identities(true, Some(vec!["wss://relay.example".into()]), &[("Brand B", brand.clone())]).await;

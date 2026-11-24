@@ -971,9 +971,18 @@ impl Database {
 
     /// Every token, newest first. Never the secrets.
     pub fn list_nip46_tokens(&self) -> anyhow::Result<Vec<Nip46Token>> {
+        self.list_nip46_tokens_for(None)
+    }
+
+    /// `list_nip46_tokens`, only those issued for `only_for` when it is given (#142: a signer
+    /// lists their own).
+    pub fn list_nip46_tokens_for(&self, only_for: Option<&str>) -> anyhow::Result<Vec<Nip46Token>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let mut stmt = conn.prepare(&format!("SELECT {} FROM nip46_tokens ORDER BY created_at DESC", TOKEN_COLUMNS))?;
-        let tokens = stmt.query_map([], token_from_row)?.collect::<Result<_, _>>()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM nip46_tokens WHERE (?1 IS NULL OR for_pubkey = ?1) ORDER BY created_at DESC",
+            TOKEN_COLUMNS
+        ))?;
+        let tokens = stmt.query_map(params![only_for], token_from_row)?.collect::<Result<_, _>>()?;
         Ok(tokens)
     }
 
@@ -984,11 +993,18 @@ impl Database {
 
     /// `revoke_nip46_token`, recording who revoked it (#96).
     pub fn revoke_nip46_token_as(&self, id: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        self.revoke_nip46_token_scoped(id, actor, None, now)
+    }
+
+    /// `revoke_nip46_token_as`, only a token issued for `only_for` when it is given (#142: a signer
+    /// revokes their own). Another member's token is false, as an unknown one is.
+    pub fn revoke_nip46_token_scoped(&self, id: &str, actor: Option<&str>, only_for: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let changed = tx.execute(
-            "UPDATE nip46_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL AND used_at IS NULL",
-            params![id, now.to_rfc3339()],
+            "UPDATE nip46_tokens SET revoked_at = ?2
+             WHERE id = ?1 AND revoked_at IS NULL AND used_at IS NULL AND (?3 IS NULL OR for_pubkey = ?3)",
+            params![id, now.to_rfc3339(), only_for],
         )?;
         if changed > 0 {
             let member = Database::token_member(&tx, id)?;
