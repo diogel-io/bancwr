@@ -154,7 +154,7 @@ const appName = (connection: Nip46Connection) => connection.client_name ?? `${co
                 v-else
                 class="text-sm text-muted"
               >
-                No apps are connected for you. Ask an administrator for a connection token.
+                No apps are connected for you. Issue a connection token under Connected apps to connect one.
               </p>
             </div>
           </UCard>

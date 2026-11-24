@@ -628,3 +628,30 @@ fn an_app_with_a_connection_is_answered_past_the_hourly_limit_of_new_senders() {
     assert!(!db.record_nip46_sender(&new_pubkey(), now).unwrap());
     assert!(db.record_nip46_sender(&connected, now).unwrap());
 }
+
+#[test]
+fn tokens_are_listed_and_revoked_within_a_members_scope() {
+    // #142: a signer lists and revokes only the tokens issued for them.
+    let db = Database::new(":memory:").unwrap();
+    let (alice, bob) = (new_pubkey(), new_pubkey());
+    db.add_team_member("Alice", &alice, Role::Signer).unwrap();
+    db.add_team_member("Bob", &bob, Role::Signer).unwrap();
+    let now = Utc::now();
+    let later = now + chrono::Duration::hours(1);
+    let hers = db.create_nip46_token("a", &alice, &alice, "Alice's", &["sign_event:1".to_string()], now, later).unwrap();
+    let his = db.create_nip46_token("b", &bob, &bob, "Bob's", &["sign_event:1".to_string()], now, later).unwrap();
+
+    assert_eq!(db.list_nip46_tokens_for(Some(&alice)).unwrap().iter().map(|t| t.id.clone()).collect::<Vec<_>>(), vec![hers.id.clone()]);
+    assert_eq!(db.list_nip46_tokens_for(None).unwrap().len(), 2);
+
+    // Bob's token is out of Alice's scope: nothing changes, and nothing is recorded.
+    let recorded = db.audit_events().unwrap().len();
+    assert!(!db.revoke_nip46_token_scoped(&his.id, Some(&alice), Some(&alice), now).unwrap());
+    assert!(db.list_nip46_tokens_for(Some(&bob)).unwrap()[0].revoked_at.is_none());
+    assert_eq!(db.audit_events().unwrap().len(), recorded);
+
+    assert!(db.revoke_nip46_token_scoped(&hers.id, Some(&alice), Some(&alice), now).unwrap());
+    assert!(db.list_nip46_tokens_for(Some(&alice)).unwrap()[0].revoked_at.is_some());
+    // Unscoped, as an administrator revokes, any.
+    assert!(db.revoke_nip46_token_scoped(&his.id, None, None, now).unwrap());
+}

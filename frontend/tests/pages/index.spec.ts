@@ -131,7 +131,7 @@ describe('Index page', () => {
       const component = await mountSuspended(Index)
 
       expect(component.find('[data-testid="my-connections-count"]').text()).toBe('0')
-      expect(component.find('[data-testid="my-connections"]').text()).toContain('Ask an administrator')
+      expect(component.find('[data-testid="my-connections"]').text()).toContain('Issue a connection token')
     })
   })
 

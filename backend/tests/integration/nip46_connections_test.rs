@@ -1,7 +1,8 @@
 // NIP-46 connections end to end (#52, #53): an administrator issues a token through the API, a
 // standard NIP-46 client (rust-nostr's nostr-connect) connects with it through a relay, learns the
 // bunker's key and signs a granted kind; a kind outside the grant is refused; the connection is
-// listed for its member and survives a restart. Plus who may issue, list and revoke, and the
+// listed for its member and survives a restart. Plus who may issue, list and revoke (a signer
+// only their own, #142), and the
 // encryption methods (#97) over the same client, connection lifetimes (#98), rate limits (#101), and
 // approval before signing (#102): approved, rejected and timed out, over the relay.
 #[path = "../common/mod.rs"]
@@ -103,18 +104,17 @@ async fn a_connection_survives_a_bunker_restart() {
 }
 
 #[tokio::test]
-async fn only_administrators_issue_list_tokens_and_revoke() {
+async fn administrators_and_signers_issue_list_and_revoke_tokens_but_viewers_do_not() {
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
     let user = app.register(Role::Signer).public_key().to_hex();
     let viewer = app.register(Role::Viewer).public_key().to_hex();
     let admin = app.admin.public_key().to_hex();
 
-    for who in [&user, &viewer] {
-        assert_eq!(issue(&app, who, json!({ "label": "x", "kinds": [1] })).await.status(), StatusCode::FORBIDDEN);
-        assert_eq!(app.signed(Method::GET, "/api/bunker/connections/tokens", who).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-    }
-    // Revoking is open to signers since #31, scoped to their own: an unknown id is a 404. A viewer
-    // holds no connections, so the route is refused (#77).
+    // A viewer holds no connections (#77): every token route and the connection routes are refused.
+    assert_eq!(issue(&app, &viewer, json!({ "label": "x", "kinds": [1] })).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(app.signed(Method::GET, "/api/bunker/connections/tokens", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+    assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/tokens/some-id", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+    // Revoking is open to signers since #31, scoped to their own: an unknown id is a 404.
     assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", &user).send().await.unwrap().status(), StatusCode::NOT_FOUND);
     assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
     assert_eq!(app.signed(Method::GET, "/api/bunker/connections", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
@@ -135,6 +135,62 @@ async fn only_administrators_issue_list_tokens_and_revoke() {
     assert_eq!(revoked.status(), StatusCode::OK);
     let again = app.signed(Method::DELETE, &format!("/api/bunker/connections/tokens/{}", issued.id), &admin).send().await.unwrap();
     assert_eq!(again.status(), StatusCode::NOT_FOUND);
+}
+
+async fn tokens(app: &common::TestApp, as_identity: &str) -> Vec<TokenResponse> {
+    let res = app.signed(Method::GET, "/api/bunker/connections/tokens", as_identity).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn a_signer_issues_lists_and_revokes_only_their_own_tokens() {
+    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
+    let admin = app.admin.public_key().to_hex();
+    let signer = app.register(Role::Signer).public_key().to_hex();
+    let other = app.register(Role::Signer).public_key().to_hex();
+
+    // For themselves, with for_pubkey omitted or naming their own key (npub or hex).
+    let res = issue(&app, &signer, json!({ "label": "Phone", "kinds": [1], "methods": ["nip44_encrypt"], "expires_in_hours": 1 })).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let own: IssueTokenResponse = res.json().await.unwrap();
+    assert_eq!(own.for_pubkey, signer);
+    assert!(own.uri.starts_with(&format!("bunker://{}?relay=", app.bunker.public_key().to_hex())));
+    let npub = PublicKey::parse(&signer).unwrap().to_bech32().unwrap();
+    assert_eq!(issue(&app, &signer, json!({ "for_pubkey": npub, "label": "Tablet", "kinds": [7] })).await.status(), StatusCode::OK);
+
+    // Never for another member: refused, and nothing is created.
+    let before = app.db.list_nip46_tokens().unwrap().len();
+    let refused = issue(&app, &signer, json!({ "for_pubkey": other, "label": "Theirs", "kinds": [1] })).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(refused.json::<Value>().await.unwrap()["error"], "forbidden_member");
+    let refused = issue(&app, &signer, json!({ "for_pubkey": admin, "label": "Admin's", "kinds": [1] })).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    // Approval is an administrator's control (#102).
+    let refused = issue(&app, &signer, json!({ "label": "Held", "kinds": [1], "approval_kinds": [1] })).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(refused.json::<Value>().await.unwrap()["error"], "approval_admin_only");
+    // The same bounds as an administrator's token.
+    assert_eq!(issue(&app, &signer, json!({ "label": "Long", "kinds": [1], "expires_in_hours": 169 })).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(app.db.list_nip46_tokens().unwrap().len(), before, "nothing was issued");
+
+    // The issuer is recorded as the signer.
+    let theirs: IssueTokenResponse = issue(&app, &admin, json!({ "for_pubkey": other, "label": "Other's laptop", "kinds": [1] })).await.json().await.unwrap();
+    let listed = tokens(&app, &signer).await;
+    assert_eq!(listed.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), vec!["Tablet", "Phone"]);
+    assert!(listed.iter().all(|t| t.for_pubkey == signer && t.issued_by == signer));
+    assert_eq!(tokens(&app, &admin).await.len(), 3, "an administrator sees every token");
+
+    // Another member's token is a 404, as an unknown one is, and stays unrevoked.
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/tokens/{}", theirs.id), &signer).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(tokens(&app, &other).await.iter().all(|t| t.revoked_at.is_none()));
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/tokens/{}", own.id), &signer).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(tokens(&app, &signer).await.iter().find(|t| t.id == own.id).unwrap().revoked_at.is_some());
+    // An administrator still revokes any.
+    let res = app.signed(Method::DELETE, &format!("/api/bunker/connections/tokens/{}", theirs.id), &admin).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 #[tokio::test]

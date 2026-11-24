@@ -114,7 +114,7 @@ its group:
 | `POST /api/bunker/team`; `DELETE`, `PATCH /api/bunker/team/:id` | yes | | | |
 | `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | yes | yes |
 | `GET`, `PUT /api/bunker/relays` | yes | | | |
-| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | yes | | | |
+| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | all | own | | |
 | `GET /api/bunker/connections` | all | own | | |
 | `DELETE /api/bunker/connections/:id` | any | own | | |
 | `GET /api/bunker/approvals` | all | own | | |
@@ -428,17 +428,24 @@ before such a save.
 
 ### Connecting an app (#53)
 Turning NIP-46 on connects nothing by itself: an app connects only with a **connection token** an
-administrator issues.
+administrator issues for a member, or a signer issues for themselves (#142).
 
 ```bash
 POST /api/bunker/connections/tokens
 { "for_pubkey": "npub1…", "label": "Damus on my phone", "kinds": [1, 7], "methods": ["nip44_encrypt", "nip44_decrypt"], "expires_in_hours": 24 }
 ```
 
-- `for_pubkey` is the vault member the connection is attributed to (the administrator when
-  omitted). It must be a member who can sign, an administrator or a signer: a viewer gets
+- `for_pubkey` is the vault member the connection is attributed to (the caller when omitted). It
+  must be a member who can sign, an administrator or a signer: a viewer gets
   `400 {"error":"member_cannot_sign"}` (#77). Removing the member later ends their tokens and
   connections.
+- A signer issues only for themselves (#142): any other `for_pubkey` is
+  `403 {"error":"forbidden_member"}`, and any `approval_kinds` is
+  `403 {"error":"approval_admin_only"}`, since approval is an administrator's control. Everything
+  else below applies as it does to an administrator, identity grants included. A signer lists
+  (`GET`) and revokes (`DELETE /api/bunker/connections/tokens/:id`) only tokens issued for them;
+  another member's is a 404, as an unknown one is. An administrator lists and revokes all, and each
+  token's `issued_by` records who issued it.
 - `kinds` are the event kinds the app may sign. Nothing else is ever signed: there is no
   "everything" grant.
 - `methods` are the encryption methods it may call (#97), any of `nip44_encrypt`, `nip44_decrypt`,

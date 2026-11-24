@@ -469,9 +469,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/team/:id", delete(remove_team_member).patch(change_team_member_role))
         // The bunker's own NIP-46 relays (#78): NIP46_RELAYS when set, otherwise the console's list.
         .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays))
-        // NIP-46 connection tokens (#53), only for a member who can sign (#77).
-        .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
-        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
         // Deciding requests held for approval (#102): administrators only.
         .route("/api/bunker/approvals/:id/approve", post(crate::approvals_api::approve))
         .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject))
@@ -485,9 +482,14 @@ pub fn create_router(state: AppState) -> Router {
     let team_read = Router::new().route("/api/bunker/team", get(get_team));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
     let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
-    // Administrators and signers, each scoped to the caller: their connections, and revoking one
-    // (#53, #31; an administrator sees and revokes any), and their own recent signatures (#77).
+    // Administrators and signers, each scoped to the caller: their connection tokens (#142) and
+    // connections, and revoking one (#53, #31; an administrator sees and revokes any), and their
+    // own recent signatures (#77).
     let signer = Router::new()
+        // NIP-46 connection tokens (#53), only for a member who can sign (#77). Administrators
+        // issue for any such member, list and revoke all; signers only their own (#142).
+        .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
+        .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
         .route("/api/bunker/connections", get(crate::connections_api::list_connections))
         .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection))
         .route("/api/bunker/logs/mine", get(get_my_logs))

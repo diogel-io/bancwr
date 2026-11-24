@@ -1,5 +1,6 @@
-// Connected apps (#31) over #53's API: the connections (scoped to the caller by the bunker), and
-// for administrators the tokens and the vault's members, to name whom each connection is for.
+// Connected apps (#31) over #53's API: the connections and tokens (scoped to the caller by the
+// bunker: a signer's own, #142), and for administrators the vault's members, to name whom each
+// connection is for.
 import type { IssueTokenRequest, IssueTokenResponse, Nip46Connection, Nip46Token, TeamMember } from '#shared/types/bunker'
 
 export function useConnections() {
@@ -8,7 +9,7 @@ export function useConnections() {
   const isAdministrator = computed(() => auth.state.value.status === 'signed-in' && auth.state.value.role === 'administrator')
 
   const connections = useFetch<Nip46Connection[]>('/api/bunker/connections', { key: 'nip46-connections', default: () => [] })
-  const tokens = useFetch<Nip46Token[]>('/api/bunker/connections/tokens', { key: 'nip46-tokens', default: () => [], immediate: isAdministrator.value })
+  const tokens = useFetch<Nip46Token[]>('/api/bunker/connections/tokens', { key: 'nip46-tokens', default: () => [] })
   const team = useFetch<TeamMember[]>('/api/bunker/team', { key: 'nip46-team', default: () => [], immediate: isAdministrator.value })
 
   /** A member's name by key: "you", the vault name, or a short npub. */
@@ -19,7 +20,7 @@ export function useConnections() {
   }
 
   async function refresh() {
-    await Promise.all([connections.refresh(), isAdministrator.value ? tokens.refresh() : undefined])
+    await Promise.all([connections.refresh(), tokens.refresh()])
   }
 
   async function revoke(id: string) {

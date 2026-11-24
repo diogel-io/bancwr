@@ -101,7 +101,7 @@ describe('Connections page', () => {
     expect(component.find('[data-testid="connections-explainer"]').text()).toContain('sign as this bunker\'s key, not your own')
   })
 
-  it('lists a signer\'s apps with their unverified name, kinds and times, and no issuing', async () => {
+  it('lists a signer\'s apps with their unverified name, kinds and times', async () => {
     state.connections = [connection()]
     const component = await mount('signer')
     const row = component.find('[data-connection="c1"]')
@@ -113,7 +113,44 @@ describe('Connections page', () => {
     expect(row.text()).toContain('Connected 1 hour ago')
     expect(row.text()).toContain('last used 2 minutes ago')
     expect(row.text()).not.toContain('for ')
-    expect(component.find('[data-testid="issue-token"]').exists()).toBe(false)
+  })
+
+  it('lets a signer issue their own token, with no member select or approval (#142)', async () => {
+    const component = await mount('signer')
+    const form = component.find('[data-testid="issue-token"]')
+    expect(form.exists()).toBe(true)
+    expect(form.find('#issue-token-for').exists()).toBe(false)
+    expect(form.find('[data-testid="issue-token-approval"]').exists()).toBe(false)
+    await form.find('input[maxlength="100"]').setValue('My phone')
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(1))
+    expect(state.issued[0]).toMatchObject({ for_pubkey: me, label: 'My phone' })
+    expect(state.issued[0]).not.toHaveProperty('approval_kinds')
+    await vi.waitFor(() => expect(component.find('[data-testid="issued-uri"]').exists()).toBe(true))
+  })
+
+  it('offers a signer every identity they are granted, as the bunker lists them (#142)', async () => {
+    const brand = '9'.repeat(64)
+    // A signer's list is only those they may use, without members.
+    state.identities = [
+      { pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true },
+      { pubkey: brand, npub: 'npub1brand', label: 'Brand B', is_primary: false, available: true }
+    ] satisfies BunkerIdentity[]
+    const component = await mount('signer')
+    await flushPromises()
+    const form = component.find('[data-testid="issue-token"]')
+    await form.find('#issue-token-identity').trigger('click')
+    await flushPromises()
+    const offered = [...document.body.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
+    expect(offered).toEqual(['Primary', 'Brand B'])
+  })
+
+  it('lists a signer\'s own unused tokens (#142)', async () => {
+    state.tokens = [{ id: 't1', for_pubkey: me, issued_by: me, label: 'Mine', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null, rate_per_minute: 60, rate_burst: 20, approval_kinds: [] } satisfies Nip46Token]
+    const component = await mount('signer')
+    await flushPromises()
+    expect(component.find('[data-token="t1"]').text()).toContain('Mine')
+    expect(component.find('[data-token="t1"]').text()).toContain('For you')
   })
 
   it('shows an app that gave no name by its key, without the unverified badge', async () => {
@@ -142,7 +179,7 @@ describe('Connections page', () => {
   it('shows the empty state, for a signer and for an administrator', async () => {
     const user = await mount('signer')
     expect(user.find('[data-testid="connections-empty"]').text()).toContain('No apps are connected for you')
-    expect(user.find('[data-testid="connections-empty"]').text()).toContain('Ask an administrator')
+    expect(user.find('[data-testid="connections-empty"]').text()).toContain('Issue a connection token below')
     user.unmount()
     mounted = []
     await clearNuxtData()

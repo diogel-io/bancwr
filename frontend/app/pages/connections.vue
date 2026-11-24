@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // Apps connected to the bunker for the signed-in member (#31), over #53's connections: every app
-// signs as the bunker's key, authorised by an administrator for a member. For administrators and
-// signers (#77): signers see and revoke theirs, administrators all. Administrators issue tokens,
-// only for admins and signers: viewers hold no connections.
+// signs as one of the bunker's identities, authorised for a member. For administrators and signers
+// (#77): signers see and revoke theirs, administrators all. Administrators issue tokens for admins
+// and signers; signers issue, see and revoke their own (#142). Viewers hold no connections.
 import { isForbidden } from '~/utils/access'
 
 const {
@@ -50,7 +50,7 @@ async function act(work: () => Promise<void>) {
           variant="subtle"
           icon="i-lucide-info"
           title="These apps sign as this bunker's key, not your own."
-          description="Each was authorised by an administrator for you, and can sign only the kinds listed."
+          description="Each was authorised for you, by you or an administrator, and can sign only the kinds listed."
           data-testid="connections-explainer"
         />
 
@@ -97,54 +97,50 @@ async function act(work: () => Promise<void>) {
             data-testid="connections-empty"
           >
             <p>No apps are connected {{ isAdministrator ? 'to this bunker' : 'for you' }}.</p>
-            <p v-if="isAdministrator">
+            <p>
               Issue a connection token below to connect one.
-            </p>
-            <p v-else>
-              Ask an administrator for a connection token to connect one.
             </p>
           </div>
         </UCard>
 
-        <template v-if="isAdministrator">
-          <UCard>
-            <template #header>
-              <h2 class="font-semibold">
-                Issue a connection token
-              </h2>
-              <p class="text-sm text-muted">
-                A single-use bunker:// string for one app, which may then sign only the kinds chosen here.
-              </p>
-            </template>
-            <ConnectionsIssueToken
-              :members="team.data.value ?? []"
-              :self="pubkey"
-              :issue="issue"
-              :identities="identities"
-            />
-          </UCard>
+        <UCard>
+          <template #header>
+            <h2 class="font-semibold">
+              Issue a connection token
+            </h2>
+            <p class="text-sm text-muted">
+              A single-use bunker:// string for one app, which may then sign only the kinds chosen here.
+            </p>
+          </template>
+          <ConnectionsIssueToken
+            :members="team.data.value ?? []"
+            :self="pubkey"
+            :administrator="isAdministrator"
+            :issue="issue"
+            :identities="identities"
+          />
+        </UCard>
 
-          <UCard v-if="unused.length > 0">
-            <template #header>
-              <h2 class="font-semibold">
-                Unused tokens
-              </h2>
-            </template>
-            <ul
-              class="divide-y divide-default"
-              data-testid="tokens-list"
-            >
-              <ConnectionsTokenRow
-                v-for="token in unused"
-                :key="token.id"
-                :token="token"
-                :for-name="memberName(token.for_pubkey)"
-                :identity-label="several ? identityLabel(token.identity_pubkey) : undefined"
-                @revoke="act(() => revokeToken(token.id))"
-              />
-            </ul>
-          </UCard>
-        </template>
+        <UCard v-if="unused.length > 0">
+          <template #header>
+            <h2 class="font-semibold">
+              Unused tokens
+            </h2>
+          </template>
+          <ul
+            class="divide-y divide-default"
+            data-testid="tokens-list"
+          >
+            <ConnectionsTokenRow
+              v-for="token in unused"
+              :key="token.id"
+              :token="token"
+              :for-name="memberName(token.for_pubkey)"
+              :identity-label="several ? identityLabel(token.identity_pubkey) : undefined"
+              @revoke="act(() => revokeToken(token.id))"
+            />
+          </ul>
+        </UCard>
       </div>
     </template>
   </UDashboardPanel>
