@@ -42,7 +42,7 @@ pub struct TeamMember {
     /// Lowercase hex (#24). Rows stored before #24 that could not be canonicalised keep their
     /// original value, which never matches a lookup.
     pub pubkey: String,
-    /// As stored. Use `role()`: a value outside the three roles can only come from before #24,
+    /// As stored. Use `role()`: a value outside the two roles can only come from before #24,
     /// and grants nothing.
     pub role: String,
     pub created_at: DateTime<Utc>,
@@ -416,9 +416,8 @@ impl Database {
     /// An administrator changes it from the team page (`PATCH /api/bunker/team/:id`, #99), and the
     /// first-administrator bootstrap promotes. `pubkey` must be canonical hex.
     ///
-    /// A member who becomes a viewer cannot sign (#77): in the same transaction, their active
-    /// NIP-46 connections are revoked (`role_changed`) and their unused tokens with them. The only
-    /// administrator is never demoted, for the reason `remove_team_member` gives.
+    /// Both roles sign (#143), so a member keeps their NIP-46 connections and tokens through a role
+    /// change. The only administrator is never demoted, for the reason `remove_team_member` gives.
     pub fn change_member_role(&self, pubkey: &str, role: Role) -> anyhow::Result<RoleChangeOutcome> {
         self.change_member_role_as(pubkey, role, None)
     }
@@ -454,12 +453,6 @@ impl Database {
                 },
                 now,
             )?;
-        }
-        if !role.can_sign() {
-            let (revoked, _) = revoke_member_access(&tx, pubkey, "role_changed", now)?;
-            if revoked > 0 {
-                info!("Revoked {} NIP-46 connections of {}: a {} cannot sign (#77)", revoked, pubkey, role);
-            }
         }
         tx.commit()?;
         Ok(RoleChangeOutcome::Changed)
@@ -675,7 +668,8 @@ pub enum RedeemRefusal {
     Expired,
     /// The member the token was issued for is no longer in the vault.
     MemberRemoved,
-    /// The member the token was issued for is now a viewer, who cannot sign (#77).
+    /// The member the token was issued for holds a stored role that is not recognised, which
+    /// grants nothing (#77, #143).
     MemberCannotSign,
     /// The client asked only for permissions the token does not allow.
     NothingGrantable,
@@ -715,7 +709,7 @@ fn member_refusal(conn: &Connection, token: &Nip46Token, identity: Option<&str>)
     let role: Option<String> =
         conn.query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![token.for_pubkey], |row| row.get(0)).optional()?;
     let Some(role) = role else { return Ok(Some(RedeemRefusal::MemberRemoved)) };
-    if !role.parse::<Role>().is_ok_and(|role| role.can_sign()) {
+    if role.parse::<Role>().is_err() {
         return Ok(Some(RedeemRefusal::MemberCannotSign));
     }
     if !may_use_identity(conn, &token.for_pubkey, token.identity_pubkey.as_deref())? {
@@ -799,8 +793,9 @@ fn may_use_identity(conn: &Connection, member: &str, identity: Option<&str>) -> 
     )
 }
 
-/// Appended inside `EXISTS(SELECT 1 FROM team_members m WHERE ...)`: the member's role may sign
-/// (#77). Matches `Role::can_sign`.
+/// Appended inside `EXISTS(SELECT 1 FROM team_members m WHERE ...)`: the member holds a recognised
+/// role, so may sign (#77, #143). Matches `Role::from_str`; a stored role it does not recognise
+/// grants nothing.
 const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
 const TOKEN_COLUMNS: &str =
@@ -1161,9 +1156,9 @@ impl Database {
         Ok(Ok(connection))
     }
 
-    /// The client's active connection, only while its member is still in the vault and may sign:
-    /// an administrator or a signer, not a viewer (#77). A viewer's connections are revoked when
-    /// they become one; this refuses them even if one was missed, as for a removed member.
+    /// The client's active connection, only while its member is still in the vault and holds a
+    /// recognised role, so may sign (#77, #143): an unrecognised stored role is refused as a
+    /// removed member is.
     pub fn active_nip46_connection(&self, client_pubkey: &str) -> anyhow::Result<Option<Nip46Connection>> {
         self.active_nip46_connection_at(client_pubkey, Utc::now())
     }

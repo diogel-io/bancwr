@@ -47,7 +47,7 @@ test('removes a member once confirmed (#43)', async ({ page }) => {
 
 test('keeps a member when removal is cancelled', async ({ page }) => {
   const name = uniqueName('Carol')
-  await addMember(page, name, randomNpub(), 'Viewer')
+  await addMember(page, name, randomNpub(), 'Signer')
   await expect(memberRow(page, name)).toBeVisible()
 
   let message = ''
@@ -62,9 +62,9 @@ test('keeps a member when removal is cancelled', async ({ page }) => {
   await expect(memberRow(page, name)).toBeVisible()
 })
 
-test('offers exactly the three roles (#77)', async ({ page }) => {
+test('offers exactly the two roles (#77, #143)', async ({ page }) => {
   await page.getByTestId('add-member').getByRole('combobox').click()
-  await expect(page.getByRole('option')).toHaveText(['Admin', 'Signer', 'Viewer'])
+  await expect(page.getByRole('option')).toHaveText(['Admin', 'Signer'])
 })
 
 test('opens a member\'s read-only profile from their row (#77)', async ({ page }) => {
@@ -82,7 +82,7 @@ test('opens a member\'s read-only profile from their row (#77)', async ({ page }
 test('refuses the same key twice, even as hex (#24)', async ({ page }) => {
   const name = uniqueName('Dave')
   const key = randomNpub()
-  await addMember(page, name, key, 'Viewer')
+  await addMember(page, name, key, 'Admin')
   await expect(memberRow(page, name)).toBeVisible()
 
   const refused = page.waitForResponse(response =>
@@ -106,36 +106,27 @@ test('rejects a pubkey that is not an npub', async ({ page }) => {
   await expect(memberRow(page, name)).toHaveCount(0)
 })
 
-test('changes a member\'s role in one step, asking only before making them a viewer (#99)', async ({ page }) => {
+test('changes a member\'s role in one step, up and down, without asking (#99, #143)', async ({ page }) => {
   const name = uniqueName('Dana')
   await addMember(page, name, randomNpub(), 'Signer')
   await expect(memberRow(page, name)).toBeVisible()
   const role = page.getByRole('combobox', { name: `Role of ${name}` })
-
-  // Up to Admin: no question.
   let asked = false
-  page.once('dialog', () => { asked = true })
+  page.on('dialog', () => { asked = true })
+
+  // Up to Admin.
   await chooseRole(page, name, 'Admin')
   await expect(page.getByText(`${name} is now Admin`, { exact: true })).toBeVisible()
+  await expect(role).toContainText('Admin')
+
+  // Back down to Signer: both roles sign, so nothing is disconnected and nothing is asked.
+  await chooseRole(page, name, 'Signer')
+  await expect(page.getByText(`${name} is now Signer`, { exact: true })).toBeVisible()
   expect(asked).toBe(false)
-  await expect(role).toContainText('Admin')
 
-  // Down to Viewer: cancelled, nothing changes.
-  page.once('dialog', dialog => dialog.dismiss())
-  await chooseRole(page, name, 'Viewer')
-  await expect(role).toContainText('Admin')
-
-  // Down to Viewer, confirmed: stored by the bunker, so it survives a reload.
-  let message = ''
-  page.once('dialog', (dialog) => {
-    message = dialog.message()
-    return dialog.accept()
-  })
-  await chooseRole(page, name, 'Viewer')
-  await expect(page.getByText(`${name} is now Viewer`, { exact: true })).toBeVisible()
-  expect(message).toContain(`Make ${name} a viewer?`)
+  // Stored by the bunker, so it survives a reload.
   await page.reload()
-  await expect(page.getByRole('combobox', { name: `Role of ${name}` })).toContainText('Viewer')
+  await expect(page.getByRole('combobox', { name: `Role of ${name}` })).toContainText('Signer')
 })
 
 async function chooseRole(page: Page, name: string, role: string) {

@@ -224,14 +224,14 @@ async fn a_backup_of_a_running_bunker_restores_to_a_working_bunker_on_a_clean_ho
     let relay = ports::run_mock_relay().await;
     let nip46 = [("NIP46_ENABLED", "true".to_string()), ("NIP46_RELAYS", relay.url())];
 
-    // The original host: a signer and a viewer beside the administrator, a connected app, and an
+    // The original host: a signer and a second administrator beside the first, a connected app, and an
     // unused token.
     let original = Host::new(&admin);
     original.import(&bunker);
     let mut env = original.secrets();
     env.extend(nip46.clone());
     let running = Running::start(&original, &env).await;
-    for (name, role) in [("Sam", "signer"), ("Vic", "viewer")] {
+    for (name, role) in [("Sam", "signer"), ("Ada", "administrator")] {
         let res = running
             .signed_json(reqwest::Method::POST, "/api/bunker/team", &json!({ "name": name, "pubkey": Keys::generate().public_key().to_hex(), "role": role }))
             .send()

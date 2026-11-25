@@ -18,7 +18,7 @@ registerEndpoint('/api/bunker/metrics', () => ({ http_requests: 0, nip46_connect
 
 // One navbar on every page (#28), so the health indicator cannot be missing from one.
 describe('every page renders through AppNavbar', () => {
-  // Team's title is the administrator's (a viewer's list is "Team", #77).
+  // The team pages are the administrators' alone (#143).
   beforeEach(() => signInAs('administrator'))
   const pages = [
     ['Dashboard', Index],

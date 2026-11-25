@@ -114,7 +114,7 @@ const REASONS: Record<string, string> = {
   revoked: 'Revoked',
   replaced: 'Replaced by a newer connection from the same app',
   member_removed: 'Its member was removed from the vault',
-  role_changed: 'Its member became a viewer, who cannot sign',
+  role_changed: 'Its member\'s role was changed so they could no longer sign',
   restored: 'The bunker was restored from a backup',
   expired: 'Its time limit ran out'
 }

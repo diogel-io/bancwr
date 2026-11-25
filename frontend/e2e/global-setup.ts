@@ -8,8 +8,8 @@ import { baseUrl, down, up, waitForStack } from './stack'
 /**
  * Starts the e2e stack with throwaway keys and secrets (unless E2E_BASE_URL points at one already
  * running), waits until an administrator can sign in, then starts a relay and a NIP-46 remote
- * signer for the sign-in specs and registers that signer's key as a `signer`, and registers one key
- * for each of the other roles (#26, #77).
+ * signer for the sign-in specs and registers that signer's key as a `signer`, and registers one more
+ * key as a `signer` for the role specs (#26, #77, #143).
  *
  * The specs read what they need from the environment set here: the workers Playwright starts
  * after global setup inherit it.
@@ -17,7 +17,6 @@ import { baseUrl, down, up, waitForStack } from './stack'
  *   E2E_ADMIN_NSEC   the seeded administrator, which the signed-in fixture signs in as
  *   E2E_NIP46_URI    a bunker:// string for the remote signer, whose key is a registered `signer`
  *   E2E_SIGNER_NSEC  a registered `signer`, for the role specs
- *   E2E_VIEWER_NSEC  a registered `viewer`, for the role specs
  *   E2E_BRAND_NSEC   a second identity the bunker holds (#103), and E2E_BRAND_NPUB its npub
  */
 export default async function globalSetup() {
@@ -91,19 +90,17 @@ async function startNip46() {
   process.env.E2E_NIP46_URI = `bunker://${signer.pubkey}?relay=${encodeURIComponent(relay)}`
 }
 
-/** One throwaway key for each role below administrator, registered by the administrator. */
+/** One throwaway key for the role below administrator, registered by the administrator. */
 async function registerRoleKeys() {
   const jar = cookieJarPost()
   await signInAs(process.env.E2E_ADMIN_NSEC!, baseUrl(), jar.post)
-  for (const [role, variable] of [['signer', 'E2E_SIGNER_NSEC'], ['viewer', 'E2E_VIEWER_NSEC']] as const) {
-    const nsec = generateNsec()
-    const added = await jar.post(`${baseUrl()}/api/bunker/team`, {
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: `e2e ${role}`, pubkey: npubFromNsec(nsec), role })
-    })
-    if (added.status !== 200) throw new Error(`Could not register the e2e ${role}: HTTP ${added.status}`)
-    process.env[variable] = nsec
-  }
+  const nsec = generateNsec()
+  const added = await jar.post(`${baseUrl()}/api/bunker/team`, {
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'e2e signer', pubkey: npubFromNsec(nsec), role: 'signer' })
+  })
+  if (added.status !== 200) throw new Error(`Could not register the e2e signer: HTTP ${added.status}`)
+  process.env.E2E_SIGNER_NSEC = nsec
 }
 
 export async function stopNip46() {

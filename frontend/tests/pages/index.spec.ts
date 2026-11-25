@@ -135,23 +135,6 @@ describe('Index page', () => {
     })
   })
 
-  describe('for a viewer (#77)', () => {
-    beforeEach(() => signInAs('viewer'))
-
-    it('shows the health and a way to the team, and requests nothing else', async () => {
-      serve()
-      const component = await mountSuspended(Index)
-
-      expect(component.text()).toContain('Bunker Status')
-      expect(component.find('[data-testid="role-summary"]').text()).toContain('Viewer')
-      expect(component.find('[data-testid="viewer-team"] a').attributes('href')).toBe('/team')
-      expect(component.find('[data-testid="my-connections"]').exists()).toBe(false)
-      expect(component.find('[data-testid="my-signatures"]').exists()).toBe(false)
-      expect(component.text()).not.toContain('Total Signatures')
-      expect(requested).toEqual(['status'])
-    })
-  })
-
   // Yellow is reachable now that the bunker reports degraded (#27).
   describe('status dot', () => {
     beforeEach(() => signInAs('signer'))

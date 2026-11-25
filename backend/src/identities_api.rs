@@ -106,8 +106,8 @@ pub async fn rename_identity(
 fn signing_member(state: &AppState, key: &str) -> Result<String, ApiError> {
     let hex = canonical_pubkey(key).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "That is not a valid npub or hex key."))?;
     match state.db.find_member_by_pubkey(&hex).map_err(database_error)? {
-        Some(member) if member.role().is_some_and(|role| role.can_sign()) => Ok(hex),
-        Some(_) => Err(api_error(StatusCode::BAD_REQUEST, "member_cannot_sign", "Only an admin or a signer can be granted an identity, not a viewer.")),
+        Some(member) if member.role().is_some() => Ok(hex),
+        Some(_) => Err(api_error(StatusCode::BAD_REQUEST, "member_cannot_sign", "This member has no recognised role and cannot sign.")),
         None => Err(api_error(StatusCode::NOT_FOUND, "not_registered", "That key is not a member of the vault.")),
     }
 }

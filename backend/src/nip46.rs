@@ -4,8 +4,8 @@
 //! token an administrator issued for a vault member. The connection is stored (it survives a
 //! restart), attributed to that member, and allowed exactly the permissions granted: the token's,
 //! intersected with what the client asked for. Every request after `connect` needs an active
-//! connection whose member is still in the vault and may sign: an administrator or a signer, never
-//! a viewer (#77), whose connections are refused as a removed member's are. Clients sign as the
+//! connection whose member is still in the vault and may sign: an administrator or a signer (#77,
+//! #143). A member whose stored role is not recognised is refused as a removed member is. Clients sign as the
 //! bunker's key: "for a member" is attribution and accountability, not a separate key.
 //!
 //! The encryption methods (#97) are the same: each is a permission of its own, named as NIP-46
@@ -390,7 +390,7 @@ impl Nip46Handler {
                     RedeemRefusal::Revoked => "This connection token has been revoked",
                     RedeemRefusal::Expired => "This connection token has expired",
                     RedeemRefusal::MemberRemoved => "This connection token's member is no longer in the vault",
-                    RedeemRefusal::MemberCannotSign => "This connection token's member is a viewer, who cannot sign",
+                    RedeemRefusal::MemberCannotSign => "This connection token's member has no recognised role and cannot sign",
                     RedeemRefusal::NothingGrantable => "None of the requested permissions are allowed by this connection token",
                     RedeemRefusal::NoIdentityAccess => "This connection token's member may no longer sign as this identity",
                     RedeemRefusal::OtherIdentity => "This connection token is for another identity",

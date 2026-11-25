@@ -19,16 +19,16 @@ proxied. The proxy refuses a target that resolves to this server, rather than lo
 Which role may open which page is set in one place, `app/utils/access.ts`: the sidebar offers only
 those pages, and the route middleware refuses the rest with a permission-denied page. A new page
 adds its route there. This is for usability: the bunker enforces the same matrix itself (see
-[`../backend`](../backend/README.md#access-by-role-77)). The roles (#77) are stored as
-`administrator`, `signer` and `viewer` and shown as Admin, Signer and Viewer:
+[`../backend`](../backend/README.md#access-by-role-77)). The two roles (#77, #143) are stored as
+`administrator` and `signer` and shown as Admin and Signer:
 
-| Page | Admin | Signer | Viewer |
-|------|:---:|:---:|:---:|
-| `/` (dashboard) | metrics, health, everyone's activity | health, their connected apps, their own signatures | health, a link to the team |
-| `/config`, `/logs` | yes | | |
-| `/team` | yes, with add and remove | | yes, read-only |
-| `/team/[pubkey]` (a member's profile, read-only) | yes | | yes |
-| `/profile`, `/follows`, `/relays`, `/connections` | yes | yes | |
+| Page | Admin | Signer |
+|------|:---:|:---:|
+| `/` (dashboard) | metrics, health, everyone's activity | health, their connected apps, their own signatures |
+| `/config`, `/logs` | yes | |
+| `/team` | yes, with add and remove | |
+| `/team/[pubkey]` (a member's profile, read-only) | yes | |
+| `/profile`, `/follows`, `/relays`, `/connections` | yes | yes |
 
 `/team/[pubkey]` (#77) shows a member's name and role from the vault and their kind 0 profile
 (picture, name, about, NIP-05, links) read from their relays with the profile page's relay lookup
@@ -126,10 +126,9 @@ Each run:
    proves sign-in, the session, the signed proxy and the bunker's guard;
 4. starts a minimal relay (`e2e/relay.ts`, on `127.0.0.1:7777`) and a NIP-46 test signer
    (`e2e/remote-signer.ts`) inside the Playwright process, and registers that signer's key as a
-   `signer`, then registers one more key as a `signer` (`E2E_SIGNER_NSEC`) and one as a `viewer`
-   (`E2E_VIEWER_NSEC`), for the role specs;
+   `signer`, then registers one more key as a `signer` (`E2E_SIGNER_NSEC`), for the role specs;
 5. runs the specs in Chromium, one at a time. `test` from `e2e/fixtures.ts` starts each one signed
-   in as the administrator, or as another role with `test.use({ role: 'signer' })` or `'viewer'`;
+   in as the administrator, or as the signer with `test.use({ role: 'signer' })`;
    `anonymousTest` does not sign in;
 6. saves the container logs to `test-results/compose.log` and removes the stack.
 
@@ -240,7 +239,7 @@ all reach hosts Bancwr doesn't run. None of them is told which Bancwr is calling
   a dynamic `src` that skips `NoReferrerImg`. A local image (the logo, the QR code) goes on its
   allowlist with the reason.
 
-The image hosts still see the viewer's IP address, as with any picture loaded from the web.
+The image hosts still see the reader's IP address, as with any picture loaded from the web.
 
 ### Signing in: confirming the key
 
@@ -353,8 +352,8 @@ says so at the top, always.
   badge. An app that gave none is shown by its key.
 - A signer revokes their own apps, and administrators any (confirmed in place). Ended connections
   are hidden behind "Show ended", with why and by whom.
-- Administrators issue tokens on the page: for which member (admins and signers only: a viewer
-  cannot hold a connection, #77), a label, what it may sign (presets or
+- Administrators issue tokens on the page: for which member (any member with a recognised role,
+  #77, #143), a label, what it may sign (presets or
   kind numbers) and for how long. The `bunker://` string and its QR code (`uqr`) are shown once,
   and gone after Done: the bunker keeps only a hash of the secret.
 

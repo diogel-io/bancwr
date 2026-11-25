@@ -31,6 +31,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("hold chosen kinds for approval", nip46_approval_perms),
     ("hold several identities", identities),
     ("record the senders of NIP-46 requests", nip46_senders),
+    ("make every viewer a signer", viewers_become_signers),
 ];
 
 /// The version a fully migrated database is at.
@@ -555,6 +556,24 @@ fn add_missing_columns(tx: &Transaction, wanted: &[(&str, &str, &str)]) -> anyho
         if !columns.iter().any(|c| c == column) {
             tx.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, kind))?;
         }
+    }
+    Ok(())
+}
+
+/// 15. Two roles (#143): every `viewer`, #77's third role, becomes a `signer`. Each member changed
+///     is logged with their name. Nothing is revoked: a viewer held no connections or unused tokens,
+///     because migration 7 and every later demotion ended them. The update only matches viewers, so
+///     running it again (a rewound database re-runs migration 7, whose mapping is then skipped, and
+///     this) changes nothing.
+fn viewers_become_signers(tx: &Transaction) -> anyhow::Result<()> {
+    let names: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT name FROM team_members WHERE role = 'viewer' ORDER BY created_at ASC, id ASC")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    tx.execute("UPDATE team_members SET role = 'signer' WHERE role = 'viewer'", [])?;
+    for name in &names {
+        info!("Team member '{}' changed role from viewer to signer (#143)", name);
     }
     Ok(())
 }

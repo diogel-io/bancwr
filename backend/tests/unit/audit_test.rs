@@ -152,15 +152,16 @@ fn refusing_to_remove_the_last_administrator_records_nothing() {
 }
 
 #[test]
-fn a_role_change_is_recorded_from_and_to_and_revokes_a_new_viewers_connections() {
+fn a_role_change_is_recorded_from_and_to_and_revokes_nothing() {
     let db = db();
     connect(&db, "hash-1");
-    db.change_member_role_as(SIGNER, Role::Viewer, Some(ADMIN)).unwrap();
+    db.change_member_role_as(SIGNER, Role::Administrator, Some(ADMIN)).unwrap();
     let events = db.audit_events().unwrap();
     let changed = events.iter().find(|e| e.action == action::MEMBER_ROLE_CHANGED).unwrap();
-    assert_eq!(changed.detail.as_deref(), Some("from=signer;to=viewer"));
+    assert_eq!(changed.detail.as_deref(), Some("from=signer;to=administrator"));
     assert_eq!(changed.actor_pubkey.as_deref(), Some(ADMIN));
-    assert!(events.iter().any(|e| e.action == action::CONNECTION_REVOKED && e.detail.as_deref() == Some("reason=role_changed")));
+    // Both roles sign (#143): the connection stays.
+    assert!(!events.iter().any(|e| e.action == action::CONNECTION_REVOKED));
 }
 
 #[test]

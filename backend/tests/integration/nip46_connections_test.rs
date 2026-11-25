@@ -104,20 +104,13 @@ async fn a_connection_survives_a_bunker_restart() {
 }
 
 #[tokio::test]
-async fn administrators_and_signers_issue_list_and_revoke_tokens_but_viewers_do_not() {
+async fn administrators_and_signers_issue_list_and_revoke_tokens() {
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
     let user = app.register(Role::Signer).public_key().to_hex();
-    let viewer = app.register(Role::Viewer).public_key().to_hex();
     let admin = app.admin.public_key().to_hex();
 
-    // A viewer holds no connections (#77): every token route and the connection routes are refused.
-    assert_eq!(issue(&app, &viewer, json!({ "label": "x", "kinds": [1] })).await.status(), StatusCode::FORBIDDEN);
-    assert_eq!(app.signed(Method::GET, "/api/bunker/connections/tokens", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-    assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/tokens/some-id", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
     // Revoking is open to signers since #31, scoped to their own: an unknown id is a 404.
     assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", &user).send().await.unwrap().status(), StatusCode::NOT_FOUND);
-    assert_eq!(app.signed(Method::DELETE, "/api/bunker/connections/some-id", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-    assert_eq!(app.signed(Method::GET, "/api/bunker/connections", &viewer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
 
     let issued: IssueTokenResponse = issue(&app, &admin, json!({ "for_pubkey": user, "label": "Laptop", "kinds": [7, 1, 1] })).await.json().await.unwrap();
     let secret = issued.uri.split("secret=").nth(1).unwrap().to_string();
@@ -596,32 +589,8 @@ async fn the_log_names_the_member_a_signature_was_for_not_the_app() {
 }
 
 #[tokio::test]
-async fn a_token_is_not_issued_for_a_viewer() {
-    // Viewers cannot sign (#77): issuing for one is refused, for an administrator or a signer not.
-    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
-    let admin = app.admin.public_key().to_hex();
-    let viewer = app.register(Role::Viewer).public_key().to_hex();
-    let signer = app.register(Role::Signer).public_key().to_hex();
-
-    // Nor with the encryption methods alone (#97): a viewer can never hold them.
-    for body in [
-        json!({ "for_pubkey": viewer, "label": "x", "kinds": [1] }),
-        json!({ "for_pubkey": viewer, "label": "x", "methods": ["nip44_encrypt", "nip44_decrypt", "nip04_encrypt", "nip04_decrypt"] }),
-    ] {
-        let res = issue(&app, &admin, body).await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(res.json::<Value>().await.unwrap()["error"], "member_cannot_sign");
-    }
-    assert!(app.db.list_nip46_tokens().unwrap().is_empty(), "nothing was issued");
-
-    for who in [&signer, &admin] {
-        let res = issue(&app, &admin, json!({ "for_pubkey": who, "label": "x", "kinds": [1] })).await;
-        assert_eq!(res.status(), StatusCode::OK);
-    }
-}
-
-#[tokio::test]
-async fn a_member_who_becomes_a_viewer_loses_their_connections_and_stops_signing() {
+async fn a_member_whose_role_changes_keeps_their_connections_and_tokens() {
+    // Both roles sign (#143): a role change revokes nothing, either way.
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
     let admin = app.admin.public_key().to_hex();
     let alice = app.register(Role::Signer);
@@ -633,15 +602,14 @@ async fn a_member_who_becomes_a_viewer_loses_their_connections_and_stops_signing
         issue(&app, &admin, json!({ "for_pubkey": alice_hex, "label": "later", "kinds": [1] })).await.json().await.unwrap();
     let pending_secret = pending.uri.split("secret=").nth(1).unwrap().to_string();
 
-    assert_eq!(app.db.change_member_role(&alice_hex, Role::Viewer).unwrap(), bunker::db::RoleChangeOutcome::Changed);
-
-    // Revoked, with the reason, and refused as a removed member's would be.
+    for role in [Role::Administrator, Role::Signer] {
+        assert_eq!(app.db.change_member_role(&alice_hex, role).unwrap(), bunker::db::RoleChangeOutcome::Changed);
+        assert!(sign_as(&app, &client).await.result.is_some(), "still signs as {}", role);
+    }
     let listed = connections(&app, &admin).await;
-    let hers = listed.iter().find(|c| c.for_pubkey == alice_hex).unwrap();
-    assert!(hers.revoked_at.is_some());
-    assert_eq!(hers.revoked_reason.as_deref(), Some("role_changed"));
-    assert_eq!(sign_as(&app, &client).await.error.as_deref(), Some(bunker::nip46::NOT_CONNECTED));
-    // Her unused token went with it.
+    assert!(listed.iter().find(|c| c.for_pubkey == alice_hex).unwrap().revoked_at.is_none());
+
+    // Her unused token still connects.
     let connect = app
         .state
         .nip46_handler
@@ -650,9 +618,7 @@ async fn a_member_who_becomes_a_viewer_loses_their_connections_and_stops_signing
             Keys::generate().public_key(),
         )
         .await;
-    assert!(connect.result.is_none());
-    let metrics: Value = app.get("/api/bunker/metrics").send().await.unwrap().json().await.unwrap();
-    assert_eq!(metrics["nip46_connections"], 0);
+    assert!(connect.result.is_some(), "{:?}", connect.error);
 }
 
 /// `PATCH /api/bunker/team/:id` as `admin` (#99).
@@ -662,8 +628,9 @@ async fn change_role(app: &common::TestApp, admin: &str, member: &str, role: &st
 }
 
 #[tokio::test]
-async fn a_downgrade_to_viewer_from_the_team_page_revokes_connections_and_an_upgrade_keeps_them() {
-    // #99: the route applies the rule of #77 and records who changed the role.
+async fn a_role_change_from_the_team_page_keeps_connections_and_is_recorded() {
+    // #99: the route records who changed the role. Both roles sign (#143), so neither direction
+    // revokes anything.
     let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
     let admin = app.admin.public_key().to_hex();
     let alice = app.register(Role::Signer);
@@ -674,49 +641,26 @@ async fn a_downgrade_to_viewer_from_the_team_page_revokes_connections_and_an_upg
     let bobs_app = connect_for(&app, &bob).await;
     issue(&app, &admin, json!({ "for_pubkey": alice_hex, "label": "later", "kinds": [1] })).await;
 
-    // Bob becomes an administrator: his app keeps signing.
+    // Bob becomes an administrator, and Alice an administrator and then a signer again.
     assert_eq!(change_role(&app, &admin, &bob_hex, "administrator").await.status(), StatusCode::OK);
+    assert_eq!(change_role(&app, &admin, &alice_hex, "administrator").await.status(), StatusCode::OK);
+    assert_eq!(change_role(&app, &admin, &alice_hex, "signer").await.status(), StatusCode::OK);
+
+    // Both apps keep signing, and Alice's unused token is still live.
     assert!(sign_as(&app, &bobs_app).await.result.is_some());
-
-    // Alice becomes a viewer: her app is cut off, with the reason, and her unused token goes too.
-    assert_eq!(change_role(&app, &admin, &alice_hex, "viewer").await.status(), StatusCode::OK);
-    assert_eq!(sign_as(&app, &alices_app).await.error.as_deref(), Some(bunker::nip46::NOT_CONNECTED));
+    assert!(sign_as(&app, &alices_app).await.result.is_some());
     let listed = connections(&app, &admin).await;
-    let hers = listed.iter().find(|c| c.for_pubkey == alice_hex).unwrap();
-    assert_eq!(hers.revoked_reason.as_deref(), Some("role_changed"));
-    assert!(listed.iter().find(|c| c.for_pubkey == bob_hex).unwrap().revoked_at.is_none());
+    assert!(listed.iter().all(|c| c.revoked_at.is_none()));
     let tokens: Vec<TokenResponse> = app.signed(Method::GET, "/api/bunker/connections/tokens", &admin).send().await.unwrap().json().await.unwrap();
-    assert!(tokens.iter().find(|t| t.label == "later").unwrap().revoked_at.is_some(), "her unused token is revoked");
+    assert!(tokens.iter().find(|t| t.label == "later").unwrap().revoked_at.is_none(), "her unused token is kept");
 
-    // Both changes are recorded with the administrator who made them.
+    // Every change is recorded with the administrator who made it.
     let events = app.db.audit_events().unwrap();
     let changes: Vec<_> = events.iter().filter(|e| e.action == bunker::audit::action::MEMBER_ROLE_CHANGED).collect();
-    assert_eq!(changes.len(), 2);
+    assert_eq!(changes.len(), 3);
     assert!(changes.iter().all(|e| e.actor_pubkey.as_deref() == Some(admin.as_str())));
-    assert!(changes.iter().any(|e| e.detail.as_deref() == Some("from=signer;to=viewer")));
-    assert!(changes.iter().any(|e| e.detail.as_deref() == Some("from=signer;to=administrator")));
-
-    // Made a signer again, Alice's old connection stays revoked: her app needs a new token.
-    assert_eq!(change_role(&app, &admin, &alice_hex, "signer").await.status(), StatusCode::OK);
-    assert_eq!(sign_as(&app, &alices_app).await.error.as_deref(), Some(bunker::nip46::NOT_CONNECTED));
-}
-
-#[tokio::test]
-async fn a_token_for_a_viewer_does_not_connect() {
-    // The defence behind the API's refusal (#77): redeeming checks the member's role as it is now,
-    // so a token stored for a viewer by any other path still connects nobody.
-    let app = common::spawn_with(true, Some(vec!["wss://relay.example".to_string()])).await;
-    let viewer = app.register(Role::Viewer).public_key().to_hex();
-    let now = chrono::Utc::now();
-    app.db
-        .create_nip46_token(&bunker::nip46::hash_secret("s3cret"), &viewer, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1))
-        .unwrap();
-
-    let refusal = app
-        .db
-        .redeem_nip46_token(&bunker::nip46::hash_secret("s3cret"), &Keys::generate().public_key().to_hex(), None, &Default::default(), now)
-        .unwrap();
-    assert_eq!(refusal.err(), Some(bunker::db::RedeemRefusal::MemberCannotSign));
+    assert_eq!(changes.iter().filter(|e| e.detail.as_deref() == Some("from=signer;to=administrator")).count(), 2);
+    assert!(changes.iter().any(|e| e.detail.as_deref() == Some("from=administrator;to=signer")));
 }
 
 #[tokio::test]

@@ -42,10 +42,9 @@ fn with_only_the_primary_everyone_may_use_it_as_before() {
 fn the_first_identity_added_grants_the_primary_to_everyone_who_may_sign() {
     let db = db();
     db.ensure_primary_identity(&hex(), Utc::now()).unwrap();
-    let (admin, signer, viewer) = (hex(), hex(), hex());
+    let (admin, signer) = (hex(), hex());
     db.add_team_member("Ann", &admin, Role::Administrator).unwrap();
     db.add_team_member("Sam", &signer, Role::Signer).unwrap();
-    db.add_team_member("Vic", &viewer, Role::Viewer).unwrap();
     let brand = hex();
     assert_eq!(db.add_identity(&brand, "Brand B", "line", Utc::now()).unwrap(), Ok(()));
     assert!(db.has_several_identities().unwrap());
@@ -54,7 +53,7 @@ fn the_first_identity_added_grants_the_primary_to_everyone_who_may_sign() {
     granted.sort();
     let mut expected = vec![admin.clone(), signer.clone()];
     expected.sort();
-    assert_eq!(granted, expected, "existing signers keep the primary; viewers never sign");
+    assert_eq!(granted, expected, "existing members who sign keep the primary");
     assert!(db.may_use_identity(&signer, None).unwrap());
     assert!(!db.may_use_identity(&signer, Some(&brand)).unwrap());
     // Administrators may use every identity without a grant.

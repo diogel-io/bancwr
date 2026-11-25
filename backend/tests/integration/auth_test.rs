@@ -1,4 +1,4 @@
-// Who may call /api/bunker/* (#25, #77), with BANCWR_PROXY_SECRET set. Every route is listed, not
+// Who may call /api/bunker/* (#25, #77, #143), with BANCWR_PROXY_SECRET set. Every route is listed, not
 // sampled, so a route added without a guard fails here.
 #[path = "../common/mod.rs"]
 mod common;
@@ -8,7 +8,7 @@ use nostr::prelude::*;
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 
-/// Who may call each route (#77): `A`dministrator, `S`igner, `V`iewer, and the service identity.
+/// Who may call each route (#77, #143): `A`dministrator, `S`igner, and the service identity.
 /// Every guarded route is listed, so a route added without a guard, or in the wrong group, fails.
 struct Route {
     method: &'static str,
@@ -19,12 +19,11 @@ struct Route {
 
 const A: Role = Role::Administrator;
 const S: Role = Role::Signer;
-const V: Role = Role::Viewer;
 /// Replaced with the administrator's own key, so the lookup finds someone.
 const LOOKUP: &str = "/api/bunker/team/by-pubkey/{admin}";
 
 const ROUTES: &[Route] = &[
-    Route { method: "GET", path: "/api/bunker/status", roles: &[A, S, V], service: true },
+    Route { method: "GET", path: "/api/bunker/status", roles: &[A, S], service: true },
     Route { method: "GET", path: "/api/bunker/logs", roles: &[A], service: false },
     Route { method: "GET", path: "/api/bunker/logs/mine", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/logs/export?format=csv&from=2026-06-01&to=2026-06-01", roles: &[A], service: false },
@@ -34,11 +33,11 @@ const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/api/bunker/config", roles: &[A], service: false },
     Route { method: "GET", path: "/api/bunker/relays", roles: &[A], service: false },
     Route { method: "PUT", path: "/api/bunker/relays", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/team", roles: &[A, V], service: false },
+    Route { method: "GET", path: "/api/bunker/team", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/team", roles: &[A], service: false },
     Route { method: "DELETE", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
     Route { method: "PATCH", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
-    Route { method: "GET", path: LOOKUP, roles: &[A, V], service: true },
+    Route { method: "GET", path: LOOKUP, roles: &[A], service: true },
     Route { method: "GET", path: "/api/bunker/connections/tokens", roles: &[A, S], service: false },
     Route { method: "POST", path: "/api/bunker/connections/tokens", roles: &[A, S], service: false },
     Route { method: "DELETE", path: "/api/bunker/connections/tokens/no-such-token", roles: &[A, S], service: false },
@@ -141,7 +140,7 @@ async fn an_unregistered_key_is_403_not_registered_with_its_npub() {
 #[tokio::test]
 async fn each_role_reaches_exactly_its_routes() {
     let app = common::spawn(true).await;
-    for role in [A, S, V] {
+    for role in [A, S] {
         let member = if role == A { app.admin.public_key().to_hex() } else { app.register(role).public_key().to_hex() };
         for route in ROUTES {
             let res = request_for(&app, route, &member).send().await.unwrap();
@@ -198,29 +197,32 @@ async fn the_service_identity_may_only_read_status_and_look_a_key_up() {
 }
 
 #[tokio::test]
-async fn a_viewer_reads_the_team_but_cannot_change_it() {
+async fn a_signer_cannot_read_or_change_the_team() {
+    // The team list and member profiles are the administrator's (#143).
     let app = common::spawn(true).await;
-    let viewer = app.register(V).public_key().to_hex();
+    let signer = app.register(S).public_key().to_hex();
 
-    let team = app.signed(Method::GET, "/api/bunker/team", &viewer).send().await.unwrap();
-    assert_eq!(team.status(), StatusCode::OK);
-    assert_eq!(body(team).await.as_array().unwrap().len(), 2, "the administrator and the viewer");
+    let team = app.signed(Method::GET, "/api/bunker/team", &signer).send().await.unwrap();
+    assert_eq!(team.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body(team).await["error"], "forbidden");
+    let lookup = LOOKUP.replace("{admin}", &app.admin.public_key().to_hex());
+    assert_eq!(app.signed(Method::GET, &lookup, &signer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
 
-    let added = app.signed(Method::POST, "/api/bunker/team", &viewer).json(&member_body()).send().await.unwrap();
+    let added = app.signed(Method::POST, "/api/bunker/team", &signer).json(&member_body()).send().await.unwrap();
     assert_eq!(added.status(), StatusCode::FORBIDDEN);
     let admin_id = app.db.find_member_by_pubkey(&app.admin.public_key().to_hex()).unwrap().unwrap().id;
-    let removed = app.signed(Method::DELETE, &format!("/api/bunker/team/{}", admin_id), &viewer).send().await.unwrap();
+    let removed = app.signed(Method::DELETE, &format!("/api/bunker/team/{}", admin_id), &signer).send().await.unwrap();
     assert_eq!(removed.status(), StatusCode::FORBIDDEN);
-    let viewer_id = app.db.find_member_by_pubkey(&viewer).unwrap().unwrap().id;
+    let signer_id = app.db.find_member_by_pubkey(&signer).unwrap().unwrap().id;
     let promoted = app
-        .signed(Method::PATCH, &format!("/api/bunker/team/{}", viewer_id), &viewer)
+        .signed(Method::PATCH, &format!("/api/bunker/team/{}", signer_id), &signer)
         .json(&serde_json::json!({ "role": "administrator" }))
         .send()
         .await
         .unwrap();
-    assert_eq!(promoted.status(), StatusCode::FORBIDDEN, "a viewer cannot promote themselves (#99)");
+    assert_eq!(promoted.status(), StatusCode::FORBIDDEN, "a signer cannot promote themselves (#99)");
     assert_eq!(app.db.get_team_members().unwrap().len(), 2, "nothing changed");
-    assert_eq!(app.db.find_member_by_pubkey(&viewer).unwrap().unwrap().role(), Some(V));
+    assert_eq!(app.db.find_member_by_pubkey(&signer).unwrap().unwrap().role(), Some(S));
 }
 
 #[tokio::test]

@@ -364,7 +364,8 @@ fn a_failed_bunker_relays_save_changes_nothing() {
     assert_eq!(db.list_bunker_relays().unwrap().iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://a.example"]);
 }
 
-// Roles (#77): a member who becomes a viewer cannot sign.
+// Roles (#77, #143): both sign, so a role change keeps connections; a stored role that is not
+// recognised grants nothing.
 
 /// A connection for `member`, made through a token as the API makes one; returns its client key.
 fn connect(db: &Database, member: &str) -> String {
@@ -375,35 +376,6 @@ fn connect(db: &Database, member: &str) -> String {
     let client = new_pubkey();
     db.redeem_nip46_token(&bunker::nip46::hash_secret(&secret), &client, None, &ClientMetadata::default(), now).unwrap().unwrap();
     client
-}
-
-#[test]
-fn changing_a_member_to_viewer_revokes_their_connections_and_tokens() {
-    let db = Database::new(":memory:").unwrap();
-    db.add_team_member("Admin", &new_pubkey(), Role::Administrator).unwrap();
-    let alice = new_pubkey();
-    let bob = new_pubkey();
-    db.add_team_member("Alice", &alice, Role::Signer).unwrap();
-    db.add_team_member("Bob", &bob, Role::Signer).unwrap();
-    let alice_client = connect(&db, &alice);
-    let bob_client = connect(&db, &bob);
-    let now = Utc::now();
-    db.create_nip46_token("unused", &alice, "", "x", &["sign_event:1".to_string()], now, now + chrono::Duration::hours(1)).unwrap();
-
-    assert_eq!(db.change_member_role(&alice, Role::Viewer).unwrap(), RoleChangeOutcome::Changed);
-
-    assert_eq!(db.find_member_by_pubkey(&alice).unwrap().unwrap().role(), Some(Role::Viewer));
-    assert!(db.active_nip46_connection(&alice_client).unwrap().is_none());
-    let hers = &db.list_nip46_connections(Some(&alice)).unwrap()[0];
-    assert_eq!(hers.revoked_reason.as_deref(), Some("role_changed"));
-    assert!(db.list_nip46_tokens().unwrap().iter().filter(|t| t.for_pubkey == alice).all(|t| t.revoked_at.is_some() || t.used_at.is_some()));
-    // Bob is untouched.
-    assert!(db.active_nip46_connection(&bob_client).unwrap().is_some());
-    assert_eq!(db.active_nip46_connection_count().unwrap(), 1);
-
-    // Back to signer: nothing is restored, a new token is needed.
-    assert_eq!(db.change_member_role(&alice, Role::Signer).unwrap(), RoleChangeOutcome::Changed);
-    assert!(db.active_nip46_connection(&alice_client).unwrap().is_none());
 }
 
 #[test]
@@ -422,23 +394,23 @@ fn the_last_administrator_is_never_demoted_and_an_unknown_key_is_not_found() {
     let db = Database::new(":memory:").unwrap();
     let alice = new_pubkey();
     db.add_team_member("Alice", &alice, Role::Administrator).unwrap();
-    assert_eq!(db.change_member_role(&alice, Role::Viewer).unwrap(), RoleChangeOutcome::LastAdministrator);
+    assert_eq!(db.change_member_role(&alice, Role::Signer).unwrap(), RoleChangeOutcome::LastAdministrator);
     assert_eq!(db.find_member_by_pubkey(&alice).unwrap().unwrap().role(), Some(Role::Administrator));
     assert_eq!(db.change_member_role(&alice, Role::Administrator).unwrap(), RoleChangeOutcome::Changed, "no change is no demotion");
     assert_eq!(db.change_member_role(&new_pubkey(), Role::Signer).unwrap(), RoleChangeOutcome::NotFound);
 }
 
 #[test]
-fn a_viewers_connection_signs_nothing_even_if_it_was_not_revoked() {
-    // The defence behind the revocation (#77): a viewer's connection is refused as a removed
-    // member's is, however the role came to be stored.
+fn a_connection_for_an_unrecognised_role_signs_nothing() {
+    // A stored role that is not one of the two grants nothing (#77, #143): the connection is
+    // refused as a removed member's is, however the role came to be stored.
     let file = NamedTempFile::new().unwrap();
     let path = file.path().to_str().unwrap();
     let db = Database::new(path).unwrap();
     let alice = new_pubkey();
     db.add_team_member("Alice", &alice, Role::Signer).unwrap();
     let client = connect(&db, &alice);
-    rusqlite::Connection::open(path).unwrap().execute("UPDATE team_members SET role = 'viewer'", []).unwrap();
+    rusqlite::Connection::open(path).unwrap().execute("UPDATE team_members SET role = 'owner'", []).unwrap();
 
     assert!(db.active_nip46_connection(&client).unwrap().is_none());
     assert_eq!(db.active_nip46_connection_count().unwrap(), 0);
@@ -536,11 +508,14 @@ fn a_connect_for_a_member_no_longer_in_the_vault_uses_the_token_up() {
 }
 
 #[test]
-fn a_connect_for_a_viewer_uses_the_token_up() {
-    let db = Database::new(":memory:").unwrap();
-    let viewer = new_pubkey();
-    db.add_team_member("Vic", &viewer, Role::Viewer).unwrap();
-    let hash = token_for(&db, &viewer, None);
+fn a_connect_for_an_unrecognised_role_uses_the_token_up() {
+    let file = NamedTempFile::new().unwrap();
+    let path = file.path().to_str().unwrap();
+    let db = Database::new(path).unwrap();
+    let oscar = new_pubkey();
+    db.add_team_member("Oscar", &oscar, Role::Signer).unwrap();
+    rusqlite::Connection::open(path).unwrap().execute("UPDATE team_members SET role = 'owner'", []).unwrap();
+    let hash = token_for(&db, &oscar, None);
     let client = new_pubkey();
     assert_eq!(redeem(&db, &hash, None, &client, None).err(), Some(RedeemRefusal::MemberCannotSign));
     assert_used_up(&db, &hash, None, &client, "member_cannot_sign");

@@ -310,7 +310,7 @@ merged PR's body to add an override block, and the next run regenerates the rele
 
 ```text
 BEGIN_COMMIT_OVERRIDE
-feat!: replace the roles with admin, signer and viewer
+feat!: rename the roles
 END_COMMIT_OVERRIDE
 ```
 

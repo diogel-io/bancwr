@@ -245,13 +245,14 @@ async fn add(address: &str, client: &reqwest::Client, pubkey: &str, role: &str) 
 }
 
 #[tokio::test]
-async fn test_add_team_member_accepts_the_three_roles_only() {
+async fn test_add_team_member_accepts_the_two_roles_only() {
     let (address, client) = setup_app().await;
-    for role in ["administrator", "signer", "viewer"] {
+    for role in ["administrator", "signer"] {
         assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::OK, "{} is accepted", role);
     }
-    // Older names are refused, not translated: pre-#24's `admin` and #24's `user` (#77).
-    for role in ["admin", "user", "Admin", "Viewer"] {
+    // Older names are refused, not translated: pre-#24's `admin`, #24's `user` (#77), and #77's
+    // `viewer` (#143).
+    for role in ["admin", "user", "viewer", "Admin", "Signer"] {
         assert_eq!(add(&address, &client, &new_npub(), role).await.status(), StatusCode::BAD_REQUEST, "{} is refused", role);
     }
 }
@@ -271,8 +272,8 @@ async fn test_add_team_member_accepts_hex_and_refuses_a_duplicate_in_either_form
     let npub = keys.public_key().to_bech32().unwrap();
     let hex = keys.public_key().to_hex();
 
-    assert_eq!(add(&address, &client, &hex, "viewer").await.status(), StatusCode::OK);
-    assert_eq!(add(&address, &client, &hex, "signer").await.status(), StatusCode::CONFLICT);
+    assert_eq!(add(&address, &client, &hex, "signer").await.status(), StatusCode::OK);
+    assert_eq!(add(&address, &client, &hex, "administrator").await.status(), StatusCode::CONFLICT);
     assert_eq!(add(&address, &client, &npub, "signer").await.status(), StatusCode::CONFLICT, "the same key as an npub");
     assert_eq!(add(&address, &client, &hex.to_uppercase(), "signer").await.status(), StatusCode::CONFLICT, "the same key in upper case");
 }
@@ -336,24 +337,23 @@ async fn test_the_last_administrator_cannot_be_removed() {
     assert_eq!(res.status(), StatusCode::OK);
 }
 
-/// The team's access matrix (#77), with the guard on: administrators and viewers read the team
-/// and look a member up; only administrators add and remove; signers do neither.
+/// The team's access matrix (#77, #143), with the guard on: only administrators read the team, look
+/// a member up, add and remove; signers do none of it.
 #[tokio::test]
 async fn test_the_team_by_role() {
     let app = common::spawn(true).await;
     let signer = app.register(Role::Signer).public_key().to_hex();
-    let viewer = app.register(Role::Viewer).public_key().to_hex();
     let admin = app.admin.public_key().to_hex();
     let lookup = format!("/api/bunker/team/by-pubkey/{}", signer);
 
-    for (who, may_read) in [(&admin, true), (&viewer, true), (&signer, false)] {
+    for (who, may_read) in [(&admin, true), (&signer, false)] {
         let team = app.signed(Method::GET, "/api/bunker/team", who).send().await.unwrap();
         let found = app.signed(Method::GET, &lookup, who).send().await.unwrap();
         if may_read {
             assert_eq!(team.status(), StatusCode::OK);
             let team: Vec<Value> = team.json().await.unwrap();
             let roles: Vec<&str> = team.iter().map(|m| m["role"].as_str().unwrap()).collect();
-            assert!(roles.contains(&"administrator") && roles.contains(&"signer") && roles.contains(&"viewer"), "{:?}", roles);
+            assert!(roles.contains(&"administrator") && roles.contains(&"signer"), "{:?}", roles);
             assert_eq!(found.status(), StatusCode::OK);
             assert_eq!(found.json::<Value>().await.unwrap()["role"], "signer");
         } else {
@@ -362,14 +362,18 @@ async fn test_the_team_by_role() {
         }
     }
 
-    let body = serde_json::json!({ "name": "New", "pubkey": new_npub(), "role": "viewer" });
-    for who in [&viewer, &signer] {
-        let res = app.signed(Method::POST, "/api/bunker/team", who).json(&body).send().await.unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
-    }
+    let body = serde_json::json!({ "name": "New", "pubkey": new_npub(), "role": "signer" });
+    let res = app.signed(Method::POST, "/api/bunker/team", &signer).json(&body).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
     let res = app.signed(Method::POST, "/api/bunker/team", &admin).json(&body).send().await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "an administrator adds a viewer");
-    assert_eq!(app.db.get_team_members().unwrap().len(), 4);
+    assert_eq!(res.status(), StatusCode::OK, "an administrator adds a signer");
+    assert_eq!(app.db.get_team_members().unwrap().len(), 3);
+
+    // #77's third role is no longer one (#143): refused with 400, and nothing is added.
+    let viewer = serde_json::json!({ "name": "Old", "pubkey": new_npub(), "role": "viewer" });
+    let res = app.signed(Method::POST, "/api/bunker/team", &admin).json(&viewer).send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(app.db.get_team_members().unwrap().len(), 3);
 }
 
 /// The team, by name: (id, role).
@@ -396,7 +400,7 @@ async fn test_change_a_members_role_in_one_step() {
     let (id, _) = team_roles(&address, &client).await.into_iter().find(|(_, role)| role == "signer").unwrap();
     let role_of = |team: Vec<(String, String)>, id: &str| team.into_iter().find(|(i, _)| i == id).unwrap().1;
 
-    for role in ["viewer", "administrator", "signer"] {
+    for role in ["administrator", "signer"] {
         let res = change_role(&address, &client, &id, role).await;
         assert_eq!(res.status(), StatusCode::OK, "to {}", role);
         assert_eq!(res.json::<Value>().await.unwrap()["success"], true);
@@ -413,15 +417,15 @@ async fn test_change_role_refuses_what_is_not_a_role_or_a_member() {
     assert_eq!(add(&address, &client, &new_npub(), "signer").await.status(), StatusCode::OK);
     let (id, _) = team_roles(&address, &client).await.remove(0);
 
-    // The older names (#77) and anything else are not roles.
-    for role in ["admin", "user", "owner", ""] {
+    // The older names (#77, #143) and anything else are not roles.
+    for role in ["admin", "user", "viewer", "owner", ""] {
         assert_eq!(change_role(&address, &client, &id, role).await.status(), StatusCode::BAD_REQUEST, "{:?}", role);
     }
     assert_eq!(team_roles(&address, &client).await[0].1, "signer", "unchanged");
 
     let unknown = uuid::Uuid::new_v4().to_string();
-    assert_eq!(change_role(&address, &client, &unknown, "viewer").await.status(), StatusCode::NOT_FOUND);
-    assert_eq!(change_role(&address, &client, "0", "viewer").await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(change_role(&address, &client, &unknown, "signer").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(change_role(&address, &client, "0", "signer").await.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -432,11 +436,9 @@ async fn test_the_last_administrator_cannot_be_demoted() {
     assert_eq!(add(&address, &client, &new_npub(), "administrator").await.status(), StatusCode::OK);
     let (admin_id, _) = team_roles(&address, &client).await.remove(0);
 
-    for role in ["signer", "viewer"] {
-        let res = change_role(&address, &client, &admin_id, role).await;
-        assert_eq!(res.status(), StatusCode::CONFLICT);
-        assert!(res.text().await.unwrap().contains("last administrator"));
-    }
+    let res = change_role(&address, &client, &admin_id, "signer").await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert!(res.text().await.unwrap().contains("last administrator"));
     assert_eq!(team_roles(&address, &client).await[0].1, "administrator", "unchanged");
 
     // A second administrator makes the first demotable.

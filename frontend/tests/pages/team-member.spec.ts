@@ -8,8 +8,8 @@ import { signInAs } from '../helpers/session'
 import Member from '~/pages/team/[pubkey].vue'
 import { clearNuxtData } from '#imports'
 
-// A team member's read-only profile (#77): who the vault says they are, and their kind 0 from
-// their relays, read as the profile page reads one and never published.
+// A team member's read-only profile (#77), for administrators (#143): who the vault says they are,
+// and their kind 0 from their relays, read as the profile page reads one and never published.
 const bob = 'b'.repeat(64)
 const bobNpub = npubEncode(bob)
 const stranger = 'c'.repeat(64)
@@ -33,7 +33,7 @@ async function open(path: string) {
 describe('Team member page', () => {
   beforeEach(async () => {
     await clearNuxtData()
-    signInAs('viewer')
+    signInAs('administrator')
     relays = new FakeRelays()
     holder.io = relays
   })

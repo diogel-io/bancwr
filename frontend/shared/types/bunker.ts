@@ -80,24 +80,26 @@ export interface ConfigResponse {
 }
 
 /**
- * The three roles (#77, which replaced #24's administrator, user and signer). Stored and sent
- * lowercase, shown as Admin, Signer and Viewer. Admin is a superset; a viewer reads the team and
- * members' profiles and never holds a NIP-46 connection.
+ * The two roles (#77, #143). Stored and sent lowercase, shown as Admin and Signer. Admin is a
+ * superset: it signs as a signer does, and also manages the team and the bunker.
  */
-export type Role = 'administrator' | 'signer' | 'viewer'
+export type Role = 'administrator' | 'signer'
 
 /** Every role, in order of access. */
-export const ROLES: readonly Role[] = ['administrator', 'signer', 'viewer']
+export const ROLES: readonly Role[] = ['administrator', 'signer']
 
 export const ROLE_LABELS: Record<Role, string> = {
   administrator: 'Admin',
-  signer: 'Signer',
-  viewer: 'Viewer'
+  signer: 'Signer'
 }
 
-/** Whether a member with this role may hold NIP-46 connections (#77); backend `Role::can_sign`. */
-export function canSign(role: string): boolean {
-  return role === 'administrator' || role === 'signer'
+/**
+ * Whether a stored role is one of ROLES. Every role signs (#143), so this is also whether the member
+ * may hold NIP-46 connections. A row stored before #24 may hold another value, which grants nothing
+ * (the bunker's member_cannot_sign).
+ */
+export function isRole(role: string): role is Role {
+  return (ROLES as readonly string[]).includes(role)
 }
 
 /** GET /api/bunker/team, GET /api/bunker/team/by-pubkey/:pubkey */

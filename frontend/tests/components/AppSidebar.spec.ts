@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { defineComponent, h } from 'vue'
 import { UApp } from '#components'
-import type { Role } from '#shared/types/bunker'
 import { signInAs } from '../helpers/session'
 import AppSidebar from '~/components/AppSidebar.vue'
 
@@ -26,15 +25,13 @@ describe('AppSidebar', () => {
     expect(hrefs(component)).toEqual(['/', '/config', '/team', '/logs', '/profile', '/follows', '/relays', '/connections', '/approvals'])
   })
 
-  it('offers signers the dashboard, profile, follows, relays, connections and approvals (#102), and viewers the dashboard and team (#77)', async () => {
-    const expected: Record<string, string[]> = { signer: ['/', '/profile', '/follows', '/relays', '/connections', '/approvals'], viewer: ['/', '/team'] }
-    for (const role of ['signer', 'viewer'] as Role[]) {
-      signInAs(role)
-      const component = await mountSuspended(AppSidebar)
+  it('offers signers the dashboard, profile, follows, relays, connections and approvals (#102), never Config or Team (#143)', async () => {
+    signInAs('signer')
+    const component = await mountSuspended(AppSidebar)
 
-      expect(hrefs(component), role).toEqual(expected[role])
-      expect(component.text(), role).not.toContain('Config')
-    }
+    expect(hrefs(component)).toEqual(['/', '/profile', '/follows', '/relays', '/connections', '/approvals'])
+    expect(component.text()).not.toContain('Config')
+    expect(component.text()).not.toContain('Team')
   })
 
   it('offers nothing when no one is signed in', async () => {

@@ -67,7 +67,8 @@ registerEndpoint('/api/bunker/connections/c1', {
 registerEndpoint('/api/bunker/team', () => [
   { id: '1', name: 'Gary', pubkey: me, npub: 'npub1me', role: 'administrator' },
   { id: '2', name: 'Bob', pubkey: other, npub: 'npub1bob', role: 'signer' },
-  { id: '3', name: 'Vera', pubkey: 'd'.repeat(64), npub: 'npub1vera', role: 'viewer' }
+  // A row from before #24 with a role that is not one: it grants nothing (#143).
+  { id: '3', name: 'Oscar', pubkey: 'd'.repeat(64), npub: 'npub1oscar', role: 'owner' }
 ])
 
 const InApp = defineComponent({ render: () => h(UApp, () => h(Connections)) })
@@ -456,14 +457,14 @@ describe('Connections page', () => {
     expect(ended.find('[data-testid="connection-end"]').exists()).toBe(false)
   })
 
-  it('offers tokens only for admins and signers, never a viewer (#77)', async () => {
+  it('offers tokens only for members with a recognised role, never a row from before #24 (#77, #143)', async () => {
     const component = await mount('administrator')
     const forSelect = component.find('[data-testid="issue-token"]').find('button[role="combobox"]')
     await forSelect.trigger('click')
     await flushPromises()
     const options = [...document.body.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
     expect(options).toEqual(expect.arrayContaining(['Gary (you)', 'Bob']))
-    expect(options).not.toContain('Vera')
+    expect(options).not.toContain('Oscar')
   })
 
   it('explains that NIP-46 is off when the bunker refuses to issue', async () => {

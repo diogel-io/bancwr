@@ -91,7 +91,7 @@ pub struct TeamMemberResponse {
     pub pubkey: String,
     /// For display. `None` only for a row stored before #24 whose key is not valid.
     pub npub: Option<String>,
-    /// `administrator`, `signer` or `viewer` (#77); a row from before #24 may hold another value.
+    /// `administrator` or `signer` (#77, #143); a row from before #24 may hold another value.
     pub role: String,
 }
 
@@ -245,8 +245,8 @@ pub async fn add_team_member(
     who: Option<axum::Extension<crate::proxy_auth::Caller>>,
     Json(request): Json<AddTeamMemberRequest>,
 ) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
-    // The three roles of #77: administrator, signer and viewer. Older names (`admin`, `user`) are
-    // refused with 400.
+    // The two roles of #143: administrator and signer. Older names (`admin`, `user`, and #77's
+    // third role) are refused with 400.
     let role: Role = request
         .role
         .parse()
@@ -274,7 +274,7 @@ pub async fn add_team_member(
         (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
     })?;
     let mut grants: Vec<Option<String>> = Vec::new();
-    if several && role.can_sign() {
+    if several {
         match &request.identities {
             None => grants.push(None),
             Some(keys) => {
@@ -382,10 +382,10 @@ pub async fn remove_team_member(
 /// Change a team member's role
 /// PATCH /api/bunker/team/:id
 ///
-/// One of the three roles of #77, as `add_team_member` takes them. A member who becomes a viewer
-/// loses their NIP-46 connections and unused tokens (`role_changed`), and the change is recorded
-/// with who made it, all in one transaction (`Database::change_member_role_as`). The only
-/// administrator is never demoted (409), for the reason they are never removed (#99).
+/// One of the two roles of #143, as `add_team_member` takes them. Both sign, so a member keeps
+/// their NIP-46 connections and tokens; the change is recorded with who made it, in one transaction
+/// (`Database::change_member_role_as`). The only administrator is never demoted (409), for the
+/// reason they are never removed (#99).
 pub async fn change_team_member_role(
     State(state): State<AppState>,
     who: Option<axum::Extension<crate::proxy_auth::Caller>>,
@@ -452,8 +452,8 @@ pub fn create_router(state: AppState) -> Router {
         None => routes,
     };
 
-    // The access matrix (#25, #77). A path may sit in two groups with different methods (GET and
-    // POST /api/bunker/team): merging joins them, and each method keeps its own group's guard.
+    // The access matrix (#25, #77, #143). A path may sit in two groups with different methods:
+    // merging joins them, and each method keeps its own group's guard.
     let health = Router::new().route(STATUS_PATH, get(get_status));
     let administration = Router::new()
         // The signing log and audit trail (#96): paging, export and retention.
@@ -463,9 +463,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/metrics", get(get_metrics))
         // Read-only (#42): the signing key is encrypted at rest and set with `bunker import-key` (#94).
         .route("/api/bunker/config", get(get_config))
-        // Reading the team is TeamReader's; changing it, a role included (#99), stays the
-        // administrator's (#77).
-        .route("/api/bunker/team", post(add_team_member))
+        // Reading the team and changing it, a role included (#99), are the administrator's (#77,
+        // #143).
+        .route("/api/bunker/team", get(get_team).post(add_team_member))
         .route("/api/bunker/team/:id", delete(remove_team_member).patch(change_team_member_role))
         // The bunker's own NIP-46 relays (#78): NIP46_RELAYS when set, otherwise the console's list.
         .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays))
@@ -478,8 +478,6 @@ pub fn create_router(state: AppState) -> Router {
             "/api/bunker/identities/:pubkey/members/:member",
             put(crate::identities_api::grant_identity).delete(crate::identities_api::remove_identity_grant),
         );
-    // Administrators and viewers read the team (#77).
-    let team_read = Router::new().route("/api/bunker/team", get(get_team));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
     let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
     // Administrators and signers, each scoped to the caller: their connection tokens (#142) and
@@ -505,8 +503,7 @@ pub fn create_router(state: AppState) -> Router {
         .route(HEALTH_PATH, get(health_check))
         .merge(guarded(health, Access::Health))
         .merge(guarded(administration, Access::Administrator))
-        .merge(guarded(team_read, Access::TeamReader))
-        .merge(guarded(lookup, Access::TeamReaderOrService))
+        .merge(guarded(lookup, Access::AdministratorOrService))
         .merge(guarded(signer, Access::Signer))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -577,7 +574,7 @@ pub fn create_locked_router(state: LockedState, proxy_secret: Option<String>) ->
     Router::new()
         .route(HEALTH_PATH, get(locked_health))
         .merge(guarded(status, Access::Health))
-        .merge(guarded(lookup, Access::TeamReaderOrService))
+        .merge(guarded(lookup, Access::AdministratorOrService))
         .fallback(locked_fallback)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

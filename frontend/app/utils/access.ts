@@ -6,9 +6,8 @@ import { ROLES } from '#shared/types/bunker'
 import type { Role } from '#shared/types/bunker'
 
 const ADMIN: readonly Role[] = ['administrator']
-/** Admin is a superset (#77): it keeps the signer's pages and the viewer's. */
+/** Admin is a superset (#77): it keeps the signer's pages. */
 const SIGNS: readonly Role[] = ['administrator', 'signer']
-const READS_TEAM: readonly Role[] = ['administrator', 'viewer']
 
 /**
  * Each page's route and who may open it. `[param]` matches one path segment, as in Nuxt's page
@@ -19,9 +18,9 @@ export const ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = {
   '/': ROLES,
   '/config': ADMIN,
   '/logs': ADMIN,
-  // Viewers read the team and members' profiles; only administrators change it.
-  '/team': READS_TEAM,
-  '/team/[pubkey]': READS_TEAM,
+  // The team and members' profiles are the administrators' alone (#143).
+  '/team': ADMIN,
+  '/team/[pubkey]': ADMIN,
   // The signer's own Nostr identity and connected apps.
   '/profile': SIGNS,
   '/follows': SIGNS,
