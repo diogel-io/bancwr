@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.1](https://github.com/diogel-io/bancwr/compare/v0.1.0...v0.1.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **connections:** let a signer issue, list and revoke their own connection tokens ([3368cea](https://github.com/diogel-io/bancwr/commit/3368ceaec09f101ec7002b2058e9a425e0b36c79))
+* **connections:** let a signer issue, list and revoke their own connection tokens ([062d1a7](https://github.com/diogel-io/bancwr/commit/062d1a7baf4fd7aa2a26565bff36583940da2c4f)), closes [#142](https://github.com/diogel-io/bancwr/issues/142)
+* **connections:** show which identity a connection token signs as ([3ace473](https://github.com/diogel-io/bancwr/commit/3ace473bf533260413a7c5b3ccaac291e933d462))
+* **connections:** show which identity a connection token signs as ([780506c](https://github.com/diogel-io/bancwr/commit/780506c12085cb6e9a3e2d2373b055330747ff96)), closes [#137](https://github.com/diogel-io/bancwr/issues/137)
+* **roles:** remove the Viewer role ([b3e09da](https://github.com/diogel-io/bancwr/commit/b3e09da3eb14e1d851e55c4ccc4d408ba9eb0c5d))
+* **roles:** remove the Viewer role ([131e793](https://github.com/diogel-io/bancwr/commit/131e793621a07ba256f62a3027b73cfdd20b863f)), closes [#143](https://github.com/diogel-io/bancwr/issues/143)
+* **ui:** show the bunker's reason when it refuses a token or an approval ([d429d88](https://github.com/diogel-io/bancwr/commit/d429d881a8832f5bb389146c24557014380e66a0))
+* **ui:** show the bunker's reason when it refuses a token or an approval ([c7f20e1](https://github.com/diogel-io/bancwr/commit/c7f20e1f0ca15964d3319b9671df209a9b446c7f))
+
+
+### Miscellaneous Chores
+
+* release 0.1.1 ([ec34cbc](https://github.com/diogel-io/bancwr/commit/ec34cbce1fbbad5767b2079effcdba7906ade1a2))
+
 ## 0.1.0 (2026-11-18)
 
 
