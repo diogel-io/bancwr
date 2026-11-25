@@ -325,22 +325,21 @@ It also records every decrypt an app asks for, with whose message it was but not
 (#97).
 Administrators page through signatures under **Logs**, export everything between two dates as CSV
 or JSON Lines, and set a retention policy under **Config**. By default nothing is deleted. Signers
-and viewers cannot export. See [docs/operating.md](docs/operating.md#the-signing-log-and-audit-events).
+cannot export. See [docs/operating.md](docs/operating.md#the-signing-log-and-audit-events).
 
 ### Roles
 
-Only keys registered with the bunker can use it, each with one of three roles (#77), stored as
-`administrator`, `signer` and `viewer` and shown as Admin, Signer and Viewer:
+Only keys registered with the bunker can use it, each with one of two roles (#77, #143), stored as
+`administrator` and `signer` and shown as Admin and Signer:
 
 | Role | Can |
 |------|-----|
-| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members, and change their roles), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer and a viewer can do. |
+| Admin | Everything: the dashboard with metrics and activity, Team (add and remove members, and change their roles), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer can do. |
 | Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46), including issuing connection tokens for themselves, as the identities they are granted and without approval kinds (#142). |
-| Viewer | A dashboard with the bunker's health; the team list and each member's profile, read-only. A viewer never holds a NIP-46 connection. |
 
-An administrator changes a member's role from **Team** in one step. Making a member a viewer
-disconnects the apps connected for them, after asking; a new token is needed if they later sign
-again. The last administrator cannot be demoted, just as they cannot be removed.
+The team list and each member's profile are for administrators only. An administrator changes a
+member's role from **Team** in one step. Both roles sign, so a role change keeps the apps connected
+for the member. The last administrator cannot be demoted, just as they cannot be removed.
 
 The API's route-by-role table is in [`backend/README.md`](backend/README.md#access-by-role-77).
 
@@ -371,6 +370,19 @@ Keys are stored in hex and shown as npubs. Upgrading from a version before this 
 existing members at startup: the roles `admin` and `viewer` become `administrator` and `user` (and
 then, since #77, `user` becomes `signer`: see below), and pubkeys are stored in hex. If the same key was registered twice, once as an npub and once as hex,
 the older registration is kept and the other is removed; the log names both.
+
+### Upgrading: two roles (#143)
+
+Version 0.1.1 removes the third role, `viewer`. At the first start of the new version, every
+viewer becomes a signer, and the log names each one. A former viewer then has a signer's pages:
+their own profile, follows, relays, connected apps and approvals, and they can issue a connection
+token for themselves (#142). They hold no connections until a token is issued. If someone should
+not have that, remove them before you upgrade.
+
+The team list and member profiles are now for administrators only. A script that adds or changes
+members through `POST /api/bunker/team` or `PATCH /api/bunker/team/:id` must send `administrator`
+or `signer`: `viewer` is now refused with `400`. A role change no longer revokes anything, because
+both roles sign.
 
 ### Upgrading: roles (#77)
 

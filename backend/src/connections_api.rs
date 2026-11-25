@@ -8,7 +8,8 @@
 //! | `GET /api/bunker/connections` | administrator and signer: administrators see all, signers their own |
 //! | `DELETE /api/bunker/connections/:id` | administrator and signer: administrators any, signers their own (#31) |
 //!
-//! Viewers hold no connections (#77): a token is only issued for an administrator or a signer.
+//! A token is only issued for a member with a recognised role (#77, #143): an administrator or a
+//! signer. A stored role that is not recognised grants nothing.
 //!
 //! A token's secret is returned once, in the creation response, and only its hash is kept.
 use crate::db::{Nip46Connection, Nip46Token, TokenOptions};
@@ -338,15 +339,10 @@ pub async fn issue_token(
         }
     };
     match state.db.find_member_by_pubkey(&for_pubkey).map_err(database_error)? {
-        // Only a member who can sign: an administrator or a signer, never a viewer (#77).
-        Some(member) if member.role().is_some_and(|role| role.can_sign()) => {}
-        Some(_) => {
-            return Err(api_error(
-                StatusCode::BAD_REQUEST,
-                "member_cannot_sign",
-                "Connections can only be issued for an admin or a signer, not a viewer.",
-            ))
-        }
+        // Only a member who can sign: one with a recognised role, an administrator or a signer
+        // (#77, #143).
+        Some(member) if member.role().is_some() => {}
+        Some(_) => return Err(api_error(StatusCode::BAD_REQUEST, "member_cannot_sign", "This member has no recognised role and cannot sign.")),
         None => return Err(api_error(StatusCode::BAD_REQUEST, "not_registered", "Connections can only be issued for members of the vault.")),
     }
     if !state.db.may_use_identity(&for_pubkey, identity.as_deref()).map_err(database_error)? {

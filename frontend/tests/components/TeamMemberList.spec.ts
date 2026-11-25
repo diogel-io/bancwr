@@ -42,11 +42,10 @@ describe('TeamMemberList', () => {
     expect(component.text()).toContain('Signer')
   })
 
-  it('shows the role names of #77', async () => {
-    const viewer: TeamMember = { id: 'e1f2a3b4-5c6d-4e7f-8091-a2b3c4d5e6f7', name: 'Vera', pubkey: 'c'.repeat(64), npub: 'npub1vera', role: 'viewer' }
-    const component = await mountSuspended(TeamMemberList, { props: { data: [...mockTeam, viewer] } })
+  it('shows the role names of #77 and #143', async () => {
+    const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam } })
     const roles = component.findAll('tbody tr').map(row => row.findAll('td')[2]!.text())
-    expect(roles).toEqual(['Admin', 'Signer', 'Viewer'])
+    expect(roles).toEqual(['Admin', 'Signer'])
   })
 
   it('links each member to their read-only profile, by npub (#77)', async () => {
@@ -56,16 +55,14 @@ describe('TeamMemberList', () => {
     expect(link.text()).toBe('Bob')
   })
 
-  it('read-only: lists names, npubs and roles, with no remove control (#77)', async () => {
-    const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam, readOnly: true } })
+  it('gives every member a role select and a remove control: the list is administrators\' alone (#143)', async () => {
+    const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam } })
 
-    expect(component.text()).toContain('Alice')
-    expect(component.text()).toContain('npub1bob')
-    expect(component.text()).toContain('Signer')
-    expect(component.find('button[aria-label="Remove Bob"]').exists()).toBe(false)
-    expect(component.text()).not.toContain('Actions')
-    // Still a way to each member's profile.
-    expect(component.get('a[aria-label="View Bob\'s profile"]').attributes('href')).toBe('/team/npub1bob')
+    expect(component.text()).toContain('Actions')
+    for (const name of ['Alice', 'Bob']) {
+      expect(component.find(`button[aria-label="Role of ${name}"]`).exists(), name).toBe(true)
+      expect(component.find(`button[aria-label="Remove ${name}"]`).exists(), name).toBe(true)
+    }
   })
 
   it('shows a row from before #24 as stored', async () => {
@@ -178,9 +175,9 @@ describe('TeamMemberList', () => {
       await flushPromises()
     }
 
-    function patchEndpoint(status = 200) {
+    function patchEndpoint(status = 200, member: TeamMember = bob) {
       const sent: unknown[] = []
-      registerEndpoint(`/api/bunker/team/${bob.id}`, {
+      registerEndpoint(`/api/bunker/team/${member.id}`, {
         method: 'PATCH',
         handler: async (event) => {
           sent.push(await readBody(event))
@@ -194,22 +191,16 @@ describe('TeamMemberList', () => {
       return sent
     }
 
-    it('offers each member\'s role as a select of the three roles', async () => {
+    it('offers each member\'s role as a select of the two roles (#143)', async () => {
       const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam } })
       expect(component.get('button[aria-label="Role of Bob"]').text()).toContain('Signer')
       await component.get('button[aria-label="Role of Bob"]').trigger('click')
-      await vi.waitFor(() => expect(document.body.querySelectorAll('[role="option"]').length).toBe(3))
+      await vi.waitFor(() => expect(document.body.querySelectorAll('[role="option"]').length).toBe(2))
       const options = [...document.body.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
-      expect(options).toEqual(['Admin', 'Signer', 'Viewer'])
+      expect(options).toEqual(['Admin', 'Signer'])
     })
 
-    it('read-only: no role select', async () => {
-      const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam, readOnly: true } })
-      expect(component.find('button[aria-label="Role of Bob"]').exists()).toBe(false)
-      expect(component.find('button[role="combobox"]').exists()).toBe(false)
-    })
-
-    it('changes a role in one step, without asking, when the member can still sign', async () => {
+    it('changes a role in one step, without asking', async () => {
       const ask = vi.fn(() => true)
       vi.stubGlobal('confirm', ask)
       const sent = patchEndpoint()
@@ -223,29 +214,18 @@ describe('TeamMemberList', () => {
       expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Bob is now Admin', color: 'success' }))
     })
 
-    it('asks before making a signer a viewer, saying their apps will be disconnected', async () => {
+    it('demotes an administrator to signer in one step too: both roles sign, so nothing is disconnected (#143)', async () => {
       const ask = vi.fn(() => true)
       vi.stubGlobal('confirm', ask)
-      const sent = patchEndpoint()
+      const alice = mockTeam[0]!
+      const sent = patchEndpoint(200, alice)
       const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam } })
 
-      await choose(component, 'Bob', 'Viewer')
+      await choose(component, 'Alice', 'Signer')
 
-      expect(ask).toHaveBeenCalledWith(expect.stringContaining('Make Bob a viewer?'))
-      expect(ask).toHaveBeenCalledWith(expect.stringContaining('disconnected'))
-      await vi.waitFor(() => expect(sent).toEqual([{ role: 'viewer' }]))
-    })
-
-    it('sends nothing, and shows the stored role again, when the downgrade is not confirmed', async () => {
-      vi.stubGlobal('confirm', vi.fn(() => false))
-      const sent = patchEndpoint()
-      const component = await mountSuspended(TeamMemberList, { props: { data: mockTeam } })
-
-      await choose(component, 'Bob', 'Viewer')
-
-      expect(sent).toEqual([])
-      expect(component.emitted('refresh')).toBeUndefined()
-      await vi.waitFor(() => expect(component.get('button[aria-label="Role of Bob"]').text()).toContain('Signer'))
+      await vi.waitFor(() => expect(sent).toEqual([{ role: 'signer' }]))
+      expect(ask).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Alice is now Signer', color: 'success' })))
     })
 
     it('says the last administrator cannot be demoted when the bunker refuses with 409', async () => {

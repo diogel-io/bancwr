@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test'
 import { test, expect, sameOrigin } from './fixtures'
+import { randomNpub } from './keys'
 
-// What each role is offered and refused (#77, which replaced #26's roles). The bunker enforces the
+// What each role is offered and refused (#77, which replaced #26's roles; #143). The bunker enforces the
 // same matrix (#25); these check the UI neither offers nor opens what it would refuse, and that a
 // page never asks the bunker for something it then refuses.
 
@@ -44,8 +45,13 @@ test.describe('admin', () => {
     await page.goto('/team')
     await expect(page.getByRole('heading', { name: 'Team Management' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Add Member' })).toBeVisible()
-    await page.getByRole('link', { name: 'View e2e viewer\'s profile' }).click()
-    await expect(page.getByTestId('member-role')).toHaveText('Viewer')
+    await page.getByRole('link', { name: 'View e2e signer\'s profile' }).click()
+    await expect(page).toHaveURL(/\/team\/npub1/)
+    await expect(page.getByTestId('member-summary')).toContainText('e2e signer')
+    await expect(page.getByTestId('member-role')).toHaveText('Signer')
+    // Read-only: whatever the relays hold, there is nothing to edit.
+    await expect(page.getByTestId('member-profile-loading')).toHaveCount(0, { timeout: 20_000 })
+    await expect(page.locator('input, textarea')).toHaveCount(0)
   })
 })
 
@@ -81,84 +87,19 @@ test.describe('signer', () => {
     expect(refused).toEqual([])
   })
 
-  for (const [path, title] of [['/config', 'Config'], ['/logs', 'Logs'], ['/team', 'Team']] as const) {
-    test(`typing ${path} gets the permission-denied page`, async ({ page }) => {
+  // The team and members' profiles are the administrators' alone (#143).
+  for (const [path, title] of [
+    ['/config', 'Config'], ['/logs', 'Logs'], ['/team', 'Team'],
+    [`/team/${randomNpub()}`, 'a team member\'s profile']
+  ] as const) {
+    test(`typing ${path.startsWith('/team/') ? '/team/<npub>' : path} gets the permission-denied page`, async ({ page }) => {
       await expectRefused(page, path, title, 'Signer')
     })
   }
 
-  test('cannot read the team through the API either', async ({ page }) => {
+  test('cannot read or add to the team through the API either', async ({ page }) => {
     expect((await page.request.get('/api/bunker/team')).status()).toBe(403)
-  })
-})
-
-test.describe('viewer', () => {
-  test.use({ role: 'viewer' })
-
-  test('cannot export the log or change its retention (#96)', async ({ page }) => {
-    await page.goto('/')
-    const exported = await page.request.get('/api/bunker/logs/export?format=csv&from=2026-01-01&to=2026-12-31')
-    expect(exported.status()).toBe(403)
-    const retention = await page.request.put('/api/bunker/logs/retention', { headers: sameOrigin, data: { max_age_days: 30, max_rows: null } })
-    expect(retention.status()).toBe(403)
-  })
-
-  test('is offered the dashboard and the team', async ({ page }) => {
-    await page.goto('/')
-    await expectSidebar(page, ['Dashboard', 'Team'])
-  })
-
-  test('sees the health and a way to the team, and nothing it would be refused', async ({ page }) => {
-    const refused = watchRefusals(page)
-    const response = await page.goto('/')
-    expect(response?.status()).toBe(200)
-    await expect(page.getByText('Bunker Status')).toBeVisible()
-    await expect(page.getByTestId('role-summary')).toContainText('Viewer')
-    await expect(page.getByText('Total Signatures')).toHaveCount(0)
-    await expect(page.getByTestId('my-connections')).toHaveCount(0)
-    await page.getByTestId('viewer-team').getByRole('link', { name: 'View the team' }).click()
-    await expect(page).toHaveURL('/team')
-    await page.waitForLoadState('networkidle')
-    expect(refused).toEqual([])
-  })
-
-  test('reads the team and a member\'s profile, but cannot add or remove members or change a role', async ({ page }) => {
-    const refused = watchRefusals(page)
-    await page.goto('/team')
-    await expect(page.getByRole('heading', { name: 'Team', exact: true })).toBeVisible()
-    const signerRow = page.getByRole('row').filter({ hasText: 'e2e signer' })
-    await expect(signerRow).toContainText('Signer')
-    await expect(signerRow).toContainText('npub1')
-    await expect(page.getByRole('button', { name: 'Add Member' })).toHaveCount(0)
-    await expect(page.getByLabel('Pubkey')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /^Remove / })).toHaveCount(0)
-    await expect(page.getByRole('combobox', { name: /^Role of / })).toHaveCount(0)
-
-    await page.getByRole('link', { name: 'View e2e signer\'s profile' }).click()
-    await expect(page).toHaveURL(/\/team\/npub1/)
-    await expect(page.getByTestId('member-summary')).toContainText('e2e signer')
-    await expect(page.getByTestId('member-role')).toHaveText('Signer')
-    // Read-only: whatever the relays hold, there is nothing to edit.
-    await expect(page.getByTestId('member-profile-loading')).toHaveCount(0, { timeout: 20_000 })
-    await expect(page.locator('input, textarea')).toHaveCount(0)
-    await page.waitForLoadState('networkidle')
-    expect(refused).toEqual([])
-
-    // And the bunker refuses a change outright.
-    const added = await page.request.post('/api/bunker/team', { headers: sameOrigin, data: { name: 'Nope', pubkey: 'npub1nope', role: 'viewer' } })
+    const added = await page.request.post('/api/bunker/team', { headers: sameOrigin, data: { name: 'Nope', pubkey: 'npub1nope', role: 'signer' } })
     expect(added.status()).toBe(403)
-    const team = await (await page.request.get('/api/bunker/team')).json() as { id: string, name: string }[]
-    const signer = team.find(member => member.name === 'e2e signer')!
-    const changed = await page.request.patch(`/api/bunker/team/${signer.id}`, { headers: sameOrigin, data: { role: 'viewer' } })
-    expect(changed.status()).toBe(403)
   })
-
-  for (const [path, title] of [
-    ['/config', 'Config'], ['/logs', 'Logs'], ['/profile', 'your profile'],
-    ['/follows', 'follows'], ['/relays', 'default relays'], ['/connections', 'connected apps']
-  ] as const) {
-    test(`typing ${path} gets the permission-denied page`, async ({ page }) => {
-      await expectRefused(page, path, title, 'Viewer')
-    })
-  }
 })

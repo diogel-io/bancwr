@@ -9,18 +9,16 @@ use std::str::FromStr;
 use nostr::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// The three roles (#77, which replaced #24's administrator, user and signer). Their stored and
-/// wire form is lowercase; the console shows them as Admin, Signer and Viewer.
+/// The two roles (#143, which removed #77's third). Their stored and wire form is lowercase; the
+/// console shows them as Admin and Signer. Both may hold NIP-46 connections and so sign.
 ///
-/// - `Administrator`: everything, a superset of the other two.
+/// - `Administrator`: everything, a superset of the signer.
 /// - `Signer`: signs through NIP-46 connections and manages their own profile, follows and relays.
-/// - `Viewer`: reads the team and members' profiles. Never holds a NIP-46 connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Administrator,
     Signer,
-    Viewer,
 }
 
 impl Role {
@@ -28,7 +26,6 @@ impl Role {
         match self {
             Role::Administrator => "administrator",
             Role::Signer => "signer",
-            Role::Viewer => "viewer",
         }
     }
 
@@ -37,14 +34,7 @@ impl Role {
         match self {
             Role::Administrator => "Admin",
             Role::Signer => "Signer",
-            Role::Viewer => "Viewer",
         }
-    }
-
-    /// Whether a member with this role may hold NIP-46 connections and so sign (#77): an
-    /// administrator or a signer, never a viewer.
-    pub fn can_sign(&self) -> bool {
-        matches!(self, Role::Administrator | Role::Signer)
     }
 }
 
@@ -60,14 +50,13 @@ pub struct InvalidRole;
 impl FromStr for Role {
     type Err = InvalidRole;
 
-    /// Only the settled names. Older names (`admin`, and #24's `user`) are refused, not
-    /// translated: stored values are migrated once (see `migrations.rs`), and new input must use
-    /// the current names (#77).
+    /// Only the settled names. Every older name (`admin`, #24's `user`, and #77's third role) is
+    /// refused, not translated: stored values are migrated once (see `migrations.rs`), and new input
+    /// must use the current names (#77, #143).
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "administrator" => Ok(Role::Administrator),
             "signer" => Ok(Role::Signer),
-            "viewer" => Ok(Role::Viewer),
             _ => Err(InvalidRole),
         }
     }

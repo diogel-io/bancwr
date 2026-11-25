@@ -60,13 +60,3 @@ anonymousTest('a member edits their relay list, and it reaches every relay with 
   expect((await newestList(relay, me))!.tags).toEqual(expected)
   expect((await newestList(indexer, me))!.tags).toEqual(expected)
 })
-
-test.describe('viewer', () => {
-  test.use({ role: 'viewer' })
-
-  test('cannot open the relay list', async ({ page }) => {
-    const response = await page.goto('/relays')
-    expect(response?.status()).toBe(403)
-    await expect(page.getByRole('heading', { name: /You don't have access to default relays/ })).toBeVisible()
-  })
-})

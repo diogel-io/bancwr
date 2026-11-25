@@ -98,29 +98,29 @@ request.
 
 #### Access by role (#77)
 
-The roles are `administrator`, `signer` and `viewer` (shown as Admin, Signer and Viewer).
-Administrator is a superset; a viewer reads the team and never holds a NIP-46 connection. The
+The roles are `administrator` and `signer` (shown as Admin and Signer, #143). Administrator is a
+superset; both hold NIP-46 connections. The
 matrix lives in one place, `Access` in `src/proxy_auth.rs`, and `src/server.rs` puts each route in
 its group:
 
-| Route | administrator | signer | viewer | `service` |
-|-------|:---:|:---:|:---:|:---:|
-| `GET /health` | open | open | open | open |
-| `GET /api/bunker/status` | yes | yes | yes | yes |
-| `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | | |
-| `GET /api/bunker/logs/export`; `GET`, `PUT /api/bunker/logs/retention` | yes | | | |
-| `GET /api/bunker/logs/mine` | own | own | | |
-| `GET /api/bunker/team` | yes | | yes | |
-| `POST /api/bunker/team`; `DELETE`, `PATCH /api/bunker/team/:id` | yes | | | |
-| `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | yes | yes |
-| `GET`, `PUT /api/bunker/relays` | yes | | | |
-| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | all | own | | |
-| `GET /api/bunker/connections` | all | own | | |
-| `DELETE /api/bunker/connections/:id` | any | own | | |
-| `GET /api/bunker/approvals` | all | own | | |
-| `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | | |
-| `GET /api/bunker/identities` | all, with members | those they may use | | |
-| `PATCH /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | | |
+| Route | administrator | signer | `service` |
+|-------|:---:|:---:|:---:|
+| `GET /health` | open | open | open |
+| `GET /api/bunker/status` | yes | yes | yes |
+| `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | |
+| `GET /api/bunker/logs/export`; `GET`, `PUT /api/bunker/logs/retention` | yes | | |
+| `GET /api/bunker/logs/mine` | own | own | |
+| `GET /api/bunker/team` | yes | | |
+| `POST /api/bunker/team`; `DELETE`, `PATCH /api/bunker/team/:id` | yes | | |
+| `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | yes |
+| `GET`, `PUT /api/bunker/relays` | yes | | |
+| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | all | own | |
+| `GET /api/bunker/connections` | all | own | |
+| `DELETE /api/bunker/connections/:id` | any | own | |
+| `GET /api/bunker/approvals` | all | own | |
+| `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | |
+| `GET /api/bunker/identities` | all, with members | those they may use | |
+| `PATCH /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -173,8 +173,8 @@ nor where it is stored is ever returned.
 Returns an array of team members.
 
 `POST /api/bunker/team`
-Adds a new team member. Valid roles are `administrator`, `signer` and `viewer` (#77); older names,
-such as `user`, are refused with 400. The pubkey may be an
+Adds a new team member. Valid roles are `administrator` and `signer` (#77, #143); older names,
+such as `user` and `viewer`, are refused with 400. The pubkey may be an
 npub or hex; it is stored as hex, and a key already registered, in either form, gets 409. The
 bunker's own key cannot be registered.
 
@@ -183,12 +183,12 @@ bunker's own key cannot be registered.
 `GET /api/bunker/team/by-pubkey/:pubkey` returns one member by npub or hex, or 404
 `{"error":"not_registered"}`.
 
-`PATCH /api/bunker/team/:id` with `{"role":"administrator"|"signer"|"viewer"}` changes a member's
-role in place (#99). A role that is not one of the three is 400, an id that is not a UUID is 400, an
+`PATCH /api/bunker/team/:id` with `{"role":"administrator"|"signer"}` changes a member's
+role in place (#99). A role that is not one of the two is 400, an id that is not a UUID is 400, an
 unknown member is 404, and demoting the only administrator is 409. Setting the role a member already
-has is 200 and changes nothing. A member who becomes a viewer loses their NIP-46 connections
-(`role_changed`) and unused tokens (#77); a member who keeps a role that signs keeps them. The change
-and any revocations are recorded with the administrator who made them, in one transaction
+has is 200 and changes nothing. Both roles sign, so a member keeps their NIP-46 connections and
+unused tokens through a role change (#143). The change is recorded with the administrator who made
+it, in one transaction
 (`Database::change_member_role_as`, which the `BANCWR_ADMIN_PUBKEY` bootstrap also uses to promote).
 
 ### Your own signatures (#77)
@@ -436,8 +436,8 @@ POST /api/bunker/connections/tokens
 ```
 
 - `for_pubkey` is the vault member the connection is attributed to (the caller when omitted). It
-  must be a member who can sign, an administrator or a signer: a viewer gets
-  `400 {"error":"member_cannot_sign"}` (#77). Removing the member later ends their tokens and
+  must be a member with a recognised role, an administrator or a signer: a member whose stored
+  role is not recognised gets `400 {"error":"member_cannot_sign"}` (#77, #143). Removing the member later ends their tokens and
   connections.
 - A signer issues only for themselves (#142): any other `for_pubkey` is
   `403 {"error":"forbidden_member"}`, and any `approval_kinds` is
@@ -456,8 +456,8 @@ POST /api/bunker/connections/tokens
   each method by its name. If the app asks for permissions in `connect`, it gets those of them the
   token allows, and is refused if that leaves nothing.
 - A `connect` with the token's secret that is refused for another reason than the token itself
-  (it is addressed to another identity, the member is gone, is a viewer or may no longer use the
-  identity, or nothing it asks for is allowed) **uses the token up**: the answer ends
+  (it is addressed to another identity, the member is gone, has no recognised role or may no longer use
+  the identity, or nothing it asks for is allowed) **uses the token up**: the answer ends
   `. The token is now used up: ask an administrator for a new one`, the token is listed as used,
   with no connection, and it is recorded as `token_revoked`, `reason=connect_refused`. Issue a new
   one. An unknown, used, revoked or expired token is left as it is.
@@ -486,9 +486,9 @@ URL and image marked unverified (`metadata_verified: false`): NIP-46 lets an app
 that is never used to decide anything. A connection ends when the app sends `logout`, an
 administrator (any) or the member it was made for (their own) revokes it
 (`DELETE /api/bunker/connections/:id`; another member's is a 404, and `revoked_by` records who),
-or its member is removed (`member_removed`) or becomes a viewer (`role_changed`, #77). A request
-from a connection whose member is now a viewer is refused as a removed member's is, and a token
-issued for one does not connect.
+or its member is removed (`member_removed`). A request from a connection whose member's stored role
+is not recognised is refused as a removed member's is, and a token issued for one does not connect.
+Connections revoked by a role change before #143 keep their reason, `role_changed`.
 
 A connection with a lifetime (#98) has an `expires_at`, and `null` without one. From that moment
 every request is refused. The first is answered `This connection has expired`, and the connection
@@ -593,7 +593,7 @@ them is not signed: it is held until an administrator approves or rejects it in 
 - **Timeouts.** A request nobody decides within `BANCWR_APPROVAL_TIMEOUT_MINUTES` (1 to 1,440,
   30 by default) ends: the app is told `Approval timed out after <n> minutes: nothing was signed`,
   recorded as `approval_expired`. One whose connection ends while it waits (logout, revoked,
-  expired, its member removed or made a viewer, a restore) is cancelled within 15 seconds:
+  expired, its member removed, a restore) is cancelled within 15 seconds:
   `This connection ended: nothing was signed`, recorded as `approval_cancelled`.
 - **In memory only.** Waiting requests, with their content, are kept in the bunker's memory and
   never written to disk or into a backup. A restart drops them: the app gets no answer, and the
@@ -633,8 +633,8 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
 - **`GET /api/bunker/identities`** lists `pubkey`, `npub`, `label`, `is_primary`, `available`
   (unlocked in the running bunker) and, for administrators, `members`. `PATCH` renames one
   (`{"label":"…"}`, 1 to 100 characters). `PUT` and `DELETE
-  /api/bunker/identities/:pubkey/members/:member` grant and remove; a viewer is
-  `400 {"error":"member_cannot_sign"}`.
+  /api/bunker/identities/:pubkey/members/:member` grant and remove; a member whose stored role is not
+  recognised is `400 {"error":"member_cannot_sign"}`.
 - **Never a member's key.** No identity's key can be registered as a member, be
   `BANCWR_ADMIN_PUBKEY`, or sign in. `GET /api/bunker/status` lists every identity's key as
   `identities`, which sign-in reads.

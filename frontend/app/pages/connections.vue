@@ -2,7 +2,7 @@
 // Apps connected to the bunker for the signed-in member (#31), over #53's connections: every app
 // signs as one of the bunker's identities, authorised for a member. For administrators and signers
 // (#77): signers see and revoke theirs, administrators all. Administrators issue tokens for admins
-// and signers; signers issue, see and revoke their own (#142). Viewers hold no connections.
+// and signers; signers issue, see and revoke their own (#142).
 import { isForbidden } from '~/utils/access'
 
 const {

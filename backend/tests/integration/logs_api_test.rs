@@ -152,9 +152,9 @@ async fn a_bad_format_or_range_is_400() {
 }
 
 #[tokio::test]
-async fn signers_and_viewers_cannot_export_or_change_retention() {
+async fn signers_cannot_export_or_change_retention() {
     let app = common::spawn(true).await;
-    for role in [Role::Signer, Role::Viewer] {
+    for role in [Role::Signer] {
         let member = app.register(role).public_key().to_hex();
         for (method, path) in [
             (Method::GET, "/api/bunker/logs/export?format=csv&from=2026-06-01&to=2026-06-01"),

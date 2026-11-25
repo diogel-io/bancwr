@@ -10,7 +10,7 @@
 // which stay an administrator's control; the bunker refuses anything else.
 import { renderSVG } from 'uqr'
 import { npubEncode } from 'nostr-tools/nip19'
-import { canSign } from '#shared/types/bunker'
+import { isRole } from '#shared/types/bunker'
 import type { BunkerIdentity, EncryptionMethod, IssueTokenRequest, IssueTokenResponse, TeamMember } from '#shared/types/bunker'
 import { bunkerRefusal } from '~/utils/bunker-error'
 import { ENCRYPTION_METHODS, KIND_PRESETS, LIFETIMES, RATE_LIMITS, isDecrypt, kindLabel, parseKinds } from '~/utils/connections'
@@ -81,10 +81,10 @@ const error = ref<string>()
 const issued = ref<IssueTokenResponse>()
 const copied = ref(false)
 
-// Only members who can sign (#77): admins and signers. A viewer holds no connections, and the
-// bunker refuses a token for one (member_cannot_sign).
+// Only members with a recognised role, who can all sign (#77, #143). A row stored before #24 with
+// another role grants nothing, and the bunker refuses a token for one (member_cannot_sign).
 const memberItems = computed(() => props.members
-  .filter(m => m.npub && canSign(m.role))
+  .filter(m => m.npub && isRole(m.role))
   .map(m => ({ label: m.pubkey === props.self ? `${m.name} (you)` : m.name, value: m.pubkey })))
 const presetItems = computed(() => [
   ...KIND_PRESETS.map((p, i) => ({ label: `${p.label} (${p.kinds.map(kindLabel).join(', ')})`, value: i as number | 'custom' | 'none' })),
@@ -136,7 +136,7 @@ const issuedSignsAs = computed(() => {
 const ERRORS: Record<string, string> = {
   nip46_disabled: 'NIP-46 is turned off on this bunker (NIP46_ENABLED=true turns it on), or it has no relays: an administrator adds them under Config, Bunker relays.',
   not_registered: 'Connections can only be issued for members of the vault.',
-  member_cannot_sign: 'Connections can only be issued for an admin or a signer, not a viewer.',
+  member_cannot_sign: 'This member has no recognised role and cannot sign.',
   invalid_lifetime: 'A connection can last 1 hour to 365 days, or until revoked.',
   invalid_rate_limit: 'A connection can make 1 to 600 requests a minute, with a burst of 1 to 100.',
   invalid_approval_kinds: 'Only kinds the app may sign can need approval.',

@@ -222,13 +222,11 @@ impl Nonces {
 pub enum Access {
     /// Bunker health: every registered role, and the service identity.
     Health,
-    /// Administrators only: logs, metrics, config, bunker relays, adding and removing members.
+    /// Administrators only: logs, metrics, config, bunker relays, and reading and changing the team.
     Administrator,
-    /// Administrators and viewers: reading the team (#77).
-    TeamReader,
-    /// Administrators, viewers, and the service identity: the key lookup, which sign-in needs
-    /// before any session exists, and a viewer's member profile page (#77).
-    TeamReaderOrService,
+    /// Administrators and the service identity: the key lookup, which sign-in needs before any
+    /// session exists, and an administrator's member profile page (#77, #143).
+    AdministratorOrService,
     /// Administrators and signers, not the service identity: routes that scope what they return
     /// to the caller (#53's connection list, #142's connection tokens, #77's own recent signatures).
     Signer,
@@ -238,14 +236,14 @@ impl Access {
     fn allows_role(self, role: Role) -> bool {
         match self {
             Access::Health => true,
-            Access::Administrator => role == Role::Administrator,
-            Access::TeamReader | Access::TeamReaderOrService => matches!(role, Role::Administrator | Role::Viewer),
-            Access::Signer => role.can_sign(),
+            Access::Administrator | Access::AdministratorOrService => role == Role::Administrator,
+            // Both roles sign (#143).
+            Access::Signer => true,
         }
     }
 
     fn allows_service(self) -> bool {
-        matches!(self, Access::Health | Access::TeamReaderOrService)
+        matches!(self, Access::Health | Access::AdministratorOrService)
     }
 }
 

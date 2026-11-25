@@ -7,13 +7,12 @@ import { relativeTime } from '~/utils/connections'
 
 // Role-aware (#26, #77). Every role sees the bunker's health. Administrators also get metrics and
 // everyone's recent activity; signers their connected apps and their own recent signatures
-// (logs/mine); viewers a way to the team. Each view requests only its own role's data, which the
-// bunker would refuse to the others anyway (#25).
+// (logs/mine). Each view requests only its own role's data, which the bunker would refuse to the
+// other anyway (#25).
 const auth = useAuth()
 const role = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.role : undefined)
 const isAdministrator = computed(() => role.value === 'administrator')
 const isSigner = computed(() => role.value === 'signer')
-const isViewer = computed(() => role.value === 'viewer')
 
 // The same polled state as the navbar indicator (#28), so the two never disagree.
 const { health, ensure } = useBunkerHealth()
@@ -172,27 +171,6 @@ const appName = (connection: Nip46Connection) => connection.client_name ?? `${co
             />
           </UCard>
         </template>
-
-        <UCard
-          v-if="isViewer"
-          data-testid="viewer-team"
-        >
-          <template #header>
-            <h3 class="font-bold">
-              Team
-            </h3>
-          </template>
-          <p class="text-sm text-muted">
-            See who is in the vault, and each member's Nostr profile.
-          </p>
-          <UButton
-            to="/team"
-            class="mt-3"
-            icon="i-lucide-users"
-          >
-            View the team
-          </UButton>
-        </UCard>
       </div>
     </template>
   </UDashboardPanel>

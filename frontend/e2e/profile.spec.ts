@@ -174,16 +174,6 @@ for (const role of ['administrator', 'signer'] as Role[]) {
   })
 }
 
-test.describe('viewer', () => {
-  test.use({ role: 'viewer' })
-
-  test('cannot open a profile editor (#77)', async ({ page }) => {
-    const response = await page.goto('/profile')
-    expect(response?.status()).toBe(403)
-    await expect(page.getByRole('heading', { name: /You don't have access to your profile/ })).toBeVisible()
-  })
-})
-
 test('is a single column on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
   await page.goto('/profile')

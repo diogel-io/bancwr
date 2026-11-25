@@ -184,7 +184,7 @@ fn populated() -> DataDir {
     let db = Database::new(db_path.to_str().unwrap()).unwrap();
     let alice = Keys::generate().public_key().to_hex();
     db.add_team_member("Alice", &alice, Role::Administrator).unwrap();
-    db.add_team_member("Bob", &Keys::generate().public_key().to_hex(), Role::Viewer).unwrap();
+    db.add_team_member("Bob", &Keys::generate().public_key().to_hex(), Role::Signer).unwrap();
     let now = Utc::now();
     let kinds = vec!["sign_event:1".to_string()];
     db.create_nip46_token("hash-used", &alice, &alice, "Used", &kinds, now, now + Duration::hours(1)).unwrap();
@@ -246,7 +246,7 @@ fn a_snapshot_restores_into_an_empty_directory_and_revokes_connections() {
     assert_eq!(restored.detail.as_deref(), Some(format!("connections=1;tokens=1;backup_created_at={}", taken).as_str()));
     let members = db.get_team_members().unwrap();
     assert_eq!(members.len(), 2);
-    assert!(members.iter().any(|m| m.name == "Bob" && m.role() == Some(Role::Viewer)));
+    assert!(members.iter().any(|m| m.name == "Bob" && m.role() == Some(Role::Signer)));
     let connections = db.list_nip46_connections(None).unwrap();
     assert_eq!(connections.len(), 1);
     assert_eq!(connections[0].revoked_reason.as_deref(), Some(backup::RESTORED_REASON));
@@ -255,6 +255,31 @@ fn a_snapshot_restores_into_an_empty_directory_and_revokes_connections() {
     assert_eq!(db.get_recent_logs(10).unwrap().len(), 1);
     // Nothing left to revoke a second time.
     assert_eq!(db.revoke_all_for_restore(opened.created_at, Utc::now()).unwrap(), (0, 0));
+}
+
+#[test]
+fn a_backup_from_before_143_restores_its_viewers_as_signers() {
+    // A backup taken at migration 14 may hold #77's third role. The restore migrates the staged
+    // copy, so the member comes back as a signer (#143).
+    let data = populated();
+    {
+        let conn = rusqlite::Connection::open(&data.db).unwrap();
+        conn.execute("UPDATE team_members SET role = 'viewer' WHERE name = 'Bob'", []).unwrap();
+        conn.pragma_update(None, "user_version", 14).unwrap();
+    }
+    let (contents, _) = backup::snapshot(&data.db, &data.key, Utc::now()).unwrap();
+    assert_eq!(contents.schema_version, 14);
+    let archive = backup::seal(&passphrase(), &root(), &contents, FAST).unwrap();
+    let opened = backup::open(&passphrase(), &root(), &archive).unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let db_path = target.path().join("data/bancwr.db");
+    let key_path = target.path().join("data/bunker-key.enc");
+    backup::place(&opened, Ok(root()), &db_path, &key_path, Utc::now()).unwrap();
+
+    let db = Database::new(db_path.to_str().unwrap()).unwrap();
+    let bob = db.get_team_members().unwrap().into_iter().find(|m| m.name == "Bob").unwrap();
+    assert_eq!(bob.role, "signer");
 }
 
 #[test]

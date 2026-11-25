@@ -416,8 +416,9 @@ Lost: anything since the backup, such as members added, roles changed and signat
 
 Members removed and roles lowered since the backup come back. Before you leave the bunker running,
 sign in as an administrator and, under **Team**, remove anyone who should no longer be there and
-set any role back with the member's role select. Making someone a viewer there revokes any
-connection a new token gave them since the restore.
+set any role back with the member's role select. A role change revokes nothing, because both roles
+sign: to end a connection a new token gave someone since the restore, remove them or revoke it under
+**Connections**.
 
 Sessions are not in the database, so a restore does not sign anyone out. Restarting the frontend
 does, as it always does. The role of everyone already signed in is read from the restored database
@@ -453,7 +454,7 @@ and revoke their own unused tokens there too.
   have a member's app checked before it signs, issue the token for them yourself, with the kinds
   ticked.
 - A signer can issue a new token after you revoke one. To stop a member connecting apps at all,
-  make them a viewer or remove them, which also disconnects their apps.
+  remove them, which also disconnects their apps. Every member can sign (#143).
 - Each token records who issued it, and the audit log names them.
 
 ## Apps with a time limit

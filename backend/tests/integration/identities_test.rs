@@ -71,10 +71,6 @@ async fn an_administrator_sees_every_identity_and_a_signer_only_those_granted() 
     assert_eq!(app.signed(Method::PATCH, &path, &admin).json(&json!({ "label": " " })).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
     let unknown = format!("/api/bunker/identities/{}", Keys::generate().public_key().to_hex());
     assert_eq!(app.signed(Method::PATCH, &unknown, &admin).json(&json!({ "label": "x" })).send().await.unwrap().status(), StatusCode::NOT_FOUND);
-
-    // A viewer is never granted one.
-    let viewer = app.register(Role::Viewer);
-    assert_eq!(grant(&app, &brand, &viewer).await, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

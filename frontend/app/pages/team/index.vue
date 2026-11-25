@@ -1,14 +1,10 @@
 <script setup lang="ts">
-// The vault's members (#24). Administrators add and remove them and change their roles (#99);
-// viewers read the list (#77), with none of those controls, which the bunker would refuse them anyway
-// (#25). Each row links to the member's read-only profile (team/[pubkey].vue).
+// The vault's members (#24), for administrators only (#143): they add and remove them and change
+// their roles (#99). Each row links to the member's read-only profile (team/[pubkey].vue).
 import { useFetch, ref, reactive, useToast, computed, watch } from '#imports'
 import { ROLE_LABELS, ROLES } from '#shared/types/bunker'
 import type { AddTeamMemberRequest, TeamMember } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
-
-const auth = useAuth()
-const isAdministrator = computed(() => auth.state.value.status === 'signed-in' && auth.state.value.role === 'administrator')
 
 const { data: team, error, refresh } = await useFetch<TeamMember[]>('/api/bunker/team', { key: 'team-list' })
 
@@ -18,17 +14,17 @@ const state = reactive<AddTeamMemberRequest>({
   role: 'signer'
 })
 
-// The three roles of #77, in order of access: Admin, Signer, Viewer.
+// The two roles (#77, #143), in order of access: Admin, Signer.
 const roles = ROLES.map(value => ({ label: ROLE_LABELS[value], value }))
 
 // The identities a new member may sign as (#103), offered only on a bunker with several: the
 // primary preselected, as the bunker grants it when none is named.
-const { list: identities, several } = useIdentities({ immediate: isAdministrator.value })
+const { list: identities, several } = useIdentities()
 const chosenIdentities = ref<string[]>([])
 watch(identities, (now) => {
   if (!chosenIdentities.value.length) chosenIdentities.value = now.filter(i => i.is_primary).map(i => i.pubkey)
 }, { immediate: true })
-const offersIdentities = computed(() => several.value && state.role !== 'viewer')
+const offersIdentities = computed(() => several.value)
 
 function toggleIdentity(pubkey: string, on: boolean | 'indeterminate') {
   const rest = chosenIdentities.value.filter(p => p !== pubkey)
@@ -62,7 +58,7 @@ const addMember = async () => {
 <template>
   <UDashboardPanel id="team">
     <template #header>
-      <AppNavbar :title="isAdministrator ? 'Team Management' : 'Team'" />
+      <AppNavbar title="Team Management" />
     </template>
 
     <template #body>
@@ -73,14 +69,10 @@ const addMember = async () => {
       >
         <TeamMemberList
           :data="team || []"
-          :read-only="!isAdministrator"
           @refresh="refresh"
         />
 
-        <UCard
-          v-if="isAdministrator"
-          data-testid="add-member"
-        >
+        <UCard data-testid="add-member">
           <template #header>
             <h3 class="text-base font-semibold leading-6">
               Add Team Member

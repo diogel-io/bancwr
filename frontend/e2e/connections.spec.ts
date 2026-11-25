@@ -223,13 +223,3 @@ test('a connection issued with a rate limit is refused past its burst and shows 
   await page.reload()
   await expect(page.getByTestId('connection-rate-limit').filter({ hasText: 'limited to 10 a minute (burst 5)' })).toHaveCount(1)
 })
-
-test.describe('viewer', () => {
-  test.use({ role: 'viewer' })
-
-  test('cannot open connected apps', async ({ page }) => {
-    const response = await page.goto('/connections')
-    expect(response?.status()).toBe(403)
-    await expect(page.getByRole('heading', { name: /You don't have access to connected apps/ })).toBeVisible()
-  })
-})

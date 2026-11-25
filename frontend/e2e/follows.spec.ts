@@ -77,13 +77,3 @@ test('a follow list held only by an indexer is found (#62)', async ({ page }) =>
   await expect(page.getByTestId('follows-count')).toHaveText('3')
   await expect(page.getByTestId('follows-not-found')).toHaveCount(0)
 })
-
-test.describe('viewer', () => {
-  test.use({ role: 'viewer' })
-
-  test('cannot open the follow list', async ({ page }) => {
-    const response = await page.goto('/follows')
-    expect(response?.status()).toBe(403)
-    await expect(page.getByRole('heading', { name: /You don't have access to follows/ })).toBeVisible()
-  })
-})

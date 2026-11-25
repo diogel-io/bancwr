@@ -1,15 +1,14 @@
 <script setup lang="ts">
-// The vault's members: name (linking to their read-only profile, #77), npub and role. For
-// administrators each role is a select that changes it in one step (#99), and each row has a remove
-// button. `readOnly` (a viewer's list, #77) shows the role as text and leaves the actions out.
-import { useToast, computed, ref } from '#imports'
+// The vault's members, for administrators (#143): name (linking to their read-only profile, #77),
+// npub and role. Each role is a select that changes it in one step (#99), and each row has a remove
+// button.
+import { useToast, ref } from '#imports'
 import type { TableColumn } from '@nuxt/ui'
-import { ROLE_LABELS, ROLES, canSign } from '#shared/types/bunker'
+import { ROLE_LABELS, ROLES, isRole } from '#shared/types/bunker'
 import type { ChangeRoleRequest, Role, TeamMember } from '#shared/types/bunker'
 
-const props = defineProps<{
+defineProps<{
   data: TeamMember[]
-  readOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -19,38 +18,26 @@ const emit = defineEmits<{
 const toast = useToast()
 const auth = useAuth()
 
-const columns = computed<TableColumn<TeamMember>[]>(() => [
+const columns: TableColumn<TeamMember>[] = [
   { id: 'name', header: 'Name' },
   { id: 'npub', header: 'Nostr Pubkey' },
   { id: 'role', header: 'Role' },
-  ...(props.readOnly ? [] : [{ id: 'actions', header: 'Actions' }])
-])
+  { id: 'actions', header: 'Actions' }
+]
 
 /** The member's profile page, by npub. None for a row from before #24 whose key is not valid. */
 const profileLink = (member: TeamMember) => member.npub ? `/team/${member.npub}` : undefined
 
-// The three roles of #77, in order of access: Admin, Signer, Viewer.
+// The two roles (#77, #143), in order of access: Admin, Signer.
 const roles = ROLES.map(value => ({ label: ROLE_LABELS[value], value }))
-
-/** A role the select can show: a value from before #24 is not one, and is shown as stored. */
-const isRole = (role: string): role is Role => (ROLES as readonly string[]).includes(role)
 
 // Bumped when a change does not happen, so the select is redrawn with the stored role.
 const revision = ref(0)
 
-/** True when `confirm` agrees, or nothing needs confirming. */
-const confirmed = (member: TeamMember, role: Role) =>
-  !(role === 'viewer' && canSign(member.role))
-  || confirm(`Make ${member.name} a viewer? Viewers cannot sign, so the apps connected for them will be disconnected.`)
-
-// The bunker applies the change, revokes a new viewer's connections, records who changed it, and
-// refuses to demote the last administrator (409).
+// The bunker applies the change, records who changed it, and refuses to demote the last
+// administrator (409). Both roles sign, so the member's connections stay (#143).
 const changeRole = async (member: TeamMember, role: Role) => {
   if (role === member.role) {
-    return
-  }
-  if (!confirmed(member, role)) {
-    revision.value++
     return
   }
 
@@ -110,10 +97,10 @@ const removeMember = async (member: TeamMember) => {
       <template #npub-cell="{ row }">
         <span class="font-mono text-xs break-all">{{ row.original.npub ?? row.original.pubkey }}</span>
       </template>
-      <!-- A value outside the three roles can only be from before #24; shown as stored. -->
+      <!-- A value outside the two roles can only be from before #24; shown as stored. -->
       <template #role-cell="{ row }">
         <USelect
-          v-if="!readOnly && isRole(row.original.role)"
+          v-if="isRole(row.original.role)"
           :key="`${row.original.id}-${row.original.role}-${revision}`"
           :model-value="row.original.role"
           :items="roles"
@@ -122,7 +109,7 @@ const removeMember = async (member: TeamMember) => {
           @update:model-value="changeRole(row.original, $event as Role)"
         />
         <template v-else>
-          {{ ROLE_LABELS[row.original.role as Role] ?? row.original.role }}
+          {{ row.original.role }}
         </template>
       </template>
       <template #actions-cell="{ row }">

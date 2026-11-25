@@ -50,10 +50,9 @@ describe('auth middleware', () => {
     const member = `/team/${'b'.repeat(64)}`
     const open: Record<Role, string[]> = {
       administrator: ['/', '/config', '/team', member, '/logs', '/profile', '/connections'],
-      signer: ['/', '/profile', '/connections'],
-      viewer: ['/', '/team', member]
+      signer: ['/', '/profile', '/connections']
     }
-    for (const role of ['administrator', 'signer', 'viewer'] as Role[]) {
+    for (const role of ['administrator', 'signer'] as Role[]) {
       asRole(role)
       for (const path of ['/', '/config', '/team', member, '/logs', '/profile', '/connections']) {
         abortNavigation.mockClear()
@@ -70,5 +69,14 @@ describe('auth middleware', () => {
     }
     // Refused in place: never a redirect, so a typed URL cannot loop.
     expect(navigateTo).not.toHaveBeenCalled()
+  })
+
+  it('refuses a signer the team list and a member\'s profile with the permission-denied page (#143)', async () => {
+    asRole('signer')
+    for (const path of ['/team', `/team/${'b'.repeat(64)}`]) {
+      const error = (await run(path) as { aborted: { status: number, data: unknown } }).aborted
+      expect(error.status, path).toBe(403)
+      expect(error.data).toEqual({ reason: 'forbidden_route', path })
+    }
   })
 })

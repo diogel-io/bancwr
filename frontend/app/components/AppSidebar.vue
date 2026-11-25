@@ -21,9 +21,8 @@ const allLinks: (NavigationMenuItem & { to: string })[] = [
   { label: 'Approvals', icon: 'i-lucide-shield-check', to: '/approvals' }
 ]
 
-// Only what the signed-in role may open (#26, #77, utils/access.ts); a viewer gets the dashboard and
-// Team. The middleware refuses the rest anyway, so offering
-// it would only lead to a permission-denied page.
+// Only what the signed-in role may open (#26, #77, utils/access.ts). The middleware refuses the rest
+// anyway, so offering it would only lead to a permission-denied page.
 const auth = useAuth()
 const links = computed<NavigationMenuItem[]>(() => {
   const state = auth.state.value

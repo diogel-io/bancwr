@@ -1,6 +1,6 @@
 // Versioned migrations (#24): a database written before #24 opens with its roles renamed and its
 // pubkeys canonicalised, and opening it again changes nothing. Migration 7 (#77) maps the roles to
-// administrator, signer and viewer.
+// administrator, signer and #77's third role, and migration 15 (#143) makes that third role signer.
 use bunker::db::Database;
 use bunker::migrations::LATEST_VERSION;
 use bunker::registry::Role;
@@ -53,7 +53,8 @@ fn renames_roles_and_canonicalises_pubkeys() {
     let bob_row = db.find_member_by_pubkey(&bob.to_hex()).unwrap().expect("Bob, lower-cased");
     assert_eq!(bob_row.role(), Some(Role::Signer));
     let carol_row = db.get_team_members().unwrap().into_iter().find(|m| m.name == "Carol").unwrap();
-    assert_eq!(carol_row.role(), Some(Role::Viewer), "a pre-#24 signer is a viewer now (#77)");
+    // A pre-#24 signer became #77's third role (migration 7), then a signer again (migration 15).
+    assert_eq!(carol_row.role(), Some(Role::Signer));
     assert_eq!(db.administrator_count().unwrap(), 1);
     assert_eq!(db.get_team_members().unwrap().len(), 3);
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
@@ -253,7 +254,9 @@ fn rerunning_the_bunker_relays_migration_keeps_the_stored_list() {
     assert_eq!(db.list_bunker_relays().unwrap().iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), vec!["wss://a.example"]);
 }
 
-// Migration 7 (#77): administrator, user and signer become administrator, signer and viewer.
+// Migration 7 (#77): administrator, user and signer become administrator, signer and viewer. Every
+// database opened here also runs migration 15 (#143), so each viewer ends a signer: what these tests
+// still see of migration 7 is its order and its revocations.
 
 /// A database as #24's role model left it: fully migrated to version 6, holding `members` of
 /// (name, hex pubkey, role) and, for each member named in `connected`, an active NIP-46
@@ -297,7 +300,7 @@ fn role_of(db: &Database, pubkey: &str) -> String {
 }
 
 #[test]
-fn migration_7_maps_signer_to_viewer_then_user_to_signer() {
+fn migrations_7_and_15_map_every_old_role_to_one_of_the_two() {
     let (admin, user, signer) = (Keys::generate().public_key().to_hex(), Keys::generate().public_key().to_hex(), Keys::generate().public_key().to_hex());
     let file = database_before_77(&[("Ada", &admin, "administrator"), ("Uma", &user, "user"), ("Sid", &signer, "signer")], &[]);
 
@@ -305,14 +308,14 @@ fn migration_7_maps_signer_to_viewer_then_user_to_signer() {
 
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert_eq!(role_of(&db, &admin), "administrator");
-    // The order matters: user to signer first would have made Uma a viewer as well.
     assert_eq!(role_of(&db, &user), "signer");
-    assert_eq!(role_of(&db, &signer), "viewer");
-    assert!(db.get_team_members().unwrap().iter().all(|m| m.role().is_some()), "every stored role is one of the three");
+    // A signer from before #77 was mapped to viewer, and is a signer again (#143).
+    assert_eq!(role_of(&db, &signer), "signer");
+    assert!(db.get_team_members().unwrap().iter().all(|m| m.role().is_some()), "every stored role is one of the two");
 }
 
 #[test]
-fn migration_7_revokes_the_connections_of_members_who_are_now_viewers() {
+fn migration_7_revoked_what_its_viewers_held_and_they_return_as_signers_holding_nothing() {
     let (admin, user, signer) = (Keys::generate().public_key().to_hex(), Keys::generate().public_key().to_hex(), Keys::generate().public_key().to_hex());
     let file = database_before_77(
         &[("Ada", &admin, "administrator"), ("Uma", &user, "user"), ("Sid", &signer, "signer")],
@@ -327,6 +330,9 @@ fn migration_7_revokes_the_connections_of_members_who_are_now_viewers() {
     assert!(db.active_nip46_connection("client-Sid").unwrap().is_none());
     let unused = db.list_nip46_tokens().unwrap().into_iter().find(|t| t.id == "unused-Sid").unwrap();
     assert!(unused.revoked_at.is_some(), "a viewer's unused token is revoked too");
+    // Now a signer (#143), with no connections until a token is issued.
+    assert_eq!(role_of(&db, &signer), "signer");
+    assert!(db.list_nip46_connections(Some(&signer)).unwrap().iter().all(|c| c.revoked_at.is_some()));
 
     // The administrator and the new signer keep theirs.
     for (who, client) in [(&admin, "client-Ada"), (&user, "client-Uma")] {
@@ -340,7 +346,7 @@ fn migration_7_revokes_the_connections_of_members_who_are_now_viewers() {
 #[test]
 fn rerunning_migration_7_does_not_map_the_roles_again() {
     // A database whose version was rewound past #77 re-runs migration 7. Mapping again would turn
-    // every signer it made into a viewer.
+    // every signer it made into a viewer, and revoke their connections.
     let (user, signer) = (Keys::generate().public_key().to_hex(), Keys::generate().public_key().to_hex());
     let file = database_before_77(&[("Uma", &user, "user"), ("Sid", &signer, "signer")], &["Uma"]);
     let path = file.path().to_str().unwrap().to_string();
@@ -351,7 +357,7 @@ fn rerunning_migration_7_does_not_map_the_roles_again() {
 
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert_eq!(role_of(&db, &user), "signer");
-    assert_eq!(role_of(&db, &signer), "viewer");
+    assert_eq!(role_of(&db, &signer), "signer");
     assert!(db.active_nip46_connection("client-Uma").unwrap().is_some(), "the signer keeps their connection");
 }
 
@@ -368,6 +374,80 @@ fn a_new_database_records_migration_7_so_a_rewind_keeps_its_signers() {
 
     let db = Database::new(&path).unwrap();
     assert_eq!(role_of(&db, &signer), "signer");
+}
+
+// Migration 15 (#143): two roles. Every viewer becomes a signer.
+
+/// A fully migrated database rewound to version 14, holding `members` of (name, hex pubkey, role),
+/// and for each member named in `connected` an active NIP-46 connection.
+fn database_before_143(members: &[(&str, &str, &str)], connected: &[&str]) -> NamedTempFile {
+    let file = NamedTempFile::new().unwrap();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+    for (i, (name, pubkey, role)) in members.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES (?1, ?2, ?3, ?4, '2026-01-01T00:00:00+00:00')",
+            params![format!("00000000-0000-4000-8000-00000000000{}", i), name, pubkey, role],
+        )
+        .unwrap();
+        if connected.contains(name) {
+            conn.execute(
+                "INSERT INTO nip46_tokens (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at)
+                 VALUES (?1, ?1, ?2, '', 'x', 'sign_event:1', '2026-01-01T00:00:00+00:00', '2099-01-01T00:00:00+00:00', '2026-01-02T00:00:00+00:00')",
+                params![format!("used-{}", name), pubkey],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO nip46_connections (id, client_pubkey, token_id, for_pubkey, perms, connected_at)
+                 VALUES (?1, ?2, ?3, ?4, 'sign_event:1', '2026-01-02T00:00:00+00:00')",
+                params![format!("conn-{}", name), format!("client-{}", name), format!("used-{}", name), pubkey],
+            )
+            .unwrap();
+        }
+    }
+    file
+}
+
+#[test]
+fn migration_15_makes_every_viewer_a_signer_and_leaves_the_rest() {
+    let keys: Vec<String> = (0..5).map(|_| Keys::generate().public_key().to_hex()).collect();
+    let file = database_before_143(
+        &[("Ada", &keys[0], "administrator"), ("Sid", &keys[1], "signer"), ("Vic", &keys[2], "viewer"), ("Val", &keys[3], "viewer"), ("Oscar", &keys[4], "owner")],
+        &["Ada", "Sid"],
+    );
+
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(role_of(&db, &keys[0]), "administrator");
+    assert_eq!(role_of(&db, &keys[1]), "signer");
+    assert_eq!(role_of(&db, &keys[2]), "signer");
+    assert_eq!(role_of(&db, &keys[3]), "signer");
+    assert_eq!(role_of(&db, &keys[4]), "owner", "a value it does not know is left, and grants nothing");
+    // Nothing is revoked.
+    assert_eq!(db.active_nip46_connection_count().unwrap(), 2);
+    // A former viewer holds no connections until a token is issued.
+    assert!(db.list_nip46_connections(Some(&keys[2])).unwrap().is_empty());
+}
+
+#[test]
+fn rerunning_migration_15_changes_nothing() {
+    let (admin, viewer) = (Keys::generate().public_key().to_hex(), Keys::generate().public_key().to_hex());
+    let file = database_before_143(&[("Ada", &admin, "administrator"), ("Vic", &viewer, "viewer")], &["Ada"]);
+    let path = file.path().to_str().unwrap().to_string();
+    drop(Database::new(&path).unwrap());
+
+    // Rewound to 14, and to before #77: migration 7 skips its mapping, and 15 finds no viewers.
+    for version in [14, 6] {
+        Connection::open(&path).unwrap().execute_batch(&format!("PRAGMA user_version = {};", version)).unwrap();
+        let db = Database::new(&path).unwrap();
+        assert_eq!(user_version(&file), LATEST_VERSION as i64);
+        assert_eq!(role_of(&db, &admin), "administrator");
+        assert_eq!(role_of(&db, &viewer), "signer");
+        assert!(db.active_nip46_connection("client-Ada").unwrap().is_some(), "the administrator keeps their connection");
+        assert_eq!(db.get_team_members().unwrap().len(), 2);
+    }
 }
 
 // Migrations 8 and 9 (#96): audit events, backfilled from tokens and connections, and signing log
