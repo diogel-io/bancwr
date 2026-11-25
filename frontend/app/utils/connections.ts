@@ -59,9 +59,11 @@ export function parseKinds(input: string): { kinds: number[] } | { error: string
   return kinds.length ? { kinds: kinds.sort((a, b) => a - b) } : { error: 'Choose at least one kind.' }
 }
 
-/** How long a connection may last once the app connects (#98). 0 is until revoked. */
+/** How long a connection may last once the app connects (#98, #149). 0 is until revoked. */
 export const LIFETIMES: { label: string, value: number }[] = [
   { label: 'Until revoked', value: 0 },
+  { label: '1 hour', value: 1 },
+  { label: '8 hours', value: 8 },
   { label: '1 day', value: 24 },
   { label: '7 days', value: 168 },
   { label: '30 days', value: 720 },

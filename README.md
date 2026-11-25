@@ -194,8 +194,8 @@ one for themselves (#142), with the event kinds
 it may sign, and whether it may encrypt and decrypt messages (NIP-44 or NIP-04, #97); every app
 signs, encrypts and decrypts as the bunker's key, never as the member's. An app allowed to decrypt
 can read every encrypted message sent to the brand, and each decrypt is recorded. A token can also
-give the connection a lifetime, from a day to 90 days in the console, after which the app is refused
-and the connection is marked expired (#98); without one it lasts until revoked. Connections are kept
+give the connection a lifetime, from 1 hour to 90 days in the console (#149), after which the app
+is refused and the connection is marked expired (#98); without one it lasts until revoked. Connections are kept
 across restarts and can be revoked. See "Connecting an app" in
 [`backend/README.md`](backend/README.md#connecting-an-app-53).
 

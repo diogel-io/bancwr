@@ -198,6 +198,31 @@ test('a connection issued for 7 days signs and shows when it ends (#98)', async 
   await expect(page.getByTestId('connection-end').filter({ hasText: 'ends in 7 days' })).toHaveCount(1)
 })
 
+test('a connection issued for 1 hour signs and shows its lifetime in hours (#149)', async ({ page }) => {
+  await page.goto('/connections')
+  const form = page.getByTestId('issue-token')
+  await form.getByRole('combobox').first().click()
+  await page.getByRole('option', { name: /\(you\)/ }).click()
+  await form.getByLabel('Label').fill('e2e one-hour session')
+  await form.locator('#issue-token-lifetime').click()
+  await page.getByRole('option', { name: '1 hour', exact: true }).click()
+  const issued = page.waitForRequest(r => r.method() === 'POST' && r.url().includes('/api/') && (r.postData() ?? '').includes('e2e one-hour session'))
+  await form.getByRole('button', { name: 'Issue token' }).click()
+  expect((await issued).postDataJSON()).toHaveProperty('connection_lifetime_hours', 1)
+  const uri = (await page.getByTestId('issued-uri').textContent())!.trim()
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  const token = page.locator('[data-token]').filter({ hasText: 'e2e one-hour session' })
+  await expect(token).toContainText('connection lasts 1 hour')
+
+  const app = await connectApp(uri)
+  await expect(within(app.signEvent(note()))).resolves.toHaveProperty('sig')
+  await app.close()
+
+  await page.reload()
+  await expect(page.getByTestId('connection-end').filter({ hasText: /ends in (1 hour|[5-9]\d minutes)/ })).toHaveCount(1)
+})
+
 test('a connection issued with a rate limit is refused past its burst and shows its limit (#101)', async ({ page }) => {
   await page.goto('/connections')
   const form = page.getByTestId('issue-token')
