@@ -61,7 +61,8 @@ const { data: config, error } = await useFetch<ConfigResponse>('/api/bunker/conf
           </template>
         </UCard>
 
-        <!-- The identities it signs as (#103): renamed here, added at the command line. -->
+        <!-- The identities it signs as (#103): created, renamed and retired here (#146), or imported
+             at the command line. -->
         <IdentitiesSection />
 
         <!-- The bunker's own NIP-46 relays (#78): editable unless NIP46_RELAYS sets them. -->

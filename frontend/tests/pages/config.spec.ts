@@ -56,7 +56,9 @@ describe('Config page', () => {
 
     const component = await mountSuspended(Config)
 
-    expect(component.findAll('input')).toHaveLength(0)
+    // The one input is a new identity's label (#146): the bunker generates its key, so no key is
+    // ever typed here.
+    expect(component.findAll('input').map(i => i.attributes('id'))).toEqual(['identity-create-label'])
     expect(component.findAll('button').filter(b => /save/i.test(b.text()))).toHaveLength(0)
     expect(component.text()).toContain('It is imported once with bunker import-key')
   })
@@ -94,6 +96,6 @@ describe('Config page', () => {
     expect(section.text()).toContain('Bunker relays')
     expect(section.text()).toContain('wss://env.example')
     expect(section.find('[data-testid="bunker-relays-read-only"]').exists()).toBe(true)
-    expect(component.findAll('input')).toHaveLength(0)
+    expect(section.findAll('input')).toHaveLength(0)
   })
 })

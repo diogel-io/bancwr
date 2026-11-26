@@ -32,6 +32,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("hold several identities", identities),
     ("record the senders of NIP-46 requests", nip46_senders),
     ("make every viewer a signer", viewers_become_signers),
+    ("retire identities", retire_identities),
 ];
 
 /// The version a fully migrated database is at.
@@ -576,4 +577,12 @@ fn viewers_become_signers(tx: &Transaction) -> anyhow::Result<()> {
         info!("Team member '{}' changed role from viewer to signer (#143)", name);
     }
     Ok(())
+}
+
+/// 16. Retiring an identity (#146): `retired_at` marks one an administrator retired. Its row stays,
+///     so the signing log and audit trail still name it and its key can never be registered as a
+///     member (sign-in rule 10), but its `key_file` is cleared, so the key is gone. NULL for every
+///     existing identity: none has been retired.
+fn retire_identities(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(tx, &[("identities", "retired_at", "TEXT")])
 }

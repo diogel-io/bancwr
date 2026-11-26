@@ -290,3 +290,196 @@ async fn no_identity_key_can_be_a_member_and_the_status_lists_them_all() {
     let status: Value = app.get("/api/bunker/status").send().await.unwrap().json().await.unwrap();
     assert_eq!(status["identities"], json!([app.bunker.public_key().to_hex(), brand.public_key().to_hex()]));
 }
+
+// Creating and retiring identities in the console (#146).
+
+/// A created identity's private key in every form it could leak in, decrypted from its stored
+/// ciphertext under the test root credential, to prove it shows nowhere else.
+struct Secret {
+    hex: String,
+    nsec: String,
+    key_file: String,
+}
+
+impl Secret {
+    fn of(app: &common::TestApp, pubkey: &str) -> Secret {
+        let stored = app.db.stored_identities().unwrap().into_iter().find(|i| i.pubkey == pubkey).expect("stored");
+        let root = bunker::key_store::RootKey::from_hex(common::ROOT_KEY_HEX).unwrap();
+        let secret = bunker::key_store::decrypt_identity(&root, pubkey, &stored.key_file).unwrap();
+        Secret { hex: secret.to_secret_hex(), nsec: secret.to_bech32().unwrap(), key_file: stored.key_file }
+    }
+
+    fn assert_absent(&self, text: &str, what: &str) {
+        let ciphertext = self.key_file.split_whitespace().last().unwrap();
+        assert!(!text.contains(&self.hex), "{what} holds the key in hex");
+        assert!(!text.contains(&self.nsec), "{what} holds the nsec");
+        assert!(!text.contains(ciphertext) && !text.contains("bancwr-key"), "{what} holds the encrypted key");
+    }
+}
+
+async fn create(app: &common::TestApp, label: &str) -> reqwest::Response {
+    app.signed(Method::POST, "/api/bunker/identities", &app.admin.public_key().to_hex()).json(&json!({ "label": label })).send().await.unwrap()
+}
+
+async fn retire(app: &common::TestApp, pubkey: &str) -> reqwest::Response {
+    app.signed(Method::DELETE, &format!("/api/bunker/identities/{}", pubkey), &app.admin.public_key().to_hex()).send().await.unwrap()
+}
+
+async fn export(app: &common::TestApp, format: &str) -> String {
+    let day = chrono::Utc::now().format("%Y-%m-%d");
+    let path = format!("/api/bunker/logs/export?format={format}&from={day}&to={day}");
+    app.signed(Method::GET, &path, &app.admin.public_key().to_hex()).send().await.unwrap().text().await.unwrap()
+}
+
+#[tokio::test]
+async fn an_identity_created_in_the_console_signs_at_once_and_its_key_never_leaves_the_bunker() {
+    let relay = ports::run_mock_relay().await;
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+
+    // Refused without a label.
+    assert_eq!(create(&app, "  ").await.status(), StatusCode::BAD_REQUEST);
+
+    let res = create(&app, "Sales").await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let body = res.text().await.unwrap();
+    let created: IdentityResponse = serde_json::from_str(&body).unwrap();
+    assert_eq!((created.label.as_str(), created.is_primary, created.available), ("Sales", false, true));
+    let sales = PublicKey::from_hex(&created.pubkey).unwrap();
+    assert_eq!(created.npub.as_deref(), Some(sales.to_bech32().unwrap().as_str()));
+    let secret = Secret::of(&app, &created.pubkey);
+    secret.assert_absent(&body, "the create response");
+    // Only the fields an identity always has: nothing that could carry a key.
+    let fields: Vec<String> = serde_json::from_str::<Value>(&body).unwrap().as_object().unwrap().keys().cloned().collect();
+    assert_eq!(fields, ["available", "is_primary", "label", "members", "npub", "pubkey", "usage"]);
+
+    // Unlocked and listened for without a restart.
+    assert!(app.state.keyring.is_identity(&created.pubkey).await);
+    let listed = identities(&app, &admin).await;
+    assert_eq!(listed.iter().map(|i| (i.label.as_str(), i.available)).collect::<Vec<_>>(), vec![("Primary", true), ("Sales", true)]);
+    let status: Value = app.get("/api/bunker/status").send().await.unwrap().json().await.unwrap();
+    assert_eq!(status["identities"], json!([app.bunker.public_key().to_hex(), created.pubkey]));
+
+    // Granted to a signer, who connects an app as Sales and signs.
+    let signer = Keys::generate();
+    app.db.add_team_member("Seller", &signer.public_key().to_hex(), Role::Signer).unwrap();
+    assert_eq!(grant(&app, &Keys::parse(&secret.hex).unwrap(), &signer).await, StatusCode::OK);
+    let res = issue(&app, json!({ "label": "Sales app", "kinds": [1], "for_pubkey": signer.public_key().to_hex(), "identity": created.pubkey })).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let token: IssueTokenResponse = res.json().await.unwrap();
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(10), None).unwrap();
+    assert_eq!(client.get_public_key().await.unwrap(), sales);
+    let note = client.sign_event(EventBuilder::text_note("from Sales").build(sales)).await.unwrap();
+    assert_eq!(note.pubkey, sales);
+    assert!(note.verify().is_ok());
+
+    // The audit trail records who created it, and nothing in it or the log holds the key.
+    let jsonl = export(&app, "jsonl").await;
+    let added: Value = jsonl.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|e| e["action"] == "identity_added").expect("recorded");
+    assert_eq!(added["actor_pubkey"], admin);
+    assert_eq!(added["identity_pubkey"], created.pubkey);
+    secret.assert_absent(&jsonl, "the export");
+    let identities_body = app.signed(Method::GET, "/api/bunker/identities", &admin).send().await.unwrap().text().await.unwrap();
+    secret.assert_absent(&identities_body, "the identities list");
+
+    // Its key can never be registered as a member (sign-in rule 10).
+    let res = app
+        .signed(Method::POST, "/api/bunker/team", &admin)
+        .json(&json!({ "name": "Not a person", "pubkey": sales.to_bech32().unwrap(), "role": "signer" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn creating_an_identity_without_the_root_credential_changes_nothing() {
+    let app = common::spawn_without_root_key(true, None).await;
+    let res = create(&app, "Sales").await;
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(res.json::<Value>().await.unwrap()["error"], "root_key_unavailable");
+    assert_eq!(app.db.list_identities().unwrap().len(), 1, "only the primary");
+    assert_eq!(app.state.keyring.others(), 0);
+    // The bunker still signs and answers as before.
+    let status: Value = app.get("/api/bunker/status").send().await.unwrap().json().await.unwrap();
+    assert_eq!(status["identities"], json!([app.bunker.public_key().to_hex()]));
+    assert_eq!(identities(&app, &app.admin.public_key().to_hex()).await.len(), 1);
+}
+
+#[tokio::test]
+async fn retiring_an_identity_revokes_what_signs_as_it_destroys_its_key_and_keeps_its_log() {
+    let relay = ports::run_mock_relay().await;
+    let app = common::spawn_with(true, Some(vec![relay.url()])).await;
+    start_relay_client(&app, &relay.url()).await;
+    let admin = app.admin.public_key().to_hex();
+    let created: IdentityResponse = create(&app, "Sales").await.json().await.unwrap();
+    let sales = PublicKey::from_hex(&created.pubkey).unwrap();
+
+    // One app connected and signing as Sales, and one token not yet used.
+    let token: IssueTokenResponse = issue(&app, json!({ "label": "Sales app", "kinds": [1], "identity": created.pubkey })).await.json().await.unwrap();
+    let client = NostrConnect::new(NostrConnectURI::parse(&token.uri).unwrap(), Keys::generate(), Duration::from_secs(3), None).unwrap();
+    let note = client.sign_event(EventBuilder::text_note("before retiring").build(sales)).await.unwrap();
+    assert_eq!(issue(&app, json!({ "label": "Unused", "kinds": [1], "identity": created.pubkey })).await.status(), StatusCode::OK);
+    // The console shows what retiring would revoke.
+    let listed = identities(&app, &admin).await;
+    let usage = listed.iter().find(|i| i.pubkey == created.pubkey).unwrap().usage.unwrap();
+    assert_eq!((usage.connections, usage.tokens), (1, 1));
+
+    // Never the primary.
+    let res = retire(&app, &app.bunker.public_key().to_hex()).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(res.json::<Value>().await.unwrap()["error"], "primary_identity");
+
+    let res = retire(&app, &sales.to_bech32().unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!((body["connections_revoked"].as_u64(), body["tokens_revoked"].as_u64()), (Some(1), Some(1)));
+
+    // The app is no longer answered, and nothing signs as Sales.
+    assert!(client.sign_event(EventBuilder::text_note("after retiring").build(sales)).await.is_err());
+    assert!(!app.state.keyring.is_identity(&created.pubkey).await);
+    assert!(app.state.relay_handle().await.unwrap().identities().iter().all(|key| *key != sales));
+    let connections: Vec<ConnectionResponse> = app.signed(Method::GET, "/api/bunker/connections", &admin).send().await.unwrap().json().await.unwrap();
+    let revoked = connections.iter().find(|c| c.identity_pubkey.as_deref() == Some(created.pubkey.as_str())).expect("listed");
+    assert_eq!(revoked.revoked_reason.as_deref(), Some("identity_retired"));
+    let res = issue(&app, json!({ "label": "Again", "kinds": [1], "identity": created.pubkey })).await;
+    assert_eq!(res.json::<Value>().await.unwrap()["error"], "invalid_identity");
+
+    // Its key is gone: a restart would not unlock it.
+    assert!(app.db.stored_identities().unwrap().is_empty());
+    // Left out of the list, except for an administrator who asks.
+    assert_eq!(identities(&app, &admin).await.len(), 1);
+    let all = app.signed(Method::GET, "/api/bunker/identities?retired=true", &admin).send().await.unwrap();
+    let all: Vec<IdentityResponse> = all.json().await.unwrap();
+    let listed = all.iter().find(|i| i.pubkey == created.pubkey).expect("listed when asked");
+    assert!(listed.retired_at.is_some() && !listed.available);
+    assert_eq!(listed.label, "Sales");
+    let signer = app.register(Role::Signer);
+    let theirs = app.signed(Method::GET, "/api/bunker/identities?retired=true", &signer.public_key().to_hex()).send().await.unwrap();
+    assert!(theirs.json::<Vec<IdentityResponse>>().await.unwrap().iter().all(|i| i.retired_at.is_none()));
+
+    // It can no longer be renamed, granted or retired again, and its key never signs in.
+    let path = format!("/api/bunker/identities/{}", created.pubkey);
+    assert_eq!(app.signed(Method::PATCH, &path, &admin).json(&json!({ "label": "x" })).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+    let grant_path = format!("{}/members/{}", path, signer.public_key().to_hex());
+    assert_eq!(app.signed(Method::PUT, &grant_path, &admin).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+    assert_eq!(retire(&app, &created.pubkey).await.status(), StatusCode::NOT_FOUND);
+    let res = app
+        .signed(Method::POST, "/api/bunker/team", &admin)
+        .json(&json!({ "name": "Not a person", "pubkey": created.pubkey, "role": "signer" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Its signature and its retirement are still in the log and the export.
+    let logs: Vec<Value> = app.signed(Method::GET, "/api/bunker/logs", &admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(logs.iter().find(|l| l["event_id"] == note.id.to_hex()).expect("logged")["identity_pubkey"], created.pubkey);
+    let csv = export(&app, "csv").await;
+    assert!(csv.lines().any(|l| l.contains(&note.id.to_hex()) && l.ends_with(&format!(",{}", created.pubkey))), "{csv}");
+    let jsonl = export(&app, "jsonl").await;
+    let retired: Value = jsonl.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|e| e["action"] == "identity_retired").expect("recorded");
+    assert_eq!(retired["actor_pubkey"], admin);
+    assert_eq!(retired["identity_pubkey"], created.pubkey);
+}

@@ -512,7 +512,23 @@ to sign one of them waits under **Approvals** until an administrator decides.
 
 ## More than one identity
 
-One bunker can sign as several Nostr keys (#103). The key you imported first is the **primary**.
+One bunker can sign as several Nostr keys (#103), such as a company account and one for each
+department. The key you imported first is the **primary**.
+
+### Creating an identity in the console
+
+1. Under **Config**, **Identities**, type a label in **Create an identity**, such as "Sales", and
+   select **Create identity**. The bunker generates the key, encrypts it under the root credential
+   and can sign as it at once. No restart is needed.
+2. Take a backup straight away (see "The key and backups"). The key is never shown and can't be
+   exported: if you lose this bunker's database, every backup or the root credential, the
+   identity is gone for good.
+3. Grant members the identity and issue tokens for it, as in steps 3 and 4 below.
+
+If the bunker can't read its root credential (`BANCWR_ROOT_KEY_FILE`), creating is refused and
+nothing changes. The bunker keeps signing as before.
+
+### Importing a key you already have
 
 1. Put the new key in a file the bunker's container can read, as you did for the first, and add it:
 
@@ -536,8 +552,19 @@ One bunker can sign as several Nostr keys (#103). The key you imported first is 
 - If an identity cannot be decrypted at start (its row altered, or the wrong credential), the
   bunker stays locked and its status names the identity by its label. Nothing signs until it is
   fixed: restore the database from a backup.
-- An identity cannot be removed yet. Rename it under **Config** if it is no longer used, and revoke
-  its connections.
+### Retiring an identity
+
+When an account is no longer needed, select **Retire** beside it under **Config**, **Identities**.
+The confirmation says how many connected apps and unused tokens it revokes. Retiring:
+
+- disconnects every app signing as it and revokes its unused tokens,
+- removes every member's access to it,
+- destroys its encrypted key, so nothing can sign as it again,
+- keeps its signatures and audit events in the log and the export, still under its label.
+
+The primary can't be retired. A restore from a backup taken before you retired an identity brings
+it back, with its key, as it brings back a member removed since that backup. Its apps still need
+new tokens, as after every restore.
 
 ## Apps that read and send private messages
 

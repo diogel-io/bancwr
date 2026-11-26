@@ -112,12 +112,24 @@ impl Drop for Running {
 impl Running {
     /// `bunker serve` on a free port, started again on a new port if it exits before listening.
     async fn start(host: &Host, env: &[(&str, String)]) -> Running {
+        Self::start_logging(host, env, None).await
+    }
+
+    /// As `start`, writing the bunker's log, at every level, to `log` when it is given.
+    async fn start_logging(host: &Host, env: &[(&str, String)], log: Option<&std::path::Path>) -> Running {
         let mut exits = Vec::new();
         for _ in 0..ports::ATTEMPTS {
             let port = ports::free_port();
             let mut env = env.to_vec();
             env.push(("BUNKER_PORT", port.to_string()));
-            let child = host.command(&[], &env).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            let output = || match log {
+                Some(path) => Stdio::from(std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap()),
+                None => Stdio::null(),
+            };
+            if log.is_some() {
+                env.push(("RUST_LOG", "trace".to_string()));
+            }
+            let child = host.command(&[], &env).stdout(output()).stderr(output()).spawn().unwrap();
             let mut running = Running { child, port, client: reqwest::Client::new(), admin: host.admin.public_key().to_hex() };
             match running.listening().await {
                 Ok(()) => {
@@ -519,4 +531,87 @@ async fn an_identity_that_does_not_unlock_leaves_the_bunker_locked_naming_it() {
     assert_eq!(health["status"], "locked");
     let reason = health["reason"].as_str().unwrap();
     assert!(reason.starts_with("The identity \"Brand B\" cannot be unlocked."), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_identity_created_in_the_console_survives_a_backup_and_a_retired_one_never_comes_back() {
+    let bunker = Keys::generate();
+    let admin = Keys::generate();
+    let relay = ports::run_mock_relay().await;
+    let nip46 = [("NIP46_ENABLED", "true".to_string()), ("NIP46_RELAYS", relay.url())];
+
+    let original = Host::new(&admin);
+    original.import(&bunker);
+    let log = original.path("bunker.log");
+    let mut env = original.secrets();
+    env.extend(nip46.clone());
+    let running = Running::start_logging(&original, &env, Some(&log)).await;
+
+    // Created and retired in the console, with no restart.
+    let res = running.signed_json(reqwest::Method::POST, "/api/bunker/identities", &json!({ "label": "Sales" })).send().await.unwrap();
+    assert_eq!(res.status(), 201);
+    let sales: Value = res.json().await.unwrap();
+    let sales_key = PublicKey::from_hex(sales["pubkey"].as_str().unwrap()).unwrap();
+    let old: Value = running.signed_json(reqwest::Method::POST, "/api/bunker/identities", &json!({ "label": "Old brand" })).send().await.unwrap().json().await.unwrap();
+    let old_hex = old["pubkey"].as_str().unwrap();
+    let res = running.signed(reqwest::Method::DELETE, &format!("/api/bunker/identities/{}", old_hex)).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+
+    let res = running
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &json!({ "label": "Sales app", "kinds": [1], "identity": sales_key.to_hex() }))
+        .send()
+        .await
+        .unwrap();
+    let app = connect(&res.json().await.unwrap(), Duration::from_secs(10));
+    assert_eq!(app.sign_event(EventBuilder::text_note("from Sales").build(sales_key)).await.unwrap().pubkey, sales_key);
+
+    // At rest, only ciphertext; in the log, nothing of the key; and the retired key is gone.
+    let conn = rusqlite::Connection::open(original.path("data/bancwr.db")).unwrap();
+    let key_file: String = conn.query_row("SELECT key_file FROM identities WHERE pubkey = ?1", [sales_key.to_hex()], |row| row.get(0)).unwrap();
+    let old_key_file: Option<String> = conn.query_row("SELECT key_file FROM identities WHERE pubkey = ?1", [old_hex], |row| row.get(0)).unwrap();
+    assert_eq!(old_key_file, None);
+    drop(conn);
+    let root = bunker::key_store::RootKey::from_file(std::path::Path::new(&original.secret("root"))).unwrap();
+    let secret = bunker::key_store::decrypt_identity(&root, &sales_key.to_hex(), &key_file).unwrap();
+    let db = String::from_utf8_lossy(&std::fs::read(original.path("data/bancwr.db")).unwrap()).into_owned();
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("Created identity"), "the log is captured");
+    for (text, what) in [(&db, "the database"), (&logged, "the log")] {
+        assert!(!text.contains(&secret.to_secret_hex()) && !text.contains(&secret.to_bech32().unwrap()), "{what} holds the key");
+    }
+    assert!(!logged.contains(key_file.split_whitespace().last().unwrap()), "the log holds the encrypted key");
+
+    // Backed up and restored onto a clean host: Sales unlocks and signs, the retired one does not
+    // come back, and the bunker starts unlocked without it.
+    let output = original.backup(&original.secrets());
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let archive = output.stdout;
+    drop(running);
+    let restored = Host::new(&admin);
+    let output = restored.restore(&archive, &restored.secrets());
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let mut env = restored.secrets();
+    env.extend(nip46.clone());
+    let running = Running::start(&restored, &env).await;
+    let health: Value = running.client.get(running.url("/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(health, json!({ "status": "ok" }));
+    let identities = running.get("/api/bunker/identities").await;
+    let labels: Vec<&str> = identities.as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Primary", "Sales"]);
+    assert_eq!(identities[1]["available"], true);
+    let all = running.get("/api/bunker/identities?retired=true").await;
+    assert!(all.as_array().unwrap().iter().any(|i| i["pubkey"] == old_hex && i["retired_at"].is_string()));
+    let res = running
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &json!({ "label": "After the restore", "kinds": [1], "identity": sales_key.to_hex() }))
+        .send()
+        .await
+        .unwrap();
+    let fresh = connect(&res.json().await.unwrap(), Duration::from_secs(10));
+    assert_eq!(fresh.sign_event(EventBuilder::text_note("restored").build(sales_key)).await.unwrap().pubkey, sales_key);
+    let res = running
+        .signed_json(reqwest::Method::POST, "/api/bunker/connections/tokens", &json!({ "label": "Retired", "kinds": [1], "identity": old_hex }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
 }

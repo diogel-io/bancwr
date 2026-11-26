@@ -292,8 +292,12 @@ that needs more, such as a bulk poster, needs a new token issued with a higher l
 
 ### More than one identity (#103)
 
-One bunker can sign as several Nostr keys, for an agency or a brand with several accounts. The key
-imported first is the **primary**; add another on the host with
+One bunker can sign as several Nostr keys, for an agency, a brand with several accounts, or a
+company with one account per department. The key imported first is the **primary**. An
+administrator adds another under **Config**, **Identities**, **Create identity**, giving only a
+label: the bunker generates the key itself, encrypts it, and can sign as it at once, without a
+restart. The key is never shown, so take a backup after creating one (#146). To use a key you
+already have, add it on the host with
 
 ```bash
 podman compose run --rm -e BUNKER_NSEC_FILE=/run/secrets/brand_b bunker import-key --add --label "Brand B"
@@ -302,6 +306,8 @@ podman compose run --rm -e BUNKER_NSEC_FILE=/run/secrets/brand_b bunker import-k
 then restart the bunker. Each identity is encrypted under the same root credential and travels in
 backups. Under **Config**, **Identities** lists them; on a member's team page, **May sign as** says
 which they may use, and a connection token is issued for one of them, which its app then signs as.
+An administrator can **Retire** an identity other than the primary: its apps are disconnected, its
+key is destroyed, and its signatures stay in the log.
 With only one identity, nothing changes and none of this appears. See "More than one identity" in
 [`backend/README.md`](backend/README.md#more-than-one-identity-103).
 
@@ -414,7 +420,9 @@ lists them all, with what each one means.
   It cannot be limited to particular senders, though each decrypt is recorded.
 - Every identity a bunker holds is protected by the same root credential, in the same process: whoever
   controls the host has them all (#103). Run separate bunkers for keys that must not share that fate.
-- An identity cannot be removed yet, only renamed.
+- A key the bunker generates exists only in its database and backups, and can't be exported. Lose
+  the database, every backup or the root credential, and that identity is gone for good (#146).
+- The primary identity can't be retired or replaced.
 
 ## Security
 

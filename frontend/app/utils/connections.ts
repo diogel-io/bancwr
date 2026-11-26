@@ -118,7 +118,8 @@ const REASONS: Record<string, string> = {
   member_removed: 'Its member was removed from the vault',
   role_changed: 'Its member\'s role was changed so they could no longer sign',
   restored: 'The bunker was restored from a backup',
-  expired: 'Its time limit ran out'
+  expired: 'Its time limit ran out',
+  identity_retired: 'The identity it signed as was retired'
 }
 
 export function revokedReason(reason: string | null): string {

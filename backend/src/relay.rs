@@ -11,7 +11,9 @@
 //! and no relays yet, the client still starts, so the first list saved takes effect at once.
 //!
 //! A bunker may hold several identities (#103). The subscription asks for requests to any of them,
-//! and each request is decrypted, handled and answered as the identity its `p` tag names.
+//! and each request is decrypted, handled and answered as the identity its `p` tag names. When an
+//! administrator creates or retires one (#146), `RelayHandle::set_identities` sends the
+//! subscription again for the new set, on the running client.
 //!
 //! A request held for approval (#102) is not awaited here, which would stop every other request:
 //! the handler parks it and the relay sends its auth challenge, if any. The real answer is sent
@@ -44,8 +46,9 @@ pub struct RelayClient {
 #[derive(Clone)]
 pub struct RelayHandle {
     client: Client,
-    /// Every identity the bunker signs as (#103): requests to any of them are answered.
-    identities: Vec<PublicKey>,
+    /// Every identity the bunker signs as (#103): requests to any of them are answered. Changes
+    /// while the bunker runs (#146); the lock is never held across an await.
+    identities: Arc<std::sync::RwLock<Vec<PublicKey>>>,
     /// Serialises changes, so two saves cannot interleave their adds and removes.
     changing: Arc<Mutex<()>>,
 }
@@ -87,12 +90,25 @@ impl RelayHandle {
         self.subscribe().await
     }
 
+    /// Makes the identities the client listens for exactly `identities` (#146), and sends the
+    /// subscription again so every relay carries the new set at once.
+    pub async fn set_identities(&self, identities: Vec<PublicKey>) -> anyhow::Result<()> {
+        let _changing = self.changing.lock().await;
+        *self.identities.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = identities;
+        self.subscribe().await
+    }
+
+    /// The identities the client listens for now.
+    pub fn identities(&self) -> Vec<PublicKey> {
+        self.identities.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
     /// The NIP-46 requests addressed to the bunker, from now on. Kept as the pool's subscription,
     /// which relays added later inherit, so it is saved even while there are no relays to send it
     /// to (the client's `subscribe` would refuse with no relays).
     async fn subscribe(&self) -> anyhow::Result<()> {
         let id = SubscriptionId::new(SUBSCRIPTION_ID);
-        let filter = Filter::new().kind(Kind::from(NIP46_KIND)).pubkeys(self.identities.clone()).since(Timestamp::now());
+        let filter = Filter::new().kind(Kind::from(NIP46_KIND)).pubkeys(self.identities()).since(Timestamp::now());
         if self.client.relays().await.is_empty() {
             self.client.pool().save_subscription(id, filter).await;
             return Ok(());
@@ -125,7 +141,7 @@ impl RelayClient {
         // So /api/bunker/status can report which relays are connected (#27).
         state.set_relay_pool(client.pool().clone()).await;
         // So a list saved in the console applies at once (#78).
-        let handle = RelayHandle { client: client.clone(), identities, changing: Arc::new(Mutex::new(())) };
+        let handle = RelayHandle { client: client.clone(), identities: Arc::new(std::sync::RwLock::new(identities)), changing: Arc::new(Mutex::new(())) };
         state.set_relay_handle(handle.clone()).await;
 
         Ok(Self { client, state, handle })
@@ -145,7 +161,7 @@ impl RelayClient {
     pub async fn run(&self) -> anyhow::Result<()> {
         self.client.connect().await;
 
-        for identity in &self.handle.identities {
+        for identity in &self.handle.identities() {
             info!("Subscribing to NIP-46 requests for: {}", identity.to_bech32()?);
         }
         let mut notifications = self.client.notifications();
@@ -172,7 +188,7 @@ impl RelayClient {
     /// bunker's identities and readable with its key, are requests: the bunker's own responses (the
     /// same kind) are ignored.
     async fn handle_nip46_request(&self, event: Event) -> anyhow::Result<()> {
-        if event.kind != Kind::from(NIP46_KIND) || self.handle.identities.contains(&event.pubkey) {
+        if event.kind != Kind::from(NIP46_KIND) || self.state.keyring.identity_of(&event.pubkey).await.is_some() {
             return Ok(());
         }
         // The identity addressed (#103): the first `p` tag that is one of the bunker's.

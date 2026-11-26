@@ -18,8 +18,8 @@ const displayLogs = computed<LogEntry[]>(() => props.rows || logs.value || [])
 
 // Columns follow LogEntry. There is no status column: the backend logs successful signatures only.
 // Member is whom the signature was for; App is the key that asked (diogel-io/workspace#38). Signed
-// as names the identity (#103), only once the bunker has more than one.
-const { several, label: identityLabel } = useIdentities()
+// as names the identity (#103), only once the bunker has more than one, retired ones included (#146).
+const { several, label: identityLabel } = useIdentities({ retired: true })
 const columns = computed<TableColumn<LogEntry>[]>(() => [
   { accessorKey: 'timestamp', header: 'Timestamp' },
   { accessorKey: 'event_kind', header: 'Event Kind' },

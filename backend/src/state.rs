@@ -6,7 +6,9 @@ use crate::keyring::Keyring;
 use crate::nip46::Nip46Handler;
 use crate::config::Config;
 use crate::relay::RelayHandle;
+use crate::key_store::{KeyStoreError, RootKey};
 use nostr_relay_pool::RelayPool;
+use std::path::PathBuf;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -29,6 +31,9 @@ pub struct AppState {
     /// Held across a relay list's save and its application, so two saves apply in the order
     /// they were stored (#78).
     pub relays_update: Arc<tokio::sync::Mutex<()>>,
+    /// Where the root credential is read from when an identity is created (#146). None:
+    /// `BANCWR_ROOT_KEY_FILE`.
+    root_key_file: Option<Arc<PathBuf>>,
 }
 
 impl AppState {
@@ -56,6 +61,7 @@ impl AppState {
             relay_pool: Arc::new(RwLock::new(None)),
             relay_handle: Arc::new(RwLock::new(None)),
             relays_update: Arc::new(tokio::sync::Mutex::new(())),
+            root_key_file: None,
         }
     }
 
@@ -82,5 +88,33 @@ impl AppState {
 
     pub async fn relay_handle(&self) -> Option<RelayHandle> {
         self.relay_handle.read().await.clone()
+    }
+
+    /// Reads the root credential when an administrator creates an identity (#146): the file
+    /// `BANCWR_ROOT_KEY_FILE` names, or the one `with_root_key_file` gave.
+    pub fn root_key(&self) -> Result<RootKey, KeyStoreError> {
+        match &self.root_key_file {
+            Some(path) => RootKey::from_file(path),
+            None => RootKey::from_env(),
+        }
+    }
+
+    /// Reads the root credential from `path` rather than `BANCWR_ROOT_KEY_FILE`: for tests, which
+    /// share one process environment.
+    pub fn with_root_key_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.root_key_file = Some(Arc::new(path.into()));
+        self
+    }
+
+    /// After the keyring changed (#146): the running relay client listens for exactly its
+    /// identities from now on. Held under `relays_update`, which the relay client's start holds
+    /// too, so an identity created while it starts is either in its first subscription or sent
+    /// here. With NIP-46 off there is nothing to change.
+    pub async fn identities_changed(&self) -> anyhow::Result<()> {
+        let _update = self.relays_update.lock().await;
+        match self.relay_handle().await {
+            Some(handle) => handle.set_identities(self.keyring.public_keys().await).await,
+            None => Ok(()),
+        }
     }
 }
