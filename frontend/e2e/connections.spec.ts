@@ -4,11 +4,12 @@
 // app can sign no more. An app granted the encryption methods (#97) encrypts and decrypts NIP-44
 // with the brand's key, and each decrypt is in the export. A connection issued for 7 days (#98)
 // shows when it ends. A connection issued with a rate limit (#101) is refused past its burst. A
-// signer issues their own token on the page and connects an app with it (#142). The
-// bunker's relay is the in-process
+// signer issues their own token on the page and connects an app with it (#142). An app that
+// shows its own nostrconnect:// code (nostr-tools' BunkerSigner.fromURI) is connected from the page
+// (#148). The bunker's relay is the in-process
 // one; from this process it is 127.0.0.1, from the container e2e-host.
 import type { Browser, Page } from '@playwright/test'
-import { BunkerSigner } from 'nostr-tools/nip46'
+import { BunkerSigner, createNostrConnectURI } from 'nostr-tools/nip46'
 import * as nip44 from 'nostr-tools/nip44'
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { contextPost, test, expect } from './fixtures'
@@ -247,4 +248,42 @@ test('a connection issued with a rate limit is refused past its burst and shows 
 
   await page.reload()
   await expect(page.getByTestId('connection-rate-limit').filter({ hasText: 'limited to 10 a minute (burst 5)' })).toHaveCount(1)
+})
+
+test('an app that shows a nostrconnect:// code is connected from the page, signs what was confirmed and is revoked (#148)', async ({ page }) => {
+  const secretKey = generateSecretKey()
+  const clientPubkey = getPublicKey(secretKey)
+  const secret = Math.random().toString(36).slice(2, 14)
+  const code = (relays: string[]) => createNostrConnectURI({ clientPubkey, relays, secret, perms: ['sign_event:1'], name: 'e2e nostrconnect app' })
+  // One relay, two addresses: this process reaches it at 127.0.0.1, the bunker's container at
+  // e2e-host, which is one of the bunker's own relays (NIP46_RELAYS), so the code may name it.
+  const forBunker = code([`ws://e2e-host:${process.env.E2E_RELAY_PORT || 7777}`])
+  // switch_relays would move the app to e2e-host, which this process cannot resolve; the backend's
+  // tests cover the move.
+  const connecting = BunkerSigner.fromURI(secretKey, code([relay]), { skipSwitchRelays: true }, 30_000)
+
+  await page.goto('/connections')
+  const form = page.getByTestId('connect-app')
+  await form.locator('#connect-app-code').fill(forBunker)
+  await form.getByRole('button', { name: 'Read code' }).click()
+  const preview = form.getByTestId('connect-app-preview')
+  await expect(preview).toContainText('e2e nostrconnect app')
+  await expect(preview.getByTestId('connect-app-unverified')).toBeVisible()
+  await expect(form.locator('#connect-app-kinds')).toHaveValue('1')
+  await form.getByRole('button', { name: 'Connect e2e nostrconnect app' }).click()
+  await expect(form.getByTestId('connect-app-done')).toContainText('Connected e2e nostrconnect app')
+
+  const app = await within(connecting, 30_000)
+  const primary = await within(app.getPublicKey())
+  const signed = await within(app.signEvent(note()))
+  expect(signed.pubkey).toBe(primary)
+  expect(await refusal(app.signEvent({ ...note(), kind: 7, content: '+' }))).toContain('Forbidden')
+
+  const row = page.getByTestId('connections-list').locator('li', { hasText: 'e2e nostrconnect app' })
+  await expect(row).toContainText('Connected from its own code')
+  await expect(row).toContainText('1 Note')
+  await row.getByRole('button', { name: /^Revoke/ }).click()
+  await row.getByRole('button', { name: 'Revoke', exact: true }).click()
+  expect(await refusal(app.signEvent(note()))).toContain('Not connected')
+  await app.close()
 })

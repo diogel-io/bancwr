@@ -28,6 +28,7 @@ fn connection(id: &str, member: &str) -> Nip46Connection {
         rate_limit: None,
         approval_perms: vec!["sign_event:1".to_string()],
         identity_pubkey: None,
+        relays: Vec::new(),
     }
 }
 

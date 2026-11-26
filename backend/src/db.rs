@@ -619,6 +619,10 @@ pub struct Nip46Connection {
     pub approval_perms: Vec<String>,
     /// The identity it signs as (#103), hex, copied from its token. None: the primary.
     pub identity_pubkey: Option<String>,
+    /// The relays the app chose in its `nostrconnect://` code (#148), which the bunker also
+    /// listens and answers on while the connection lasts. Empty for a connection made with a
+    /// token: it uses the bunker's relays.
+    pub relays: Vec<String>,
 }
 
 impl Nip46Connection {
@@ -756,6 +760,16 @@ fn optional_perms(perms: &[String]) -> Option<String> {
     (!perms.is_empty()).then(|| join_perms(perms))
 }
 
+/// A connection's own relays (#148) as stored: space-separated, since a relay address may hold a
+/// comma. NULL for none.
+fn optional_relays(relays: &[String]) -> Option<String> {
+    (!relays.is_empty()).then(|| relays.join(" "))
+}
+
+fn split_relays(relays: Option<&str>) -> Vec<String> {
+    relays.unwrap_or("").split(' ').filter(|r| !r.is_empty()).map(str::to_string).collect()
+}
+
 fn split_perms(perms: &str) -> Vec<String> {
     perms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect()
 }
@@ -800,7 +814,7 @@ const MEMBER_CAN_SIGN: &str = "AND m.role IN ('administrator', 'signer')";
 
 const TOKEN_COLUMNS: &str =
     "id, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, revoked_at, connection_lifetime_hours, rate_per_minute, rate_burst, approval_perms, identity_pubkey";
-const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst, approval_perms, identity_pubkey";
+const CONNECTION_COLUMNS: &str = "id, client_pubkey, token_id, for_pubkey, perms, client_name, client_url, client_image, connected_at, last_used_at, revoked_at, revoked_reason, revoked_by, expires_at, rate_per_minute, rate_burst, approval_perms, identity_pubkey, relays";
 
 /// A stored rate limit (#101): both columns NULL is none, so the default; one NULL takes the
 /// default's part, as issuing does. Values were checked when the token was issued.
@@ -855,6 +869,7 @@ fn connection_from_row(row: &rusqlite::Row) -> rusqlite::Result<Nip46Connection>
         rate_limit: stored_rate_limit(row.get(14)?, row.get(15)?),
         approval_perms: split_perms(&row.get::<_, Option<String>>(16)?.unwrap_or_default()),
         identity_pubkey: row.get(17)?,
+        relays: split_relays(row.get::<_, Option<String>>(18)?.as_deref()),
     })
 }
 
@@ -974,7 +989,7 @@ impl Database {
     pub fn list_nip46_tokens_for(&self, only_for: Option<&str>) -> anyhow::Result<Vec<Nip46Token>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(&format!(
-            "SELECT {} FROM nip46_tokens WHERE (?1 IS NULL OR for_pubkey = ?1) ORDER BY created_at DESC",
+            "SELECT {} FROM nip46_tokens WHERE (?1 IS NULL OR for_pubkey = ?1) AND origin IS NULL ORDER BY created_at DESC",
             TOKEN_COLUMNS
         ))?;
         let tokens = stmt.query_map(params![only_for], token_from_row)?.collect::<Result<_, _>>()?;
@@ -1117,10 +1132,11 @@ impl Database {
             rate_limit: token.rate_limit,
             approval_perms: token.approval_perms.iter().filter(|p| perms_granted.contains(p)).cloned().collect(),
             identity_pubkey: token.identity_pubkey.clone(),
+            relays: Vec::new(),
         };
         tx.execute(
             &format!(
-                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12, ?13, ?14)",
+                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?12, ?13, ?14, NULL)",
                 CONNECTION_COLUMNS
             ),
             params![
@@ -1388,6 +1404,166 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(count as usize)
+    }
+}
+
+/// The `origin` of a token row created for a connection made from a `nostrconnect://` code (#148).
+pub const NOSTRCONNECT_ORIGIN: &str = "nostrconnect";
+/// The `revoked_reason` of a connection whose `connect` response reached none of the app's relays.
+pub const CONNECT_UNDELIVERED_REASON: &str = "connect_undelivered";
+
+/// A connection a member confirmed in the console for an app's `nostrconnect://` code (#148).
+#[derive(Debug, Clone)]
+pub struct NostrConnectGrant<'a> {
+    /// The member it is for (hex), checked by the caller as one they may connect for.
+    pub for_pubkey: &'a str,
+    /// Who made it in the console (hex; empty only from an unauthenticated test router).
+    pub made_by: &'a str,
+    /// The app's NIP-46 key (hex).
+    pub client_pubkey: &'a str,
+    /// What it may do, already bounded by what the app asked for.
+    pub perms: &'a [String],
+    pub options: TokenOptions,
+    /// From the code: unverified, for display only. Never an image (see `nostrconnect.rs`).
+    pub metadata: ClientMetadata,
+    /// The app's relays, normalised.
+    pub relays: &'a [String],
+    /// The hex SHA-256 of a fresh random secret that is never handed out, for the token row that
+    /// backs the connection. The app's own secret is never stored.
+    pub secret_hash: &'a str,
+}
+
+/// Why `create_nostrconnect_connection` made nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NostrConnectRefusal {
+    /// The app's key already has an active connection.
+    AlreadyConnected,
+    MemberRemoved,
+    /// The member's stored role is not recognised, so they cannot sign (#77, #143).
+    MemberCannotSign,
+    /// The member may not sign as the identity (#103).
+    NoIdentityAccess,
+}
+
+impl Database {
+    /// Makes the connection a member confirmed for a `nostrconnect://` code (#148), in one
+    /// transaction: a token row already used, so the connection names a token and who made it as
+    /// any other does, and the connection itself with the app's relays. Recorded as
+    /// `connection_created` with the maker as actor and `via=nostrconnect`. The member, their
+    /// identity access and the app's key are checked again inside the transaction, so nothing that
+    /// changed since the request was checked slips through.
+    pub fn create_nostrconnect_connection(&self, grant: &NostrConnectGrant, now: DateTime<Utc>) -> anyhow::Result<Result<Nip46Connection, NostrConnectRefusal>> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let TokenOptions { connection_lifetime_hours, rate_limit, approval_perms, identity_pubkey } = grant.options.clone();
+
+        let role: Option<String> =
+            tx.query_row("SELECT role FROM team_members WHERE pubkey = ?1", params![grant.for_pubkey], |row| row.get(0)).optional()?;
+        let Some(role) = role else { return Ok(Err(NostrConnectRefusal::MemberRemoved)) };
+        if role.parse::<Role>().is_err() {
+            return Ok(Err(NostrConnectRefusal::MemberCannotSign));
+        }
+        if !may_use_identity(&tx, grant.for_pubkey, identity_pubkey.as_deref())? {
+            return Ok(Err(NostrConnectRefusal::NoIdentityAccess));
+        }
+        let connected: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM nip46_connections WHERE client_pubkey = ?1 AND revoked_at IS NULL)",
+            params![grant.client_pubkey],
+            |row| row.get(0),
+        )?;
+        if connected {
+            return Ok(Err(NostrConnectRefusal::AlreadyConnected));
+        }
+
+        let token_id = Uuid::new_v4().to_string();
+        let label = grant.metadata.name.clone().unwrap_or_else(|| "nostrconnect:// app".to_string());
+        tx.execute(
+            "INSERT INTO nip46_tokens
+                (id, secret_hash, for_pubkey, issued_by, label, perms, created_at, expires_at, used_at, connection_lifetime_hours, rate_per_minute,
+                 rate_burst, approval_perms, identity_pubkey, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                token_id, grant.secret_hash, grant.for_pubkey, grant.made_by, label, join_perms(grant.perms), now.to_rfc3339(),
+                connection_lifetime_hours, rate_limit.map(|l| l.per_minute), rate_limit.map(|l| l.burst), optional_perms(&approval_perms),
+                identity_pubkey, NOSTRCONNECT_ORIGIN
+            ],
+        )?;
+        let connection = Nip46Connection {
+            id: Uuid::new_v4().to_string(),
+            client_pubkey: grant.client_pubkey.to_string(),
+            token_id,
+            for_pubkey: grant.for_pubkey.to_string(),
+            perms: grant.perms.to_vec(),
+            client_name: grant.metadata.name.clone(),
+            client_url: grant.metadata.url.clone(),
+            client_image: None,
+            connected_at: now,
+            last_used_at: None,
+            revoked_at: None,
+            revoked_reason: None,
+            revoked_by: None,
+            // To the microsecond, as `db_time` stores it, so this value is the stored one.
+            expires_at: connection_lifetime_hours.map(|hours| (now + chrono::Duration::hours(hours.into())).trunc_subsecs(6)),
+            rate_limit,
+            approval_perms: approval_perms.iter().filter(|p| grant.perms.contains(p)).cloned().collect(),
+            identity_pubkey,
+            relays: grant.relays.to_vec(),
+        };
+        tx.execute(
+            &format!(
+                "INSERT INTO nip46_connections ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL, NULL, NULL, NULL, ?9, ?10, ?11, ?12, ?13, ?14)",
+                CONNECTION_COLUMNS
+            ),
+            params![
+                connection.id, connection.client_pubkey, connection.token_id, connection.for_pubkey, join_perms(&connection.perms),
+                connection.client_name, connection.client_url, now.to_rfc3339(), connection.expires_at.map(db_time),
+                connection.rate_limit.map(|l| l.per_minute), connection.rate_limit.map(|l| l.burst), optional_perms(&connection.approval_perms),
+                connection.identity_pubkey, optional_relays(&connection.relays)
+            ],
+        )?;
+        audit::record(
+            &tx,
+            &Audit {
+                actor: audit::actor(grant.made_by),
+                member: Some(&connection.for_pubkey),
+                connection_id: Some(&connection.id),
+                token_id: Some(&connection.token_id),
+                client_pubkey: Some(&connection.client_pubkey),
+                identity: connection.identity_pubkey.as_deref(),
+                detail: Some({
+                    let mut detail = format!("perms={}", join_perms(&connection.perms));
+                    if let Some(expires_at) = connection.expires_at {
+                        detail.push_str(&format!(";expires_at={}", db_time(expires_at)));
+                    }
+                    if let Some(limit) = connection.rate_limit.filter(|l| *l != RateLimit::DEFAULT) {
+                        detail.push_str(&format!(";rate_per_minute={};rate_burst={}", limit.per_minute, limit.burst));
+                    }
+                    if !connection.approval_perms.is_empty() {
+                        detail.push_str(&format!(";approval={}", join_perms(&connection.approval_perms)));
+                    }
+                    detail.push_str(&format!(";via={};relays={}", NOSTRCONNECT_ORIGIN, connection.relays.len()));
+                    detail
+                }),
+                ..Audit::new(action::CONNECTION_CREATED)
+            },
+            now,
+        )?;
+        tx.commit()?;
+        Ok(Ok(connection))
+    }
+
+    /// The app relays (#148) of every connection not revoked and not expired at `now`, by app key:
+    /// the relays the bunker listens and answers on beside its own.
+    pub fn nostrconnect_routes(&self, now: DateTime<Utc>) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT c.client_pubkey, c.relays FROM nip46_connections c WHERE c.revoked_at IS NULL AND c.relays IS NOT NULL {} ORDER BY c.connected_at",
+            not_expired(1)
+        ))?;
+        let rows = stmt
+            .query_map(params![db_time(now)], |row| Ok((row.get::<_, String>(0)?, split_relays(row.get::<_, Option<String>>(1)?.as_deref()))))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
     }
 }
 

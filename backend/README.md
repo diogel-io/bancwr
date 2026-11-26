@@ -117,6 +117,7 @@ its group:
 | `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | all | own | |
 | `GET /api/bunker/connections` | all | own | |
 | `DELETE /api/bunker/connections/:id` | any | own | |
+| `POST /api/bunker/connections/nostrconnect/preview`, `POST /api/bunker/connections/nostrconnect` | for any member | for themselves | |
 | `GET /api/bunker/approvals` | all | own | |
 | `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | |
 | `GET /api/bunker/identities` | all, with members | those they may use | |
@@ -425,7 +426,7 @@ refused, with `{ "error", "message" }`, and nothing saved:
 
 An app learned the bunker's relays from its `bunker://` string. Removing a relay it uses cuts it off
 until it reconnects with a new string, which always carries the current list; the console warns
-before such a save.
+before such a save. An app that asks `switch_relays` is told the current list (#148).
 
 ### Connecting an app (#53)
 Turning NIP-46 on connects nothing by itself: an app connects only with a **connection token** an
@@ -505,6 +506,47 @@ in force (#101), `approval_kinds` (#102), and `identity_pubkey`, the identity it
 Supported methods: `connect`, `get_public_key` (hex), `sign_event`, `ping`, `switch_relays` (no
 change), `logout`, and the encryption methods below. Tokens, connections and the token just issued
 list `kinds` and `methods` separately.
+
+### Connecting an app from its nostrconnect:// code (#148)
+Some apps never ask for a `bunker://` string: they show their own `nostrconnect://` code, usually as
+a QR code, and wait for a signer to answer it. A member pastes that code under **Connect an app** on
+the Connections page.
+
+```bash
+POST /api/bunker/connections/nostrconnect/preview
+{ "uri": "nostrconnect://<app key>?relay=wss%3A%2F%2Frelay.example.com&secret=…&perms=sign_event%3A1&name=…" }
+
+POST /api/bunker/connections/nostrconnect
+{ "uri": "nostrconnect://…", "for_pubkey": "npub1…", "identity": "npub1…", "kinds": [1], "methods": [], "connection_lifetime_hours": 720 }
+```
+
+- The preview changes nothing. It returns the app's key, its name and URL (unverified), the relays
+  it chose and whether each is one of the bunker's, what it asked for, and whether its key is
+  already connected. It never returns the secret, and drops the image: loading an address the app
+  chose would tell its owner the operator's IP address.
+- A code needs a `secret` and 1 to 3 `relay`s, each `wss://`, `ws://` on this machine, or one of the
+  bunker's own relays as configured. Anything else is `400 {"error":"invalid_nostrconnect_uri"}`
+  with a message saying what is wrong. rust-nostr 0.39's older form, with `metadata` and no secret,
+  is refused that way: such apps can use a `bunker://` token.
+- Connecting follows the token rules above, with the same fields and errors except the token's
+  `label` and `expires_in_hours`: an administrator for any member who can sign, a signer only for
+  themselves, as identities they may use, and without approval kinds.
+- The app's `perms` only pre-fill the console. The connection gets what the member chose, and when
+  the app asked for anything, only those of them it asked for (`sign_event` with no kind allows any
+  kind). If that leaves nothing, it is `400 {"error":"nothing_grantable"}`.
+- An app key with an active connection is `409 {"error":"already_connected"}`; revoke it first.
+  NIP-46 off is `409 {"error":"nip46_disabled"}`.
+- On success, `201` with the connection. The bunker then sends the NIP-46 `connect` response, from
+  the identity chosen, NIP-44 encrypted, with the app's secret as its result, on the app's relays.
+  If none of them takes it, the connection is revoked at once (`connect_undelivered`) and the answer
+  is `502 {"error":"connect_undelivered"}`.
+- While the connection lasts, the bunker also listens on the app's relays, for that app's requests
+  only, and answers there as well as on its own. It never answers NIP-42 AUTH there. It answers
+  `switch_relays` with its own relays, which nostr-tools apps follow at once. It stops listening
+  within seconds of the connection ending.
+- The connection is listed, revoked and logged as any other, with `app_relays` naming the relays the
+  app chose. It is recorded as `connection_created` with the member who made it as actor and
+  `via=nostrconnect`. Behind it is a token row created already used, which is not listed as a token.
 
 ### Encryption (#97)
 `nip44_encrypt`, `nip44_decrypt`, `nip04_encrypt` and `nip04_decrypt` take

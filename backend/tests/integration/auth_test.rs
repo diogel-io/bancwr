@@ -43,6 +43,8 @@ const ROUTES: &[Route] = &[
     Route { method: "DELETE", path: "/api/bunker/connections/tokens/no-such-token", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/connections", roles: &[A, S], service: false },
     Route { method: "DELETE", path: "/api/bunker/connections/no-such-connection", roles: &[A, S], service: false },
+    Route { method: "POST", path: "/api/bunker/connections/nostrconnect/preview", roles: &[A, S], service: false },
+    Route { method: "POST", path: "/api/bunker/connections/nostrconnect", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/approvals", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/identities", roles: &[A, S], service: false },
     Route { method: "POST", path: "/api/bunker/identities", roles: &[A], service: false },
@@ -75,6 +77,10 @@ fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> common::
         ("PUT", "/api/bunker/logs/retention") => request.json(&serde_json::json!({ "max_age_days": null, "max_rows": null })),
         ("POST", path) if path.ends_with("/approve") => request.json(&serde_json::json!({ "event_id": "00" })),
         ("POST", path) if path.ends_with("/reject") => request.json(&serde_json::json!({})),
+        ("POST", path) if path.starts_with("/api/bunker/connections/nostrconnect") => request.json(&serde_json::json!({
+            "uri": format!("nostrconnect://{}?relay=wss%3A%2F%2Frelay.example.com&secret=s", Keys::generate().public_key().to_hex()),
+            "kinds": [1]
+        })),
         ("POST", "/api/bunker/connections/tokens") => {
             request.json(&serde_json::json!({ "label": "x", "kinds": [1] }))
         }
@@ -169,13 +175,13 @@ async fn an_administrator_reaches_every_route() {
     for route in ROUTES {
         let status = request_for(&app, route, &admin).send().await.unwrap().status();
         // DELETE or PATCH of an unknown id, or deciding an unknown approval, is 404 from the
-        // handler, and a token with NIP-46 off is 409: either way the guard let it through.
+        // handler, and a token or a nostrconnect:// connection with NIP-46 off is 409: either way the guard let it through.
         let expected = match route.method {
             "DELETE" | "PATCH" => StatusCode::NOT_FOUND,
             "POST" if route.path.contains("/approvals/") => StatusCode::NOT_FOUND,
             // The administrator's key is no identity: 404 from the handler.
             "PUT" if route.path.contains("/identities/") => StatusCode::NOT_FOUND,
-            "POST" if route.path.ends_with("/tokens") => StatusCode::CONFLICT,
+            "POST" if route.path.ends_with("/tokens") || route.path.ends_with("/nostrconnect") => StatusCode::CONFLICT,
             "POST" if route.path == "/api/bunker/identities" => StatusCode::CREATED,
             _ => StatusCode::OK,
         };

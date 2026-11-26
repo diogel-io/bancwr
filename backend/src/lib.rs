@@ -25,3 +25,4 @@ pub mod approvals;
 pub mod approvals_api;
 pub mod keyring;
 pub mod identities_api;
+pub mod nostrconnect;

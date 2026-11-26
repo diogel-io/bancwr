@@ -116,6 +116,13 @@ describe('Connections page', () => {
     expect(row.text()).not.toContain('for ')
   })
 
+  it('offers to connect an app from its nostrconnect:// code, and names the relays one chose (#148)', async () => {
+    state.connections = [connection({ app_relays: ['wss://app-relay.example'] })]
+    const component = await mount('signer')
+    expect(component.find('[data-testid="connect-app"]').exists()).toBe(true)
+    expect(component.find('[data-connection="c1"] [data-testid="connection-app-relays"]').text()).toContain('Connected from its own code, on wss://app-relay.example')
+  })
+
   it('lets a signer issue their own token, with no member select or approval (#142)', async () => {
     const component = await mount('signer')
     const form = component.find('[data-testid="issue-token"]')
@@ -180,14 +187,14 @@ describe('Connections page', () => {
   it('shows the empty state, for a signer and for an administrator', async () => {
     const user = await mount('signer')
     expect(user.find('[data-testid="connections-empty"]').text()).toContain('No apps are connected for you')
-    expect(user.find('[data-testid="connections-empty"]').text()).toContain('Issue a connection token below')
+    expect(user.find('[data-testid="connections-empty"]').text()).toContain('issue a connection token below')
     user.unmount()
     mounted = []
     await clearNuxtData()
 
     document.body.innerHTML = ''
     const admin = await mount('administrator')
-    expect(admin.find('[data-testid="connections-empty"]').text()).toContain('Issue a connection token below')
+    expect(admin.find('[data-testid="connections-empty"]').text()).toContain('issue a connection token below')
   })
 
   it('shows an administrator whom each app is for, and unused tokens', async () => {

@@ -119,7 +119,8 @@ const REASONS: Record<string, string> = {
   role_changed: 'Its member\'s role was changed so they could no longer sign',
   restored: 'The bunker was restored from a backup',
   expired: 'Its time limit ran out',
-  identity_retired: 'The identity it signed as was retired'
+  identity_retired: 'The identity it signed as was retired',
+  connect_undelivered: 'None of the app\'s relays took the bunker\'s answer'
 }
 
 export function revokedReason(reason: string | null): string {

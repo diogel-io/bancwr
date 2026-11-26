@@ -84,6 +84,13 @@ function revoke() {
         App key {{ npub }}
       </p>
       <p
+        v-if="connection.app_relays?.length"
+        class="text-xs text-muted break-all"
+        data-testid="connection-app-relays"
+      >
+        Connected from its own code, on {{ connection.app_relays.join(', ') }}
+      </p>
+      <p
         v-if="connection.kinds.length"
         class="text-xs"
       >

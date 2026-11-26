@@ -1,7 +1,7 @@
 // Connected apps (#31) over #53's API: the connections and tokens (scoped to the caller by the
 // bunker: a signer's own, #142), and for administrators the vault's members, to name whom each
 // connection is for.
-import type { IssueTokenRequest, IssueTokenResponse, Nip46Connection, Nip46Token, TeamMember } from '#shared/types/bunker'
+import type { IssueTokenRequest, IssueTokenResponse, Nip46Connection, Nip46Token, NostrConnectPreview, NostrConnectRequest, TeamMember } from '#shared/types/bunker'
 
 export function useConnections() {
   const auth = useAuth()
@@ -40,5 +40,17 @@ export function useConnections() {
     return issued
   }
 
-  return { pubkey, isAdministrator, connections, tokens, team, memberName, refresh, revoke, revokeToken, issue }
+  /** Reads an app's nostrconnect:// code (#148); changes nothing. */
+  async function preview(uri: string): Promise<NostrConnectPreview> {
+    return await $fetch<NostrConnectPreview>('/api/bunker/connections/nostrconnect/preview', { method: 'POST', body: { uri } })
+  }
+
+  /** Connects the app in a nostrconnect:// code (#148): the bunker answers it on its relays. */
+  async function connectApp(request: NostrConnectRequest): Promise<Nip46Connection> {
+    const connection = await $fetch<Nip46Connection>('/api/bunker/connections/nostrconnect', { method: 'POST', body: request })
+    await refresh()
+    return connection
+  }
+
+  return { pubkey, isAdministrator, connections, tokens, team, memberName, refresh, revoke, revokeToken, issue, preview, connectApp }
 }

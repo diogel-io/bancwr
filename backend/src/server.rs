@@ -491,6 +491,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/connections/tokens", post(crate::connections_api::issue_token).get(crate::connections_api::list_tokens))
         .route("/api/bunker/connections/tokens/:id", delete(crate::connections_api::revoke_token))
         .route("/api/bunker/connections", get(crate::connections_api::list_connections))
+        // Connecting an app from its own nostrconnect:// code (#148): the same people, under the
+        // same rules, as issuing a token.
+        .route("/api/bunker/connections/nostrconnect/preview", post(crate::connections_api::preview_nostrconnect))
+        .route("/api/bunker/connections/nostrconnect", post(crate::connections_api::connect_nostrconnect))
         .route("/api/bunker/connections/:id", delete(crate::connections_api::revoke_connection))
         .route("/api/bunker/logs/mine", get(get_my_logs))
         // Requests held for approval (#102): administrators see all, signers their own.
