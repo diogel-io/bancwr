@@ -40,14 +40,17 @@ describe('connection display', () => {
   })
 
   it('names connection lifetimes and when a connection ends (#98)', () => {
-    expect(LIFETIMES.map(l => l.label)).toEqual(['Until revoked', '1 day', '7 days', '30 days', '90 days'])
+    expect(LIFETIMES.map(l => l.label)).toEqual(['Until revoked', '1 hour', '8 hours', '1 day', '7 days', '30 days', '90 days'])
     expect(lifetimeLabel(24)).toBe('1 day')
     expect(lifetimeLabel(720)).toBe('30 days')
     expect(lifetimeLabel(36)).toBe('36 hours')
     expect(lifetimeLabel(1)).toBe('1 hour')
+    expect(lifetimeLabel(8)).toBe('8 hours')
     const now = Date.parse('2026-06-01T12:00:00Z')
     expect(connectionEnd(null, now)).toBe('no time limit')
     expect(connectionEnd('2026-06-03T12:00:00Z', now)).toBe('ends in 2 days')
+    expect(connectionEnd('2026-06-01T20:00:00Z', now)).toBe('ends in 8 hours')
+    expect(connectionEnd('2026-06-01T12:45:00Z', now)).toBe('ends in 45 minutes')
     expect(connectionEnd('2026-06-01T11:00:00Z', now)).toBe('time limit reached 1 hour ago')
     expect(revokedReason('expired')).toBe('Its time limit ran out')
   })
