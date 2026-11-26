@@ -120,7 +120,7 @@ its group:
 | `GET /api/bunker/approvals` | all | own | |
 | `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | |
 | `GET /api/bunker/identities` | all, with members | those they may use | |
-| `PATCH /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | |
+| `POST /api/bunker/identities`; `PATCH`, `DELETE /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -304,9 +304,9 @@ Audit actions, each recorded in the same transaction as the change:
 | `action` | When | `detail` |
 |----------|------|----------|
 | `token_issued` | An administrator issues a connection token | `perms=…;expires_at=…`, then `;connection_lifetime_hours=…` when it has one, and `;rate_per_minute=…;rate_burst=…` when its rate limit is not the default (#101) |
-| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore, or their grant of its identity being removed (#103), or is used up by a `connect` that was refused (no actor; the app's key in `client_pubkey`) | `reason=revoked`, `member_removed`, `role_changed`, `restored` or `access_removed`; for a refused `connect`, `reason=connect_refused;refusal=…`: `other_identity`, `member_removed`, `member_cannot_sign`, `no_identity_access` or `nothing_grantable` |
+| `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore, or their grant of its identity being removed (#103), or is used up by a `connect` that was refused (no actor; the app's key in `client_pubkey`) | `reason=revoked`, `member_removed`, `role_changed`, `restored`, `access_removed` or `identity_retired` (#146); for a refused `connect`, `reason=connect_refused;refusal=…`: `other_identity`, `member_removed`, `member_cannot_sign`, `no_identity_access` or `nothing_grantable` |
 | `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
-| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored`, `expired` or `access_removed` (#103) |
+| `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored`, `expired`, `access_removed` (#103) or `identity_retired` (#146) |
 | `member_added`, `member_removed` | Team changes | `role=…` |
 | `member_role_changed` | An administrator changes a role (#99), or the `BANCWR_ADMIN_PUBKEY` bootstrap promotes | `from=…;to=…` |
 | `relays_changed` | An administrator saves the bunker relays | `relays=…` |
@@ -319,7 +319,8 @@ Audit actions, each recorded in the same transaction as the change:
 | `approval_approved`, `approval_rejected` | An administrator decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;note=…` when given |
 | `approval_expired` | Nobody decided in time (#102) | `request=…;kind=…;event_id=…;timeout_seconds=…` |
 | `approval_cancelled` | The request's connection ended while it waited (#102) | `request=…;kind=…;event_id=…;reason=connection_ended` |
-| `identity_added` | `bunker import-key --add` adds an identity (#103), with no actor | `label=…` |
+| `identity_added` | `bunker import-key --add` adds an identity (#103), with no actor, or an administrator creates one in the console (#146), as actor | `label=…` |
+| `identity_retired` | An administrator retires an identity (#146) | `label=… connections_revoked=… tokens_revoked=…` |
 | `identity_renamed` | An administrator renames one | `label=…` |
 | `identity_access_granted`, `identity_access_removed` | An administrator grants a member an identity, or removes the grant | none |
 | `connection_rate_limited` | A NIP-46 app is refused for going over its connection's rate limit (#101), at most once a minute per connection | `rate_per_minute=…;burst=…` |
@@ -608,7 +609,25 @@ them is not signed: it is held until an administrator approves or rejects it in 
 One bunker can sign as several Nostr keys, its **identities**, so an agency or a brand with several
 accounts needs one deployment, not one per key. The key in `bunker-key.enc` is the **primary**.
 
-- **Adding one** happens on the host, never in the console, so a key never passes through a
+- **Creating one** (#146): `POST /api/bunker/identities` with `{"label":"…"}` (1 to 100
+  characters), administrators only. The bunker reads the root credential from
+  `BANCWR_ROOT_KEY_FILE`, as it does at start, generates a key, encrypts it, decrypts it back once
+  to check it, and stores it. It is unlocked and listened for on the relays at once, without a
+  restart. The response is `201` with the identity as `GET` lists it: never any key material, and
+  the key is never logged or recorded. If the root credential can't be read, nothing changes and
+  the answer is `503 {"error":"root_key_unavailable"}`. A generated key can't be exported, so it
+  exists only in the database and its backups.
+- **Retiring one** (#146): `DELETE /api/bunker/identities/:pubkey`, administrators only. In one
+  transaction it revokes every active connection and unused token that signs as the identity
+  (`identity_retired`), removes its grants, clears its encrypted key and sets `retired_at`. It
+  leaves the running keyring and the relay subscription at once, so a request addressed to it gets
+  no answer, as for any key the bunker does not hold. Its row stays, so the signing log, the audit
+  trail and the export still name it, and its key can never be registered as a member. The answer
+  is `{"success":true,"connections_revoked":…,"tokens_revoked":…}`. The primary is
+  `400 {"error":"primary_identity"}`; an unknown or retired identity is `404`. A retired identity
+  can't be renamed or granted, and a restart never tries to unlock it. Restoring a backup taken
+  before it was retired brings it back.
+- **Importing one** happens on the host, so a key you already have never passes through a
   browser: `bunker import-key --add --label "Brand B"`, with the key in `BUNKER_NSEC_FILE` (or
   `BUNKER_NSEC`) and `BANCWR_ROOT_KEY_FILE` set. It is encrypted under the same root credential, in
   the same `bancwr-key v1` format, and stored in the database, so a backup carries it. It refuses a
@@ -631,7 +650,9 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   `identities`, or the primary when it is omitted. Removing a grant revokes their connections and
   unused tokens for that identity, as `access_removed`.
 - **`GET /api/bunker/identities`** lists `pubkey`, `npub`, `label`, `is_primary`, `available`
-  (unlocked in the running bunker) and, for administrators, `members`. `PATCH` renames one
+  (unlocked in the running bunker) and, for administrators, `members` and, on each identity but the
+  primary, `usage` (`connections` and `tokens`: what retiring it would revoke). Retired identities
+  are left out; an administrator gets them too with `?retired=true`, each with `retired_at`. `PATCH` renames one
   (`{"label":"…"}`, 1 to 100 characters). `PUT` and `DELETE
   /api/bunker/identities/:pubkey/members/:member` grant and remove; a member whose stored role is not
   recognised is `400 {"error":"member_cannot_sign"}`.
@@ -641,8 +662,9 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
 - **Logs and exports.** The signing log and the logs API name the identity that signed
   (`identity_pubkey`); the export appends an `identity_pubkey` column, last, so the earlier columns
   keep their places. Identity audit events name it too.
-- **Not yet:** removing an identity, and a separate root credential per identity. Every identity
-  uses the bunker's relays.
+- **Not yet:** retiring or replacing the primary, exporting a key, loading an identity imported
+  with `import-key --add` without a restart, and a separate root credential per identity. Every
+  identity uses the bunker's relays.
 
 ## Podman
 

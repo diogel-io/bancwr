@@ -28,7 +28,14 @@ pub struct TestApp {
     pub enforced: bool,
     /// The app's state, for starting the NIP-46 relay client on it (#53).
     pub state: AppState,
+    /// The root credential an identity created in the console is encrypted under (#146), in a
+    /// directory removed with the app.
+    pub root_key_file: std::path::PathBuf,
+    _root_dir: std::sync::Arc<tempfile::TempDir>,
 }
+
+/// 64 hex characters, as `openssl rand -hex 32` prints the root credential.
+pub const ROOT_KEY_HEX: &str = "8f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
 /// Enforced: BANCWR_PROXY_SECRET is set, so /api/bunker/* needs a signed identity.
 /// Open: it is not, which is how the API behaves until sign-in (#11) requires it.
@@ -46,6 +53,21 @@ pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> Te
 /// `bunker import-key --add` records it, and unlocked, as the bunker unlocks it at start. The
 /// administrator is registered before they are added, so they hold the primary's grant.
 pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)]) -> TestApp {
+    spawn_full(enforced, nip46_relays, others, true).await
+}
+
+/// As `spawn_with`, with no root credential file where the app looks for one (#146), so creating an
+/// identity cannot read it.
+pub async fn spawn_without_root_key(enforced: bool, nip46_relays: Option<Vec<String>>) -> TestApp {
+    spawn_full(enforced, nip46_relays, &[], false).await
+}
+
+async fn spawn_full(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)], root_key: bool) -> TestApp {
+    let root_dir = tempfile::tempdir().expect("a directory for the root credential");
+    let root_key_file = root_dir.path().join("root.key");
+    if root_key {
+        std::fs::write(&root_key_file, format!("{}\n", ROOT_KEY_HEX)).expect("write the root credential");
+    }
     let bunker = Keys::generate();
     let admin = Keys::generate();
     let db = Database::new(":memory:").expect("in-memory database");
@@ -70,7 +92,7 @@ pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<Stri
         console_url: None,
     };
     let others: Vec<Signer> = others.iter().map(|(_, keys)| Signer::new(keys.secret_key().clone())).collect();
-    let state = AppState::with_identities(Signer::new(bunker.secret_key().clone()), others, db.clone(), config);
+    let state = AppState::with_identities(Signer::new(bunker.secret_key().clone()), others, db.clone(), config).with_root_key_file(&root_key_file);
     let app = create_router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind a random port");
@@ -79,7 +101,7 @@ pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<Stri
         axum::serve(listener, app).await.expect("serve");
     });
 
-    TestApp { address, client: reqwest::Client::new(), db, bunker, admin, enforced, state }
+    TestApp { address, client: reqwest::Client::new(), db, bunker, admin, enforced, state, root_key_file, _root_dir: std::sync::Arc::new(root_dir) }
 }
 
 /// A request to the app, signed like the proxy when it carries an identity. The signature is made

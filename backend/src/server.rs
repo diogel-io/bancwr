@@ -472,8 +472,10 @@ pub fn create_router(state: AppState) -> Router {
         // Deciding requests held for approval (#102): administrators only.
         .route("/api/bunker/approvals/:id/approve", post(crate::approvals_api::approve))
         .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject))
-        // The bunker's identities (#103): renaming one, and who may sign as it.
-        .route("/api/bunker/identities/:pubkey", patch(crate::identities_api::rename_identity))
+        // The bunker's identities (#103): creating one with a key the bunker generates and retiring
+        // one (#146), renaming one, and who may sign as it.
+        .route("/api/bunker/identities", post(crate::identities_api::create_identity))
+        .route("/api/bunker/identities/:pubkey", patch(crate::identities_api::rename_identity).delete(crate::identities_api::retire_identity))
         .route(
             "/api/bunker/identities/:pubkey/members/:member",
             put(crate::identities_api::grant_identity).delete(crate::identities_api::remove_identity_grant),

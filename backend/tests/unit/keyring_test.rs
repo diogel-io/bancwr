@@ -37,3 +37,30 @@ async fn each_identity_signs_as_itself_and_an_unknown_one_is_none() {
     assert_eq!(event.pubkey, brand.public_key());
     assert!(event.verify().is_ok());
 }
+
+#[tokio::test]
+async fn an_identity_can_be_added_and_removed_while_the_bunker_runs() {
+    let primary = Keys::generate();
+    let sales = Keys::generate();
+    let ring = keyring(&primary, &[]);
+    let hex = sales.public_key().to_hex();
+
+    assert!(ring.add(Signer::new(sales.secret_key().clone())).await);
+    assert_eq!(ring.others(), 1);
+    assert!(ring.is_identity(&hex).await);
+    assert_eq!(ring.identity_of(&sales.public_key()).await, Some(Some(hex.clone())));
+    assert_eq!(ring.public_keys().await, vec![primary.public_key(), sales.public_key()]);
+    // Once only, and never the primary.
+    assert!(!ring.add(Signer::new(sales.secret_key().clone())).await);
+    assert!(!ring.add(Signer::new(primary.secret_key().clone())).await);
+    assert_eq!(ring.others(), 1);
+
+    assert!(ring.remove(&hex));
+    assert!(!ring.remove(&hex));
+    assert!(!ring.is_identity(&hex).await);
+    assert!(ring.signer(Some(&hex)).await.is_none());
+    assert_eq!(ring.identity_of(&sales.public_key()).await, None);
+    // The primary is never in the map, so removing it changes nothing.
+    assert!(!ring.remove(&primary.public_key().to_hex()));
+    assert_eq!(ring.public_keys().await, vec![primary.public_key()]);
+}

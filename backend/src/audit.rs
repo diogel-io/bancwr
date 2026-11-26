@@ -36,9 +36,11 @@ pub mod action {
     /// A NIP-46 app asked the bunker to decrypt (#97). Named as the NIP-46 methods are.
     pub const NIP44_DECRYPT: &str = "nip44_decrypt";
     pub const NIP04_DECRYPT: &str = "nip04_decrypt";
-    /// Identities (#103): one added with `bunker import-key --add`, renamed, and a member granted or
-    /// refused one.
+    /// Identities (#103): one added with `bunker import-key --add` or created in the console (#146,
+    /// with the administrator as actor), renamed, a member granted or refused one, and one retired
+    /// (#146).
     pub const IDENTITY_ADDED: &str = "identity_added";
+    pub const IDENTITY_RETIRED: &str = "identity_retired";
     pub const IDENTITY_RENAMED: &str = "identity_renamed";
     pub const IDENTITY_ACCESS_GRANTED: &str = "identity_access_granted";
     pub const IDENTITY_ACCESS_REMOVED: &str = "identity_access_removed";

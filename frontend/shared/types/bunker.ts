@@ -242,6 +242,10 @@ export interface BunkerIdentity {
   available: boolean
   /** Members granted it (hex), for administrators. Administrators may use every identity. */
   members?: string[]
+  /** What retiring it would revoke (#146), for administrators, on identities that can be retired. */
+  usage?: { connections: number, tokens: number }
+  /** When it was retired (#146): listed only with `?retired=true`, for administrators. */
+  retired_at?: string
 }
 
 /**

@@ -1,6 +1,6 @@
 // Identities and grants in the database (#103): the primary recorded at start, adding another,
 // who may use which, and a single-key bunker unchanged.
-use bunker::db::{AddIdentityRefusal, Database};
+use bunker::db::{AddIdentityRefusal, Database, RetireOutcome};
 use bunker::registry::Role;
 use chrono::Utc;
 use nostr::prelude::*;
@@ -99,4 +99,31 @@ fn removing_a_member_removes_their_grants() {
     db.grant_identity(Some(&brand), &signer, None, Utc::now()).unwrap();
     db.remove_team_member(id).unwrap();
     assert!(db.identity_members(Some(&brand)).unwrap().is_empty());
+}
+
+#[test]
+fn retiring_an_identity_clears_its_key_and_keeps_its_row() {
+    let db = db();
+    let (primary, sales, admin) = (hex(), hex(), hex());
+    db.ensure_primary_identity(&primary, Utc::now()).unwrap();
+    db.add_identity_as(&sales, "Sales", "bancwr-key v1 (ciphertext)", Some(&admin), Utc::now()).unwrap().unwrap();
+    let member = hex();
+    db.add_team_member("Member", &member, Role::Signer).unwrap();
+    assert!(db.grant_identity(Some(&sales), &member, Some(&admin), Utc::now()).unwrap());
+    assert_eq!(db.stored_identities().unwrap().len(), 1);
+
+    assert_eq!(db.retire_identity(&primary, Some(&admin), Utc::now()).unwrap(), RetireOutcome::Primary);
+    assert_eq!(db.retire_identity(&hex(), Some(&admin), Utc::now()).unwrap(), RetireOutcome::NotFound);
+    assert_eq!(db.retire_identity(&sales, Some(&admin), Utc::now()).unwrap(), RetireOutcome::Retired { connections: 0, tokens: 0 });
+    assert_eq!(db.retire_identity(&sales, Some(&admin), Utc::now()).unwrap(), RetireOutcome::AlreadyRetired);
+
+    // Never unlocked again, its grants gone, but still listed and found, so the logs name it.
+    assert!(db.stored_identities().unwrap().is_empty());
+    assert!(db.identity_members(Some(&sales)).unwrap().is_empty());
+    let retired = db.find_identity(&sales).unwrap().unwrap();
+    assert_eq!(retired.label, "Sales");
+    assert!(retired.retired_at.is_some());
+    assert!(db.list_identities().unwrap().iter().any(|i| i.pubkey == sales && i.retired_at.is_some()));
+    // Its key can still never be added again, as an identity.
+    assert_eq!(db.add_identity(&sales, "Again", "bancwr-key v1 (ciphertext)", Utc::now()).unwrap(), Err(AddIdentityRefusal::AlreadyAnIdentity));
 }

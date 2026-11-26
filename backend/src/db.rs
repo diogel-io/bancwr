@@ -1463,6 +1463,9 @@ pub struct Identity {
     /// The primary's key is `bunker-key.enc`; every other identity's is in the database.
     pub is_primary: bool,
     pub added_at: DateTime<Utc>,
+    /// When an administrator retired it (#146): its key is destroyed and it never signs again. Its
+    /// row stays so the logs still name it and its key can never sign in.
+    pub retired_at: Option<DateTime<Utc>>,
 }
 
 impl Identity {
@@ -1499,7 +1502,24 @@ fn identity_from_row(row: &rusqlite::Row) -> rusqlite::Result<Identity> {
         label: row.get(1)?,
         is_primary: row.get::<_, i64>(2)? != 0,
         added_at: parse_time(&row.get::<_, String>(3)?)?,
+        retired_at: parse_optional_time(row.get(4)?)?,
     })
+}
+
+/// The columns `identity_from_row` reads.
+const IDENTITY_COLUMNS: &str = "pubkey, label, is_primary, added_at, retired_at";
+
+/// What `retire_identity` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetireOutcome {
+    /// Retired, revoking this many connections and unused tokens.
+    Retired { connections: usize, tokens: usize },
+    /// No identity has that key.
+    NotFound,
+    /// It is the primary, which is never retired (decided on #146).
+    Primary,
+    /// It was retired already.
+    AlreadyRetired,
 }
 
 impl Database {
@@ -1525,18 +1545,20 @@ impl Database {
         Ok(())
     }
 
-    /// Every identity: the primary first, then the others in the order they were added.
+    /// Every identity, retired ones included (#146): the primary first, then the others in the order
+    /// they were added.
     pub fn list_identities(&self) -> anyhow::Result<Vec<Identity>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let mut stmt = conn.prepare("SELECT pubkey, label, is_primary, added_at FROM identities ORDER BY is_primary DESC, added_at, pubkey")?;
+        let mut stmt = conn.prepare(&format!("SELECT {} FROM identities ORDER BY is_primary DESC, added_at, pubkey", IDENTITY_COLUMNS))?;
         let rows = stmt.query_map([], identity_from_row)?.collect::<Result<_, _>>()?;
         Ok(rows)
     }
 
-    /// The identities other than the primary, with their encrypted keys, for unlocking.
+    /// The identities other than the primary, with their encrypted keys, for unlocking. Never a
+    /// retired one (#146), whose key is destroyed.
     pub fn stored_identities(&self) -> anyhow::Result<Vec<StoredIdentity>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let mut stmt = conn.prepare("SELECT pubkey, label, key_file FROM identities WHERE is_primary = 0 AND key_file IS NOT NULL ORDER BY added_at, pubkey")?;
+        let mut stmt = conn.prepare("SELECT pubkey, label, key_file FROM identities WHERE is_primary = 0 AND key_file IS NOT NULL AND retired_at IS NULL ORDER BY added_at, pubkey")?;
         let rows = stmt
             .query_map([], |row| Ok(StoredIdentity { pubkey: row.get(0)?, label: row.get(1)?, key_file: row.get(2)? }))?
             .collect::<Result<_, _>>()?;
@@ -1548,6 +1570,12 @@ impl Database {
     /// sign, in the same transaction, so nobody loses access when grants start to matter. Recorded
     /// as `identity_added`, with no actor: it is done at the bunker's own command line.
     pub fn add_identity(&self, pubkey: &str, label: &str, key_file: &str, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
+        self.add_identity_as(pubkey, label, key_file, None, now)
+    }
+
+    /// `add_identity`, recording `actor` on `identity_added`: the administrator who created it in
+    /// the console (#146).
+    pub fn add_identity_as(&self, pubkey: &str, label: &str, key_file: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
@@ -1573,16 +1601,16 @@ impl Database {
             "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at) VALUES (?1, ?2, ?3, 0, ?4)",
             params![pubkey, label, key_file, db_time(now)],
         )?;
-        audit::record(&tx, &Audit { identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_ADDED) }, now)?;
+        audit::record(&tx, &Audit { actor, identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_ADDED) }, now)?;
         tx.commit()?;
         Ok(Ok(()))
     }
 
-    /// The identity with this pubkey, primary included.
+    /// The identity with this pubkey, primary and retired ones included.
     pub fn find_identity(&self, pubkey: &str) -> anyhow::Result<Option<Identity>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         Ok(conn
-            .query_row("SELECT pubkey, label, is_primary, added_at FROM identities WHERE pubkey = ?1", params![pubkey], identity_from_row)
+            .query_row(&format!("SELECT {} FROM identities WHERE pubkey = ?1", IDENTITY_COLUMNS), params![pubkey], identity_from_row)
             .optional()?)
     }
 
@@ -1652,6 +1680,99 @@ impl Database {
         tx.commit()?;
         Ok(Some(revoked))
     }
+
+    /// Retires an identity other than the primary (#146), in one transaction: every active
+    /// connection and unused token for it is revoked (`identity_retired`), each recorded; its grants
+    /// are removed; its encrypted key is cleared, so the key is gone; and it is marked retired,
+    /// recorded as `identity_retired` by `actor`. Its signing log and audit events are kept. The
+    /// caller removes it from the running keyring.
+    pub fn retire_identity(&self, pubkey: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<RetireOutcome> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let found = tx
+            .query_row(&format!("SELECT {} FROM identities WHERE pubkey = ?1", IDENTITY_COLUMNS), params![pubkey], identity_from_row)
+            .optional()?;
+        let identity = match found {
+            None => return Ok(RetireOutcome::NotFound),
+            Some(identity) if identity.is_primary => return Ok(RetireOutcome::Primary),
+            Some(identity) if identity.retired_at.is_some() => return Ok(RetireOutcome::AlreadyRetired),
+            Some(identity) => identity,
+        };
+        let (connections, tokens) = revoke_all_for_identity(&tx, pubkey, IDENTITY_RETIRED_REASON, now)?;
+        tx.execute("DELETE FROM identity_access WHERE identity_pubkey = ?1", params![pubkey])?;
+        tx.execute("UPDATE identities SET key_file = NULL, retired_at = ?2 WHERE pubkey = ?1", params![pubkey, db_time(now)])?;
+        audit::record(
+            &tx,
+            &Audit {
+                actor,
+                identity: Some(pubkey),
+                detail: Some(format!("label={} connections_revoked={} tokens_revoked={}", identity.label, connections, tokens)),
+                ..Audit::new(action::IDENTITY_RETIRED)
+            },
+            now,
+        )?;
+        tx.commit()?;
+        Ok(RetireOutcome::Retired { connections, tokens })
+    }
+
+    /// How many active connections and unused tokens sign as `identity` (hex, never the primary):
+    /// what retiring it would revoke, for the console's confirmation (#146).
+    pub fn identity_usage(&self, identity: &str) -> anyhow::Result<(usize, usize)> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let connections: i64 = conn.query_row("SELECT count(*) FROM nip46_connections WHERE identity_pubkey = ?1 AND revoked_at IS NULL", params![identity], |row| row.get(0))?;
+        let tokens: i64 =
+            conn.query_row("SELECT count(*) FROM nip46_tokens WHERE identity_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL", params![identity], |row| row.get(0))?;
+        Ok((connections as usize, tokens as usize))
+    }
+}
+
+/// Why connections and tokens are revoked when their identity is retired (#146).
+pub const IDENTITY_RETIRED_REASON: &str = "identity_retired";
+
+/// Revokes every active connection and unused token that signs as `identity` (hex, never the
+/// primary), whoever they are for, with `reason`, recording each, inside the caller's transaction.
+fn revoke_all_for_identity(conn: &Connection, identity: &str, reason: &str, now: DateTime<Utc>) -> rusqlite::Result<(usize, usize)> {
+    let connections: Vec<(String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, client_pubkey, for_pubkey FROM nip46_connections WHERE identity_pubkey = ?1 AND revoked_at IS NULL")?;
+        let rows = stmt.query_map(params![identity], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let tokens: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, for_pubkey FROM nip46_tokens WHERE identity_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL")?;
+        let rows = stmt.query_map(params![identity], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    conn.execute(
+        "UPDATE nip46_tokens SET revoked_at = ?2 WHERE identity_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL",
+        params![identity, now.to_rfc3339()],
+    )?;
+    conn.execute(
+        "UPDATE nip46_connections SET revoked_at = ?2, revoked_reason = ?3 WHERE identity_pubkey = ?1 AND revoked_at IS NULL",
+        params![identity, now.to_rfc3339(), reason],
+    )?;
+    let detail = format!("reason={}", reason);
+    for (id, client, member) in &connections {
+        audit::record(
+            conn,
+            &Audit {
+                member: Some(member),
+                connection_id: Some(id),
+                client_pubkey: Some(client),
+                identity: Some(identity),
+                detail: Some(detail.clone()),
+                ..Audit::new(action::CONNECTION_REVOKED)
+            },
+            now,
+        )?;
+    }
+    for (id, member) in &tokens {
+        audit::record(
+            conn,
+            &Audit { member: Some(member), token_id: Some(id), identity: Some(identity), detail: Some(detail.clone()), ..Audit::new(action::TOKEN_REVOKED) },
+            now,
+        )?;
+    }
+    Ok((connections.len(), tokens.len()))
 }
 
 /// Revokes `member`'s active connections and unused tokens for `identity` (None: the primary),

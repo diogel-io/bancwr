@@ -45,7 +45,9 @@ const ROUTES: &[Route] = &[
     Route { method: "DELETE", path: "/api/bunker/connections/no-such-connection", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/approvals", roles: &[A, S], service: false },
     Route { method: "GET", path: "/api/bunker/identities", roles: &[A, S], service: false },
+    Route { method: "POST", path: "/api/bunker/identities", roles: &[A], service: false },
     Route { method: "PATCH", path: "/api/bunker/identities/{admin}", roles: &[A], service: false },
+    Route { method: "DELETE", path: "/api/bunker/identities/{admin}", roles: &[A], service: false },
     Route { method: "PUT", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
     Route { method: "DELETE", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/approve", roles: &[A], service: false },
@@ -66,6 +68,7 @@ fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> common::
     let request = app.signed(route.method.parse().unwrap(), &path_of(app, route), identity);
     match (route.method, route.path) {
         ("POST", "/api/bunker/team") => request.json(&member_body()),
+        ("POST", "/api/bunker/identities") => request.json(&serde_json::json!({ "label": "x" })),
         ("PATCH", path) if path.starts_with("/api/bunker/identities/") => request.json(&serde_json::json!({ "label": "x" })),
         ("PATCH", _) => request.json(&serde_json::json!({ "role": "signer" })),
         ("PUT", "/api/bunker/relays") => request.json(&serde_json::json!({ "relays": [] })),
@@ -173,6 +176,7 @@ async fn an_administrator_reaches_every_route() {
             // The administrator's key is no identity: 404 from the handler.
             "PUT" if route.path.contains("/identities/") => StatusCode::NOT_FOUND,
             "POST" if route.path.ends_with("/tokens") => StatusCode::CONFLICT,
+            "POST" if route.path == "/api/bunker/identities" => StatusCode::CREATED,
             _ => StatusCode::OK,
         };
         assert_eq!(status, expected, "{} {}", route.method, route.path);
