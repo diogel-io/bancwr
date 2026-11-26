@@ -34,6 +34,9 @@ pub struct AppState {
     /// Where the root credential is read from when an identity is created (#146). None:
     /// `BANCWR_ROOT_KEY_FILE`.
     root_key_file: Option<Arc<PathBuf>>,
+    /// SPIKE (#151): when set, a member identity needs a bunker session this bunker started after
+    /// checking the member's own sign-in (`member_proof`). None: the console's HMAC alone, as today.
+    pub member_proof: Option<Arc<crate::member_proof::MemberProof>>,
 }
 
 impl AppState {
@@ -64,7 +67,14 @@ impl AppState {
             relay_handle: Arc::new(RwLock::new(None)),
             relays_update: Arc::new(tokio::sync::Mutex::new(())),
             root_key_file: None,
+            member_proof: None,
         }
+    }
+
+    /// SPIKE (#151): require the member's own sign-in, checked against `console_url`.
+    pub fn with_member_proof(mut self, console_url: &str) -> Self {
+        self.member_proof = Some(Arc::new(crate::member_proof::MemberProof::new(console_url)));
+        self
     }
 
     pub fn increment_http_request_count(&self) {

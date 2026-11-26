@@ -7,6 +7,9 @@ export default defineNuxtConfig({
         // bunker's address in the client payload for no reason, and the NUXT_PUBLIC_ prefix it
         // required is what made compose.yaml's variable name look plausible. See #20.
         apiBase: process.env.NUXT_API_BASE || 'http://localhost:3000',
+        // SPIKE (#151): NUXT_BUNKERS, the bunkers this console manages (server/utils/bunkers.ts).
+        // Empty: one bunker at apiBase with proxySecret.
+        bunkers: '',
         // NUXT_PROXY_SECRET: shared with the bunker (BANCWR_PROXY_SECRET) to sign who is calling
         // (#25). Private, like apiBase. Sign-in (#11) makes it required.
         proxySecret: '',

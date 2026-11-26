@@ -53,16 +53,21 @@ pub async fn spawn_with(enforced: bool, nip46_relays: Option<Vec<String>>) -> Te
 /// `bunker import-key --add` records it, and unlocked, as the bunker unlocks it at start. The
 /// administrator is registered before they are added, so they hold the primary's grant.
 pub async fn spawn_with_identities(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)]) -> TestApp {
-    spawn_full(enforced, nip46_relays, others, true).await
+    spawn_full(enforced, nip46_relays, others, true, None).await
+}
+
+/// SPIKE (#151): enforced, and requiring each member's own sign-in, checked against `console_url`.
+pub async fn spawn_with_member_proof(console_url: &str, others: &[(&str, Keys)]) -> TestApp {
+    spawn_full(true, None, others, true, Some(console_url)).await
 }
 
 /// As `spawn_with`, with no root credential file where the app looks for one (#146), so creating an
 /// identity cannot read it.
 pub async fn spawn_without_root_key(enforced: bool, nip46_relays: Option<Vec<String>>) -> TestApp {
-    spawn_full(enforced, nip46_relays, &[], false).await
+    spawn_full(enforced, nip46_relays, &[], false, None).await
 }
 
-async fn spawn_full(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)], root_key: bool) -> TestApp {
+async fn spawn_full(enforced: bool, nip46_relays: Option<Vec<String>>, others: &[(&str, Keys)], root_key: bool, member_proof: Option<&str>) -> TestApp {
     let root_dir = tempfile::tempdir().expect("a directory for the root credential");
     let root_key_file = root_dir.path().join("root.key");
     if root_key {
@@ -92,7 +97,10 @@ async fn spawn_full(enforced: bool, nip46_relays: Option<Vec<String>>, others: &
         console_url: None,
     };
     let others: Vec<Signer> = others.iter().map(|(_, keys)| Signer::new(keys.secret_key().clone())).collect();
-    let state = AppState::with_identities(Signer::new(bunker.secret_key().clone()), others, db.clone(), config).with_root_key_file(&root_key_file);
+    let mut state = AppState::with_identities(Signer::new(bunker.secret_key().clone()), others, db.clone(), config).with_root_key_file(&root_key_file);
+    if let Some(console_url) = member_proof {
+        state = state.with_member_proof(console_url);
+    }
     let app = create_router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind a random port");

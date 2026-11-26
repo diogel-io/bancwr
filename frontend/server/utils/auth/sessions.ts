@@ -17,6 +17,12 @@ import { SESSION_MAX_AGE_SECONDS } from './constants'
 interface LiveSession {
   pubkey: string
   expiresAt: number
+  /**
+   * SPIKE (#151): the session each bunker that checks the member's own sign-in started for them,
+   * by bunker id. A bunker without member proof has none. These are bearer tokens for that bunker,
+   * so whoever reads this store holds them until they expire (12 h).
+   */
+  bunkers?: Record<string, string>
 }
 
 const STORE_KEY = /^[0-9a-f]{64}$/
@@ -28,9 +34,9 @@ export function sessionStoreKey(id: string): string {
 
 function liveSession(value: unknown): LiveSession | undefined {
   if (typeof value !== 'object' || value === null) return undefined
-  const { pubkey, expiresAt } = value as Partial<LiveSession>
+  const { pubkey, expiresAt, bunkers } = value as Partial<LiveSession>
   if (typeof pubkey !== 'string' || typeof expiresAt !== 'number') return undefined
-  return { pubkey, expiresAt }
+  return { pubkey, expiresAt, bunkers: typeof bunkers === 'object' && bunkers !== null ? bunkers : {} }
 }
 
 export class SessionRegistry {
@@ -46,16 +52,21 @@ export class SessionRegistry {
   }
 
   /** Starts a session for this pubkey and returns its id. */
-  async create(pubkey: string): Promise<string> {
+  async create(pubkey: string, bunkers: Record<string, string> = {}): Promise<string> {
     await this.sweep()
     const id = randomBytes(32).toString('hex')
-    const session: LiveSession = { pubkey, expiresAt: this.now() + this.maxAgeSeconds }
+    const session: LiveSession = { pubkey, expiresAt: this.now() + this.maxAgeSeconds, bunkers }
     await this.storage.setItem(sessionStoreKey(id), session)
     return id
   }
 
   /** The session's pubkey, if the id is live. An expired or unreadable entry is removed. */
   async pubkey(id: string | undefined): Promise<string | undefined> {
+    return (await this.live(id))?.pubkey
+  }
+
+  /** SPIKE (#151): the session's pubkey and its bunker sessions, if the id is live. */
+  async live(id: string | undefined): Promise<LiveSession | undefined> {
     if (!id) return undefined
     const key = sessionStoreKey(id)
     const stored = await this.storage.getItem(key)
@@ -65,7 +76,7 @@ export class SessionRegistry {
       await this.storage.removeItem(key)
       return undefined
     }
-    return session.pubkey
+    return session
   }
 
   /** Ends the session. The entry is gone once this resolves, so a copy of its cookie fails. */

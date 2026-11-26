@@ -59,9 +59,11 @@ export async function signInWithNostr(
 
 async function attempt(signer: NostrSigner, origin: string, fetchImpl: typeof fetch): Promise<SignInResult> {
   const issued = await fetchImpl(`${origin}/api/auth/challenge`, { method: 'POST', credentials: 'same-origin' })
-  const { challenge } = await issued.json() as { challenge: string }
+  const { challenge, proofs } = await issued.json() as { challenge: string, proofs?: string[] }
 
-  const body = JSON.stringify({ challenge })
+  // SPIKE (#151): each member-proof bunker's challenge rides in the same body, so one signature
+  // signs the member in to every bunker.
+  const body = JSON.stringify(proofs?.length ? { challenge, proofs } : { challenge })
   const signed = await signer.signEvent({
     kind: 27235,
     created_at: Math.floor(Date.now() / 1000),

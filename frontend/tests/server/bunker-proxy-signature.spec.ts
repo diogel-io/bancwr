@@ -7,7 +7,8 @@ import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { PROXY_HEADERS, proxySignature } from '../../server/utils/auth/proxy-signature'
 
 vi.mock('../../server/utils/auth/session', () => ({
-  sessionPubkey: vi.fn(async () => 'ab'.repeat(32))
+  sessionPubkey: vi.fn(async () => 'ab'.repeat(32)),
+  liveSession: vi.fn(async () => ({ pubkey: 'ab'.repeat(32), expiresAt: 0, bunkers: {} }))
 }))
 
 const SECRET = 'bancwr-test-proxy-secret'

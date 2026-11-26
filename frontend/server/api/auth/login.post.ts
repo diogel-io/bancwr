@@ -10,18 +10,21 @@ import { npubEncode } from 'nostr-tools/nip19'
 import { challengeStore } from '../../utils/auth/challenges'
 import { LoginError, verifyLoginRequest } from '../../utils/auth/login-event'
 import { bunkerLacksAdministrator, bunkerPubkeys, memberRole } from '../../utils/auth/members'
+import { bunkerSessions } from '../../utils/auth/member-proof'
 import { startSession } from '../../utils/auth/session'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event)
 
   let pubkey: string
+  const authorization = getHeader(event, 'authorization')
+  const rawBody = (await readRawBody(event, 'utf8')) ?? ''
   try {
     const bunker = await bunkerPubkeys(event)
     pubkey = verifyLoginRequest({
-      authorization: getHeader(event, 'authorization'),
+      authorization,
       method: event.method,
-      body: (await readRawBody(event, 'utf8')) ?? '',
+      body: rawBody,
       siteOrigin: config.siteOrigin,
       bunkerPubkey: bunker.primary,
       identityPubkeys: bunker.identities,
@@ -38,7 +41,8 @@ export default defineEventHandler(async (event) => {
   }
 
   const npub = npubEncode(pubkey)
-  await startSession(event, pubkey)
+  // SPIKE (#151): the same event and body to each member-proof bunker, which checks them itself.
+  await startSession(event, pubkey, await bunkerSessions(event, authorization!, rawBody))
   const role = await memberRole(event, pubkey)
   if (!role) {
     setResponseStatus(event, 403)

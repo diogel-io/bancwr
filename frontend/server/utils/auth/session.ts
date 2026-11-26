@@ -29,12 +29,18 @@ export async function sessionPubkey(event: H3Event): Promise<string | undefined>
   return await sessionRegistry.pubkey(session.data.sid)
 }
 
+/** SPIKE (#151): the signed-in pubkey and the session each member-proof bunker started for it. */
+export async function liveSession(event: H3Event) {
+  const session = await cookieSession(event)
+  return await sessionRegistry.live(session.data.sid)
+}
+
 /** Starts a new session for this pubkey, ending any earlier one in this browser. */
-export async function startSession(event: H3Event, pubkey: string) {
+export async function startSession(event: H3Event, pubkey: string, bunkers: Record<string, string> = {}) {
   const session = await cookieSession(event)
   await sessionRegistry.revoke(session.data.sid)
   await session.clear()
-  await session.update({ sid: await sessionRegistry.create(pubkey) })
+  await session.update({ sid: await sessionRegistry.create(pubkey, bunkers) })
 }
 
 /** Ends the session: the id is revoked, so a copy of the cookie stops working too. */

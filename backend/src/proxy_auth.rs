@@ -227,6 +227,8 @@ pub enum Access {
     /// Administrators and the service identity: the key lookup, which sign-in needs before any
     /// session exists, and an administrator's member profile page (#77, #143).
     AdministratorOrService,
+    /// SPIKE (#151): the service identity only, for starting a member's bunker session.
+    Service,
     /// Administrators and signers, not the service identity: routes that scope what they return
     /// to the caller (#53's connection list, #142's connection tokens, #77's own recent signatures).
     Signer,
@@ -237,13 +239,14 @@ impl Access {
         match self {
             Access::Health => true,
             Access::Administrator | Access::AdministratorOrService => role == Role::Administrator,
+            Access::Service => false,
             // Both roles sign (#143).
             Access::Signer => true,
         }
     }
 
     fn allows_service(self) -> bool {
-        matches!(self, Access::Health | Access::AdministratorOrService)
+        matches!(self, Access::Health | Access::AdministratorOrService | Access::Service)
     }
 }
 
@@ -261,6 +264,8 @@ pub struct Guard {
     pub access: Access,
     /// Shared by every group's guard, so a nonce used on one route is refused on all of them.
     pub nonces: Arc<Nonces>,
+    /// SPIKE (#151): when set, a member identity also needs a live bunker session for that pubkey.
+    pub member_proof: Option<Arc<crate::member_proof::MemberProof>>,
 }
 
 fn refuse(status: StatusCode, body: serde_json::Value) -> Response {
@@ -295,6 +300,17 @@ pub async fn guard(State(guard): State<Guard>, request: Request, next: Next) -> 
         Ok(verified) => verified.identity,
         Err(e) => return refuse(StatusCode::UNAUTHORIZED, json!({ "error": "not_authenticated", "reason": e.reason() })),
     };
+
+    // SPIKE (#151): the console's HMAC says the console sent this; the session token says the member
+    // signed in to this bunker. Without it, a console holding the secret could claim anyone.
+    if identity != SERVICE_IDENTITY {
+        if let Some(proof) = &guard.member_proof {
+            let token = header(crate::member_proof::SESSION_HEADER).unwrap_or_default();
+            if proof.session_pubkey(token, now).as_deref() != Some(identity.as_str()) {
+                return refuse(StatusCode::UNAUTHORIZED, json!({ "error": "not_authenticated", "reason": "member_proof_required" }));
+            }
+        }
+    }
 
     let caller = if identity == SERVICE_IDENTITY {
         if !guard.access.allows_service() {

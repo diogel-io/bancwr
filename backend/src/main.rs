@@ -343,7 +343,17 @@ async fn serve() -> anyhow::Result<()> {
         info!("Identity decrypted. Public key: {}", other.public_key_bech32());
     }
 
-    let state = AppState::with_identities(signer.clone(), others, db, config.clone());
+    let mut state = AppState::with_identities(signer.clone(), others, db, config.clone());
+    // SPIKE (#151): BANCWR_MEMBER_PROOF=required makes this bunker check each member's own sign-in
+    // (member_proof), so the console's secret alone cannot claim a member. It needs
+    // BANCWR_CONSOLE_URL, which the sign-in event's `u` tag names.
+    if std::env::var("BANCWR_MEMBER_PROOF").as_deref() == Ok("required") {
+        let Some(console_url) = config.console_url.clone() else {
+            anyhow::bail!("BANCWR_MEMBER_PROOF=required needs BANCWR_CONSOLE_URL, the console's origin");
+        };
+        state = state.with_member_proof(&console_url);
+        info!("Member proof required: members reach this bunker only after signing in to it");
+    }
 
     // The log retention policy (#96) and connection lifetimes (#98): applied at start, then hourly.
     // Unset keeps everything. An expired connection is refused on its next request regardless;

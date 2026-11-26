@@ -172,3 +172,7 @@ path = "tests/unit/keyring_test.rs"
 [[test]]
 name = "identities_db_test"
 path = "tests/unit/identities_db_test.rs"
+
+[[test]]
+name = "member_proof_test"
+path = "tests/integration/member_proof_test.rs"

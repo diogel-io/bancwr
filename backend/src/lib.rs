@@ -27,3 +27,5 @@ pub mod keyring;
 pub mod identities_api;
 pub mod nostrconnect;
 pub mod console_signing;
+pub mod member_proof;
+pub mod member_proof_api;

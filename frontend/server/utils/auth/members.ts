@@ -4,6 +4,7 @@ import { decode } from 'nostr-tools/nip19'
 import { ROLES } from '#shared/types/bunker'
 import type { BunkerStatus, Role, TeamMember } from '#shared/types/bunker'
 import { bunkerServiceFetch } from '../bunker-service'
+import { configuredBunkers } from '../bunkers'
 
 /** The bunker's own pubkey, hex. It may never sign in (ADR rule 10). */
 export async function bunkerPubkey(event: H3Event): Promise<string> {
@@ -15,10 +16,19 @@ export async function bunkerPubkey(event: H3Event): Promise<string> {
  * anyone the bunker signs for as one could otherwise sign in as it.
  */
 export async function bunkerPubkeys(event: H3Event): Promise<{ primary: string, identities: string[] }> {
-  const status = await bunkerServiceFetch<BunkerStatus>(event, '/api/bunker/status')
-  const decoded = decode(status.pubkey)
-  if (decoded.type !== 'npub') throw new Error('The bunker reported a pubkey that is not an npub')
-  return { primary: decoded.data, identities: status.identities ?? [] }
+  // SPIKE (#151): every bunker's keys, so rule 10 refuses an identity held by any of them, not
+  // only the default's. A bunker that does not answer fails sign-in for everyone: its keys cannot
+  // be refused unseen. The ADR weighs keeping the last list each bunker reported instead.
+  const all = await Promise.all(configuredBunkers(useRuntimeConfig(event)).map(async (bunker) => {
+    const status = await bunkerServiceFetch<BunkerStatus>(event, '/api/bunker/status', { bunker })
+    const decoded = decode(status.pubkey)
+    if (decoded.type !== 'npub') throw new Error(`The bunker "${bunker.id}" reported a pubkey that is not an npub`)
+    return { primary: decoded.data, identities: status.identities ?? [] }
+  }))
+  return {
+    primary: all[0]!.primary,
+    identities: [...new Set(all.flatMap(b => [b.primary, ...b.identities]))]
+  }
 }
 
 /**

@@ -450,7 +450,7 @@ pub fn create_router(state: AppState) -> Router {
     let nonces = std::sync::Arc::new(Nonces::default());
     let guarded = |routes: Router<AppState>, access: Access| match &secret {
         Some(secret) => routes.route_layer(axum::middleware::from_fn_with_state(
-            Guard { secret: secret.clone(), db: state.db.clone(), access, nonces: nonces.clone() },
+            Guard { secret: secret.clone(), db: state.db.clone(), access, nonces: nonces.clone(), member_proof: state.member_proof.clone() },
             crate::proxy_auth::guard,
         )),
         None => routes,
@@ -509,6 +509,11 @@ pub fn create_router(state: AppState) -> Router {
         // The identities each may sign as (#103): administrators see all.
         .route("/api/bunker/identities", get(crate::identities_api::list_identities));
 
+    // SPIKE (#151): starting a member's session on this bunker from their own sign-in.
+    let member_proof = Router::new()
+        .route("/api/bunker/auth/challenge", post(crate::member_proof_api::challenge))
+        .route("/api/bunker/auth/proof", post(crate::member_proof_api::proof));
+
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no
     // POST /sign either: it signed anything for anyone who could reach this port (#25). The only
@@ -520,6 +525,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(guarded(administration, Access::Administrator))
         .merge(guarded(lookup, Access::AdministratorOrService))
         .merge(guarded(signer, Access::Signer))
+        .merge(guarded(member_proof, Access::Service))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -578,7 +584,7 @@ pub fn create_locked_router(state: LockedState, proxy_secret: Option<String>) ->
     let nonces = std::sync::Arc::new(Nonces::default());
     let guarded = |routes: Router<LockedState>, access: Access| match &secret {
         Some(secret) => routes.route_layer(axum::middleware::from_fn_with_state(
-            Guard { secret: secret.clone(), db: state.db.clone(), access, nonces: nonces.clone() },
+            Guard { secret: secret.clone(), db: state.db.clone(), access, nonces: nonces.clone(), member_proof: None },
             crate::proxy_auth::guard,
         )),
         None => routes,

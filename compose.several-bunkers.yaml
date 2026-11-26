@@ -1,0 +1,66 @@
+# SPIKE (#151): a console with 2 bunkers. Not for merging, and not run: the spike was checked with
+# the bunkers and console run natively (see the ADR's Evidence). Use beside compose.yaml:
+#
+#   podman compose -f compose.yaml -f compose.several-bunkers.yaml up -d
+#
+# The root bunker shares nothing with the main one: its own data directory, root credential,
+# backup passphrase and proxy secret, each in a file of its own. It also checks each member's own
+# sign-in (BANCWR_MEMBER_PROOF=required), so the console's secret alone cannot claim a member to it.
+# Separation is only as good as the host: on one machine, whoever controls the host controls both.
+#
+# BANCWR_PROXY_SECRET_FILE does not exist yet: the bunker reads its secret only from
+# BANCWR_PROXY_SECRET. A secret per bunker in a file of its own is one of the ADR's build steps.
+services:
+    bunker:
+      environment:
+        - BANCWR_PROXY_SECRET_FILE=/run/secrets/main_proxy_secret
+      secrets:
+        - main_proxy_secret
+
+    bunker-root:
+      image: ghcr.io/diogel-io/bancwr-diogel-backend:0.1.1
+      container_name: bancwr-bunker-root
+      restart: unless-stopped
+      healthcheck:
+        test: ["CMD", "bunker", "healthcheck"]
+        interval: 30s
+        timeout: 5s
+        start_period: 5s
+        retries: 3
+      environment:
+        - BANCWR_ROOT_KEY_FILE=/run/secrets/root_root_key
+        - BANCWR_BACKUP_KEY_FILE=/run/secrets/root_backup_key
+        - BANCWR_PROXY_SECRET_FILE=/run/secrets/root_proxy_secret
+        - BANCWR_ADMIN_PUBKEY=${BANCWR_ROOT_ADMIN_PUBKEY:?Set BANCWR_ROOT_ADMIN_PUBKEY in .env}
+        - BANCWR_MEMBER_PROOF=required
+        - BUNKER_PORT=3000
+        - RUST_LOG=info
+        - DATABASE_PATH=/data/bancwr.db
+        - NIP46_ENABLED=${NIP46_ENABLED:-true}
+        - NIP46_RELAYS=${ROOT_NIP46_RELAYS:-}
+        - BANCWR_CONSOLE_URL=${NUXT_SITE_ORIGIN:?Set NUXT_SITE_ORIGIN in .env}
+      volumes:
+        - ./data-root:/data:Z
+      secrets:
+        - root_root_key
+        - root_backup_key
+        - root_proxy_secret
+
+    frontend:
+      environment:
+        - 'NUXT_BUNKERS=[{"id":"main","label":"Bancwr","origin":"http://bunker:3000","secretFile":"/run/secrets/main_proxy_secret"},{"id":"root","label":"Company root","origin":"http://bunker-root:3000","secretFile":"/run/secrets/root_proxy_secret"}]'
+      secrets:
+        - main_proxy_secret
+        - root_proxy_secret
+      depends_on:
+        - bunker-root
+
+secrets:
+    main_proxy_secret:
+      file: ./secrets/main_proxy_secret
+    root_root_key:
+      file: ./secrets-root/bancwr_root_key
+    root_backup_key:
+      file: ./secrets-root/bancwr_backup_key
+    root_proxy_secret:
+      file: ./secrets-root/proxy_secret

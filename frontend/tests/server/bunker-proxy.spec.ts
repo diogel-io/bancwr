@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import * as h3 from 'h3'
 
-vi.mock('../../server/utils/auth/session', () => ({ sessionPubkey: async () => 'a'.repeat(64) }))
+vi.mock('../../server/utils/auth/session', () => ({ sessionPubkey: async () => 'a'.repeat(64), liveSession: async () => ({ pubkey: 'a'.repeat(64), expiresAt: 0, bunkers: {} }) }))
 // The test environment auto-imports useRuntimeConfig from the Nuxt app, not from Nitro.
 vi.mock('#app/nuxt', async importOriginal => ({
   ...await importOriginal<object>(),
