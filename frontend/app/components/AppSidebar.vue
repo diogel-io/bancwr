@@ -29,9 +29,8 @@ const links = computed<NavigationMenuItem[]>(() => {
   const state = auth.state.value
   if (state.status !== 'signed-in') return []
   const allowed = allLinks.filter(link => canOpen(state.role, link.to))
-  // An identity's profile, follows and relays (#150) are the member's own pages under another path,
-  // so the router would mark the member's Profile, Follows or Relays active. They are reached from
-  // Config, which is marked instead, so nobody takes the page for their own.
+  // An identity's profile, follows and relays (#150) have no link of their own. They are reached
+  // from Config, which is marked active, so nobody takes the page for their own.
   return route.path.startsWith('/identities/') ? allowed.map(link => ({ ...link, active: link.to === '/config' })) : allowed
 })
 </script>
