@@ -1,7 +1,9 @@
 //! NIP-46 remote signing (#53), read at nips commit 0046368a.
 //!
 //! A client may use the bunker only after `connect` with the secret of a single-use connection
-//! token an administrator issued for a vault member. The connection is stored (it survives a
+//! token an administrator issued for a vault member, or once a member has answered its own
+//! `nostrconnect://` code from the console (#148, `connections_api.rs`), which makes the same kind
+//! of connection without a `connect` from the app. The connection is stored (it survives a
 //! restart), attributed to that member, and allowed exactly the permissions granted: the token's,
 //! intersected with what the client asked for. Every request after `connect` needs an active
 //! connection whose member is still in the vault and may sign: an administrator or a signer (#77,
@@ -179,6 +181,9 @@ pub struct Nip46Handler {
     /// Requests held for approval (#102).
     approvals: ApprovalQueue,
     approval_settings: Mutex<ApprovalSettings>,
+    /// `NIP46_RELAYS` as configured, so `switch_relays` names the relays in force
+    /// (`bunker_relays::effective`).
+    env_relays: Mutex<Vec<String>>,
 }
 
 /// How long a held request waits, and where the console is, for its auth challenge (#102).
@@ -206,6 +211,28 @@ impl Nip46Handler {
                 timeout: chrono::Duration::minutes(crate::config::DEFAULT_APPROVAL_TIMEOUT_MINUTES.into()),
                 console_url: None,
             }),
+            env_relays: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Sets `NIP46_RELAYS` as configured (#148), which `switch_relays` answers with when set, as
+    /// every other reader of the bunker's relays does. `AppState::new` sets it from the config.
+    pub fn configure_relays(&self, env_relays: Vec<String>) {
+        *self.env_relays.lock().unwrap_or_else(|p| p.into_inner()) = env_relays;
+    }
+
+    /// `switch_relays` (#148): the bunker's relays in force, as a JSON array, so an app moves to
+    /// them; an app that connected from its own `nostrconnect://` code started on relays it chose.
+    /// `null`, meaning stay, when the bunker has none or they cannot be read.
+    fn switch_relays_result(&self) -> String {
+        let env_relays = self.env_relays.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        match crate::bunker_relays::effective(&env_relays, &self.db) {
+            Ok(relays) if !relays.urls.is_empty() => serde_json::to_string(&relays.urls).unwrap_or_else(|_| "null".to_string()),
+            Ok(_) => "null".to_string(),
+            Err(e) => {
+                warn!("Failed to read the bunker's relays for switch_relays: {}", e);
+                "null".to_string()
+            }
         }
     }
 
@@ -345,10 +372,10 @@ impl Nip46Handler {
                 None => Nip46Response::err(request.id, IDENTITY_UNAVAILABLE),
             },
             "ping" => Nip46Response::ok(request.id, "pong"),
-            // No relay change is proposed. An administrator can change the bunker's relays (#78),
-            // but moving connected apps to the new list is out of its scope: an app on a removed
-            // relay reconnects with a new bunker:// string.
-            "switch_relays" => Nip46Response::ok(request.id, "null"),
+            // The bunker's relays in force (#148): an app that connected from its own
+            // nostrconnect:// code moves to them, and an app on a token's relays learns of a list
+            // an administrator changed (#78).
+            "switch_relays" => Nip46Response::ok(request.id, self.switch_relays_result()),
             "logout" => {
                 // NIP-46: reply "ack", and remove the session. The reply is built first; the
                 // revocation cannot fail in a way the client could act on.

@@ -2,11 +2,12 @@
 // Apps connected to the bunker for the signed-in member (#31), over #53's connections: every app
 // signs as one of the bunker's identities, authorised for a member. For administrators and signers
 // (#77): signers see and revoke theirs, administrators all. Administrators issue tokens for admins
-// and signers; signers issue, see and revoke their own (#142).
+// and signers; signers issue, see and revoke their own (#142). An app that shows its own
+// nostrconnect:// code is connected here too, under the same rules (#148).
 import { isForbidden } from '~/utils/access'
 
 const {
-  pubkey, isAdministrator, connections, tokens, team, memberName, revoke, revokeToken, issue
+  pubkey, isAdministrator, connections, tokens, team, memberName, revoke, revokeToken, issue, preview, connectApp
 } = useConnections()
 
 // The identities (#103): named on each row, and chosen when issuing, only once there are several.
@@ -98,9 +99,28 @@ async function act(work: () => Promise<void>) {
           >
             <p>No apps are connected {{ isAdministrator ? 'to this bunker' : 'for you' }}.</p>
             <p>
-              Issue a connection token below to connect one.
+              Connect one from its nostrconnect:// code, or issue a connection token below.
             </p>
           </div>
+        </UCard>
+
+        <UCard>
+          <template #header>
+            <h2 class="font-semibold">
+              Connect an app
+            </h2>
+            <p class="text-sm text-muted">
+              For an app that shows a nostrconnect:// code instead of asking for a bunker:// string.
+            </p>
+          </template>
+          <ConnectionsConnectApp
+            :members="team.data.value ?? []"
+            :self="pubkey"
+            :administrator="isAdministrator"
+            :identities="identities"
+            :preview="preview"
+            :connect="connectApp"
+          />
         </UCard>
 
         <UCard>

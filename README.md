@@ -199,6 +199,13 @@ is refused and the connection is marked expired (#98); without one it lasts unti
 across restarts and can be revoked. See "Connecting an app" in
 [`backend/README.md`](backend/README.md#connecting-an-app-53).
 
+An app that shows its own `nostrconnect://` code instead of asking for a `bunker://` string is
+connected from the **Connections** page (#148): paste the code, check what the app says it is and
+asks for, choose the identity and what it may do, and confirm. The same rules apply as for a token,
+and the app's own list only pre-fills the form. While it is connected, the bunker also listens on
+the relays the app chose, for that app only. See "Connecting an app from its nostrconnect:// code"
+in [`backend/README.md`](backend/README.md#connecting-an-app-from-its-nostrconnect-code-148).
+
 Each connection is rate limited (#101), so a runaway bot or a compromised app cannot sign or decrypt
 without limit. By default an app may make 60 signing and encryption requests a minute, with a burst
 of 20; past that it is told to wait, the refusal is logged at most once a minute, and the dashboard

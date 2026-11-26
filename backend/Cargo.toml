@@ -114,6 +114,10 @@ name = "nip46_connections_test"
 path = "tests/integration/nip46_connections_test.rs"
 
 [[test]]
+name = "nostrconnect_test"
+path = "tests/integration/nostrconnect_test.rs"
+
+[[test]]
 name = "health_test"
 path = "tests/unit/health_test.rs"
 

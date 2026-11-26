@@ -157,7 +157,7 @@ export interface Nip46Connection {
   connected_at: string
   last_used_at: string | null
   revoked_at: string | null
-  /** `logout`, `revoked`, `replaced`, `member_removed`, `role_changed` (#77), `restored` (#95) or `expired` (#98). */
+  /** `logout`, `revoked`, `replaced`, `member_removed`, `role_changed` (#77), `restored` (#95), `expired` (#98), `identity_retired` (#146) or `connect_undelivered` (#148). */
   revoked_reason: string | null
   /** Who revoked it (hex), when someone did (#31). */
   revoked_by: string | null
@@ -170,6 +170,8 @@ export interface Nip46Connection {
   approval_kinds: number[]
   /** The identity it signs as (#103), hex. */
   identity_pubkey?: string | null
+  /** The relays the app chose, when it connected from its own nostrconnect:// code (#148). Empty for a token's connection. */
+  app_relays?: string[]
 }
 
 /** A connection token (#53), from GET /api/bunker/connections/tokens: never the secret. */
@@ -319,3 +321,33 @@ export interface LogRetentionResponse extends LogRetention {
 
 /** GET /api/bunker/logs/export formats (#96). */
 export type LogExportFormat = 'csv' | 'jsonl'
+
+/** What an app's nostrconnect:// code says (#148), read by the bunker. All of it comes from the app and none is verified; never its secret or image. */
+export interface NostrConnectPreview {
+  /** The app's NIP-46 key (hex). */
+  client_pubkey: string
+  name: string | null
+  url: string | null
+  metadata_verified: boolean
+  /** The relays it chose, and whether each is one of the bunker's own. */
+  relays: { url: string, bunker: boolean }[]
+  /** What it asked for: a pre-fill only. `requested_any_kind` is `sign_event` with no kind. */
+  requested_kinds: number[]
+  requested_any_kind: boolean
+  requested_methods: EncryptionMethod[]
+  /** Its key already has an active connection, so connecting is refused. */
+  already_connected: boolean
+}
+
+/** Connecting the app in a nostrconnect:// code (#148): the same choices as a token, without its label or validity. */
+export interface NostrConnectRequest {
+  uri: string
+  for_pubkey?: string
+  kinds: number[]
+  methods: EncryptionMethod[]
+  connection_lifetime_hours?: number
+  rate_per_minute?: number
+  rate_burst?: number
+  approval_kinds?: number[]
+  identity?: string
+}

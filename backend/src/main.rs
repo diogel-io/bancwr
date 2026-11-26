@@ -372,6 +372,17 @@ async fn serve() -> anyhow::Result<()> {
         }
     });
 
+    // Apps connected from their own nostrconnect:// codes (#148): the bunker stops listening on
+    // their relays within a few seconds of their connections ending, however they end.
+    let app_relays_state = state.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(std::time::Duration::from_secs(bunker::approvals_api::SWEEP_SECONDS));
+        loop {
+            every.tick().await;
+            bunker::relay::sync_app_relays(&app_relays_state).await;
+        }
+    });
+
     info!("HTTP API listening on http://{}", addr);
 
     let http_state = state.clone();

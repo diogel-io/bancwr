@@ -33,6 +33,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("record the senders of NIP-46 requests", nip46_senders),
     ("make every viewer a signer", viewers_become_signers),
     ("retire identities", retire_identities),
+    ("connect apps from their nostrconnect:// codes", nostrconnect_connections),
 ];
 
 /// The version a fully migrated database is at.
@@ -585,4 +586,14 @@ fn viewers_become_signers(tx: &Transaction) -> anyhow::Result<()> {
 ///     existing identity: none has been retired.
 fn retire_identities(tx: &Transaction) -> anyhow::Result<()> {
     add_missing_columns(tx, &[("identities", "retired_at", "TEXT")])
+}
+
+/// 17. Connections made from an app's `nostrconnect://` code (#148). `nip46_connections.relays`
+///     holds the relays the app chose, which the bunker also listens and answers on while the
+///     connection lasts; NULL for a connection made with a token, which uses the bunker's relays.
+///     Each such connection is backed by a token row the console creates already used, so every
+///     connection still names a token and who made it; `nip46_tokens.origin` is `nostrconnect`
+///     for those, which are not listed as tokens, and NULL for every token issued as before.
+fn nostrconnect_connections(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(tx, &[("nip46_connections", "relays", "TEXT"), ("nip46_tokens", "origin", "TEXT")])
 }

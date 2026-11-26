@@ -48,6 +48,8 @@ impl AppState {
         let nip46_handler = Arc::new(Nip46Handler::with_keyring(keyring.clone(), db.clone()));
         // Requests held for approval (#102): how long they wait, and where the console is.
         nip46_handler.configure_approvals(chrono::Duration::minutes(config.approval_timeout_minutes.into()), config.console_url.clone());
+        // What switch_relays answers with (#148): the relays in force, as every reader sees them.
+        nip46_handler.configure_relays(config.relay_urls.clone());
         let config = Arc::new(RwLock::new(config));
         let db = Arc::new(db);
 
