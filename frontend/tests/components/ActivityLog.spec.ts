@@ -33,6 +33,12 @@ describe('ActivityLog', () => {
     expect(unknown![1]).toBe('7')
   })
 
+  it('shows Console as the app for an administrator\'s edit of an identity (#150)', async () => {
+    const [edit] = await cells([{ id: '4', event_id: 'e4', pubkey: ALICE, event_kind: 0, timestamp: '2025-01-01T13:00:00Z', member_pubkey: ALICE, member_name: 'Alice', connection_id: null, origin: 'console' }])
+    expect(edit![2]).toBe('Alice')
+    expect(edit![3]).toBe('Console')
+  })
+
   it('formats the timestamp from the entry', async () => {
     const component = await mountSuspended(ActivityLog, {
       props: {

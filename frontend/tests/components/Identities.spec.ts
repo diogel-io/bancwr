@@ -124,6 +124,15 @@ describe('Identities', () => {
     await vi.waitFor(() => expect(state.calls).toEqual([{ method: 'PATCH', path: BRAND, body: { label: 'Brand Bee' } }]))
   })
 
+  it('links each loaded identity to its profile, follows and relays (#150)', async () => {
+    state.identities = two()
+    const component = await mount(inApp(IdentitiesSection), { attachTo: document.body })
+    const links = component.find(`[data-identity="${PRIMARY}"] [data-testid="identity-edit-links"]`).findAll('a')
+    expect(links.map(a => a.attributes('href'))).toEqual(['profile', 'follows', 'relays'].map(page => `/identities/${PRIMARY}/${page}`))
+    // One the running bunker has not loaded can't sign, so has nothing to edit yet.
+    expect(component.find(`[data-identity="${BRAND}"] [data-testid="identity-edit-links"]`).exists()).toBe(false)
+  })
+
   it('creates an identity from a label alone, and says to take a backup', async () => {
     state.identities = two()
     const component = await mount(inApp(IdentitiesSection), { attachTo: document.body })

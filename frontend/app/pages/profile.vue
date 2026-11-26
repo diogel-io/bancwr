@@ -5,12 +5,18 @@ import { npubEncode } from 'nostr-tools/nip19'
 import { ProfileError } from '~/composables/useProfile'
 import { SignerCancelled } from '~/composables/useSignerPrompt'
 import { SignerMismatch } from '~/composables/useUserSigner'
+import { IdentitySignError } from '~/utils/identity-signer'
 import { BlossomError, uploadToBlossom } from '~/utils/blossom'
 import { ImageError, prepareImage, type ImageKind } from '~/utils/image'
 import { validateForm } from '~/utils/profile'
 import type { PublishResult } from '~/utils/relay-io'
 
-const profile = useProfile()
+// Also an identity's, for administrators (#150): /identities/:pubkey/profile is this page, editing
+// that identity, signed by the bunker as it (useEditTarget). Each path is its own page instance.
+definePageMeta({ alias: '/identities/:pubkey/profile', key: route => route.path })
+
+const target = useEditTarget()
+const profile = useProfile({ pubkey: target.pubkey })
 const { state, form, dirty, exists, pubkey, blossomServer, searched } = profile
 const nip46 = useNip46()
 
@@ -32,10 +38,10 @@ const published = ref<PublishResult>()
 
 onMounted(() => profile.load())
 
-const { reconnecting, withSigner, reconnected } = useSignerPrompt()
+const { reconnecting, withSigner, reconnected } = target
 
 function message(failure: unknown, fallback: string): string {
-  if (failure instanceof ProfileError || failure instanceof SignerMismatch || failure instanceof BlossomError || failure instanceof ImageError) {
+  if (failure instanceof ProfileError || failure instanceof SignerMismatch || failure instanceof IdentitySignError || failure instanceof BlossomError || failure instanceof ImageError) {
     return failure.message
   }
   return fallback
@@ -93,9 +99,13 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     </template>
 
     <template #body>
-      <SignedInAs class="mb-4" />
+      <EditingAccount
+        class="mb-4"
+        :target="target"
+      />
+      <template v-if="target.missing.value" />
       <div
-        v-if="state === 'idle' || state === 'loading'"
+        v-else-if="state === 'idle' || state === 'loading'"
         class="flex items-center gap-2 text-sm text-muted"
         role="status"
       >

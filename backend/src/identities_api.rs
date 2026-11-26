@@ -8,6 +8,7 @@
 //! | `DELETE /api/bunker/identities/:pubkey` | administrator |
 //! | `PUT /api/bunker/identities/:pubkey/members/:member` | administrator |
 //! | `DELETE /api/bunker/identities/:pubkey/members/:member` | administrator |
+//! | `POST /api/bunker/identities/:pubkey/sign` | administrator |
 //!
 //! An administrator creates an identity here (#146): the bunker generates its key, encrypts it
 //! under the root credential as `bunker import-key --add` does, and unlocks it at once. The key is
@@ -17,7 +18,14 @@
 //!
 //! Who may create and retire is decided in one place, `may_manage_identities`, so departments
 //! (#147) can widen it.
+//!
+//! An administrator edits an identity's profile, follows and relays in the console (#150): the
+//! console builds each event and `sign_as_identity` signs it as the identity, for the four kinds
+//! `console_signing` allows and nothing else. Each signature is logged under the administrator and
+//! marked as the console's. Who may do so is decided in `may_edit_identity`, which departments
+//! (#147) widen for a lead.
 use crate::connections_api::{api_error, caller, database_error, ApiError};
+use crate::console_signing::{self, EventTemplate};
 use crate::db::{Identity, RetireOutcome, MAX_IDENTITY_LABEL_CHARS};
 use crate::proxy_auth::Caller;
 use crate::registry::canonical_pubkey;
@@ -279,4 +287,53 @@ pub async fn remove_identity_grant(
         }
         None => Err(api_error(StatusCode::NOT_FOUND, "not_found", "That member is not granted that identity.")),
     }
+}
+
+/// Who may have an identity sign its profile, follows and relays (#150): administrators. The one
+/// place departments (#147) widen, for a lead and their department's identity.
+fn may_edit_identity(administrator: bool) -> Result<(), ApiError> {
+    if administrator {
+        Ok(())
+    } else {
+        Err(api_error(StatusCode::FORBIDDEN, "forbidden", "Only an administrator can edit an identity's profile."))
+    }
+}
+
+/// Sign an event the console built as an identity (#150): its profile (kind 0), follow list
+/// (kind 3), relay list (kind 10002), or a Blossom upload authorisation (kind 24242) for its
+/// profile image. `console_signing::check` refuses anything else, and a refusal signs and logs
+/// nothing. The identity must be this bunker's, not retired and unlocked. Each signature is logged
+/// with the administrator as the member and marked as the console's.
+/// POST /api/bunker/identities/:pubkey/sign
+pub async fn sign_as_identity(
+    State(state): State<AppState>,
+    who: Option<Extension<Caller>>,
+    Path(key): Path<String>,
+    Json(template): Json<EventTemplate>,
+) -> Result<Json<nostr::Event>, ApiError> {
+    let (by, administrator) = caller(who);
+    may_edit_identity(administrator)?;
+    let identity = find(&state, &key)?;
+    let signed = {
+        let Some(signer) = state.keyring.signer(identity.reference()).await else {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "identity_unavailable",
+                "This identity is not unlocked in the running bunker. Restart the bunker and try again.",
+            ));
+        };
+        let unsigned = console_signing::check(&template, signer.public_key(), Utc::now().timestamp())
+            .map_err(|refusal| api_error(StatusCode::BAD_REQUEST, refusal.code, &refusal.message))?;
+        signer.sign_event(unsigned).await.map_err(|e| {
+            error!("Could not sign a console edit as {}: {}", identity.pubkey, e);
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "signing_failed", "The bunker could not sign the event.")
+        })?
+    };
+    // Logged before it is returned: a signature the log can't record is not handed out.
+    state
+        .db
+        .log_console_signature(&signed.id.to_hex(), &by, identity.reference(), u32::from(signed.kind.as_u16()), Utc::now())
+        .map_err(database_error)?;
+    info!("Signed kind {} as identity {} for the console", signed.kind.as_u16(), identity.pubkey);
+    Ok(Json(signed))
 }

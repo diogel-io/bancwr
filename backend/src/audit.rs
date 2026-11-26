@@ -473,7 +473,8 @@ impl Database {
                  SELECT l.timestamp AS ts, 0 AS src, l.rowid AS seq, l.id AS id, 'signed' AS action, l.event_kind AS event_kind,
                         l.event_id AS event_id, l.member_pubkey AS member_pubkey, m.name AS member_name,
                         l.connection_id AS connection_id, NULL AS token_id, l.pubkey AS client_pubkey,
-                        NULL AS actor_pubkey, NULL AS detail,
+                        CASE WHEN l.origin = 'console' THEN l.member_pubkey END AS actor_pubkey,
+                        CASE WHEN l.origin = 'console' THEN 'via=console' END AS detail,
                         COALESCE(l.identity_pubkey, (SELECT pubkey FROM identities WHERE is_primary = 1)) AS identity_pubkey
                  FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
                  WHERE l.timestamp >= ?1 AND l.timestamp < ?2

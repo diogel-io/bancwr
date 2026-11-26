@@ -1,5 +1,6 @@
 // The signed-in member's kind 0 profile (#30): reading it from their relays and publishing an
-// update signed by their own signer. Client-only: call load() from onMounted.
+// update signed by their own signer. With `pubkey`, one of the bunker's identities' (#150), signed
+// by the signer save() is given. Client-only: call load() from onMounted.
 import type { NostrEvent } from 'nostr-tools/pure'
 import { emptyForm, formFromContent, mergeProfile, newestEvent, parseProfileContent, type ProfileForm } from '~/utils/profile'
 import type { PublishResult, RelayIO } from '~/utils/relay-io'
@@ -15,12 +16,13 @@ function copy(form: ProfileForm): ProfileForm {
   return { ...form, birthday: { ...form.birthday } }
 }
 
-export function useProfile(deps: { io?: RelayIO } = {}) {
+export function useProfile(deps: { io?: RelayIO, pubkey?: string } = {}) {
   const member = useMemberRelays(deps)
   const { relays, searched, blossomServer } = member
   const auth = useAuth()
   const signedIn = useSignedInProfile()
-  const pubkey = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : '')
+  // The account edited (#150): an identity's when given, otherwise the signed-in member's.
+  const pubkey = computed(() => deps.pubkey ?? (auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : ''))
 
   const state = ref<LoadState>('idle')
   const form = ref<ProfileForm>(emptyForm())
@@ -103,8 +105,8 @@ export function useProfile(deps: { io?: RelayIO } = {}) {
     }
     exists.value = true
     saved.value = copy(form.value)
-    // The footer's avatar and name follow the save, without a reload (#72).
-    signedIn.setFromContent(event.content)
+    // The footer's avatar and name follow the save, without a reload (#72): only the member's own.
+    if (deps.pubkey === undefined) signedIn.setFromContent(event.content)
     return result
   }
 

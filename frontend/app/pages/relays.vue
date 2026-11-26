@@ -6,15 +6,21 @@ import { npubEncode } from 'nostr-tools/nip19'
 import { RelayListError } from '~/composables/useRelayList'
 import { SignerCancelled } from '~/composables/useSignerPrompt'
 import { SignerMismatch } from '~/composables/useUserSigner'
+import { IdentitySignError } from '~/utils/identity-signer'
 import { relayKey } from '~/utils/relay-url'
 import type { PublishResult } from '~/utils/relay-io'
 
 /** NIP-65: "keep kind:10002 lists small (2-4 relays of each category)". */
 const ADVISED_MAX = 4
 
-const list = useRelayList()
+// Also an identity's, for administrators (#150): /identities/:pubkey/relays is this page, editing
+// that identity, signed by the bunker as it (useEditTarget). Each path is its own page instance.
+definePageMeta({ alias: '/identities/:pubkey/relays', key: route => route.path })
+
+const target = useEditTarget()
+const list = useRelayList({ pubkey: target.pubkey })
 const { state, entries, preview, exists, adds, removes, markers, dirty, answered, unanswered, pubkey, searched, defaults, indexers } = list
-const { reconnecting, withSigner, reconnected } = useSignerPrompt()
+const { reconnecting, withSigner, reconnected } = target
 const nip46 = useNip46()
 const { health, ensure } = useBunkerHealth()
 
@@ -76,7 +82,7 @@ async function save() {
     try {
       published.value = await list.save(signer)
     } catch (failure) {
-      saveError.value = failure instanceof RelayListError || failure instanceof SignerMismatch
+      saveError.value = failure instanceof RelayListError || failure instanceof SignerMismatch || failure instanceof IdentitySignError
         ? failure.message
         : 'Your signer did not sign the update, so nothing was saved. Try again, and approve it.'
     } finally {
@@ -109,9 +115,13 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     </template>
 
     <template #body>
-      <SignedInAs class="mb-4" />
+      <EditingAccount
+        class="mb-4"
+        :target="target"
+      />
+      <template v-if="target.missing.value" />
       <div
-        v-if="state === 'idle' || state === 'loading'"
+        v-else-if="state === 'idle' || state === 'loading'"
         class="flex items-center gap-2 text-sm text-muted"
         role="status"
       >
@@ -140,9 +150,19 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         <UCard>
           <template #header>
             <h2 class="font-semibold">
-              Your relays
+              {{ target.editingIdentity ? 'Its relays' : 'Your relays' }}
             </h2>
-            <p class="text-sm text-muted">
+            <p
+              v-if="target.editingIdentity"
+              class="text-sm text-muted"
+            >
+              Other apps read this identity's posts from its <strong>write</strong> relays, and look
+              for mentions of it on its <strong>read</strong> relays (NIP-65).
+            </p>
+            <p
+              v-else
+              class="text-sm text-muted"
+            >
               Other apps read your posts from your <strong>write</strong> relays, and look for
               mentions of you on your <strong>read</strong> relays (NIP-65).
             </p>

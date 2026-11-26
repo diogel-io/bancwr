@@ -13,7 +13,11 @@ const MATRIX: [string, Record<Role, boolean>][] = [
   ['/profile', { administrator: true, signer: true}],
   ['/follows', { administrator: true, signer: true}],
   ['/relays', { administrator: true, signer: true}],
-  ['/connections', { administrator: true, signer: true}]
+  ['/connections', { administrator: true, signer: true}],
+  // An identity's own account (#150): administrators only.
+  [`/identities/${'b'.repeat(64)}/profile`, { administrator: true, signer: false}],
+  [`/identities/${'b'.repeat(64)}/follows`, { administrator: true, signer: false}],
+  [`/identities/${'b'.repeat(64)}/relays`, { administrator: true, signer: false}]
 ]
 
 describe('access matrix', () => {

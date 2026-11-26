@@ -3,10 +3,18 @@
 // the primary, and whether it is loaded. Administrators rename them here, create one whose key the
 // bunker generates, and retire one (#146). A key never passes through the browser: creating sends
 // only a label, and the response holds only the public key. The Config page is administrators'
-// only, so signers see none of this.
+// only, so signers see none of this. Each identity's profile, follows and relays are edited from
+// here too (#150), on the same pages as the member's own, signed by the bunker as the identity.
 import type { BunkerIdentity } from '#shared/types/bunker'
 
 const { identities, list } = useIdentities()
+
+/** An identity's own Nostr account, edited as it (#150). */
+const EDIT_PAGES = [
+  { path: 'profile', label: 'Profile', icon: 'i-lucide-user' },
+  { path: 'follows', label: 'Follows', icon: 'i-lucide-users' },
+  { path: 'relays', label: 'Relays', icon: 'i-lucide-radio-tower' }
+] as const
 const editing = ref<string>()
 const draft = ref('')
 const error = ref<string>()
@@ -170,6 +178,25 @@ async function retire(identity: BunkerIdentity) {
               </UBadge>
             </p>
             <code class="text-xs text-muted break-all">{{ identity.npub ?? identity.pubkey }}</code>
+            <div
+              v-if="identity.available && editing !== identity.pubkey"
+              class="mt-1 flex flex-wrap gap-1"
+              data-testid="identity-edit-links"
+            >
+              <UButton
+                v-for="page in EDIT_PAGES"
+                :key="page.path"
+                :to="`/identities/${identity.pubkey}/${page.path}`"
+                size="xs"
+                color="neutral"
+                variant="outline"
+                :icon="page.icon"
+                :aria-label="`${page.label} for ${identity.label}`"
+                :data-testid="`identity-edit-${page.path}`"
+              >
+                {{ page.label }}
+              </UButton>
+            </div>
           </div>
           <div
             v-if="editing !== identity.pubkey && retiring !== identity.pubkey"

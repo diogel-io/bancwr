@@ -26,6 +26,10 @@ export const ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = {
   '/follows': SIGNS,
   '/relays': SIGNS,
   '/connections': SIGNS,
+  // An identity's profile, follows and relays (#150): the same pages, as the identity.
+  '/identities/[pubkey]/profile': ADMIN,
+  '/identities/[pubkey]/follows': ADMIN,
+  '/identities/[pubkey]/relays': ADMIN,
   // Requests waiting for approval (#102): administrators decide, signers see their own.
   '/approvals': SIGNS,
   '/approvals/[id]': SIGNS
@@ -42,6 +46,9 @@ export const PAGE_TITLES: Readonly<Record<string, string>> = {
   '/connections': 'connected apps',
   '/follows': 'follows',
   '/relays': 'default relays',
+  '/identities/[pubkey]/profile': 'an identity\'s profile',
+  '/identities/[pubkey]/follows': 'an identity\'s follows',
+  '/identities/[pubkey]/relays': 'an identity\'s relays',
   '/approvals': 'approvals',
   '/approvals/[id]': 'approvals'
 }

@@ -33,7 +33,12 @@ pub struct SigningLog {
     /// The identity that signed (#103), hex: the primary's for a row that names none. None only
     /// before the primary has been recorded.
     pub identity_pubkey: Option<String>,
+    /// `console` for a signature the console asked for (#150), None for one made for an app.
+    pub origin: Option<String>,
 }
+
+/// `signing_logs.origin` for a signature the console asked for (#150).
+pub const CONSOLE_ORIGIN: &str = "console";
 
 #[derive(Debug, Clone)]
 pub struct TeamMember {
@@ -179,6 +184,25 @@ impl Database {
         Ok(())
     }
 
+    /// Log a signature the console asked for (#150): `administrator` both asked and is the member
+    /// it was for, with no connection, and the row is marked as the console's.
+    pub fn log_console_signature(
+        &self,
+        event_id: &str,
+        administrator: &str,
+        identity: Option<&str>,
+        event_kind: u32,
+        timestamp: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.execute(
+            "INSERT INTO signing_logs (id, event_id, pubkey, member_pubkey, connection_id, event_kind, timestamp, identity_pubkey, origin)
+             VALUES (?1, ?2, ?3, ?3, NULL, ?4, ?5, ?6, ?7)",
+            params![Uuid::new_v4().to_string(), event_id, administrator, event_kind, db_time(timestamp), identity, CONSOLE_ORIGIN],
+        )?;
+        Ok(())
+    }
+
     /// Get recent signing logs (for API)
     pub fn get_recent_logs(&self, limit: usize) -> anyhow::Result<Vec<SigningLog>> {
         self.recent_logs(None, None, limit)
@@ -204,7 +228,7 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT l.id, l.event_id, l.pubkey, l.event_kind, l.timestamp, l.member_pubkey, m.name, l.connection_id,
-                    COALESCE(l.identity_pubkey, (SELECT pubkey FROM identities WHERE is_primary = 1))
+                    COALESCE(l.identity_pubkey, (SELECT pubkey FROM identities WHERE is_primary = 1)), l.origin
              FROM signing_logs l LEFT JOIN team_members m ON m.pubkey = l.member_pubkey
              WHERE (?2 IS NULL OR l.member_pubkey = ?2)
                AND (?3 IS NULL OR l.timestamp < ?3 OR (l.timestamp = ?3 AND l.id < ?4))
@@ -219,12 +243,13 @@ impl Database {
             let event_kind_raw: i64 = row.get(3)?;
             let timestamp_str: String = row.get(4)?;
             let attribution: (Option<String>, Option<String>, Option<String>, Option<String>) = (row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?);
-            Ok((id_str, row.get::<_, String>(1)?, row.get::<_, String>(2)?, event_kind_raw, timestamp_str, attribution))
+            let origin: Option<String> = row.get(9)?;
+            Ok((id_str, row.get::<_, String>(1)?, row.get::<_, String>(2)?, event_kind_raw, timestamp_str, attribution, origin))
         })?;
 
         let mut logs = Vec::new();
         for row in rows {
-            let (id_str, event_id, pubkey, event_kind_raw, timestamp_str, (member_pubkey, member_name, connection_id, identity_pubkey)) = row?;
+            let (id_str, event_id, pubkey, event_kind_raw, timestamp_str, (member_pubkey, member_name, connection_id, identity_pubkey), origin) = row?;
             let id = Uuid::parse_str(&id_str)
                 .map_err(|e| anyhow::anyhow!("Malformed UUID in signing_logs.id '{}': {}", id_str, e))?;
             let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
@@ -240,6 +265,7 @@ impl Database {
                 member_name,
                 connection_id,
                 identity_pubkey,
+                origin,
             });
         }
         Ok(logs)

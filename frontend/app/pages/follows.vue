@@ -6,14 +6,20 @@ import { npubEncode } from 'nostr-tools/nip19'
 import { FollowsError } from '~/composables/useFollows'
 import { SignerCancelled } from '~/composables/useSignerPrompt'
 import { SignerMismatch } from '~/composables/useUserSigner'
+import { IdentitySignError } from '~/utils/identity-signer'
 import { displayName, type Follow } from '~/utils/follows'
 import type { PublishResult } from '~/utils/relay-io'
 
 const PAGE_SIZE = 50
 
-const list = useFollows()
+// Also an identity's, for administrators (#150): /identities/:pubkey/follows is this page, editing
+// that identity, signed by the bunker as it (useEditTarget). Each path is its own page instance.
+definePageMeta({ alias: '/identities/:pubkey/follows', key: route => route.path })
+
+const target = useEditTarget()
+const list = useFollows({ pubkey: target.pubkey })
 const { state, follows, exists, pendingAdds, pendingRemoves, dirty, profiles, pubkey, searched } = list
-const { reconnecting, withSigner, reconnected } = useSignerPrompt()
+const { reconnecting, withSigner, reconnected } = target
 const nip46 = useNip46()
 
 const npub = computed(() => pubkey.value ? npubEncode(pubkey.value) : '')
@@ -62,7 +68,7 @@ async function save() {
     try {
       published.value = await list.save(signer)
     } catch (failure) {
-      saveError.value = failure instanceof FollowsError || failure instanceof SignerMismatch
+      saveError.value = failure instanceof FollowsError || failure instanceof SignerMismatch || failure instanceof IdentitySignError
         ? failure.message
         : 'Your signer did not sign the update, so nothing was saved. Try again, and approve it.'
     } finally {
@@ -101,9 +107,13 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     </template>
 
     <template #body>
-      <SignedInAs class="mb-4" />
+      <EditingAccount
+        class="mb-4"
+        :target="target"
+      />
+      <template v-if="target.missing.value" />
       <div
-        v-if="state === 'idle' || state === 'loading'"
+        v-else-if="state === 'idle' || state === 'loading'"
         class="flex items-center gap-2 text-sm text-muted"
         role="status"
       >

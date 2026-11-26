@@ -1,4 +1,5 @@
-// Where the signed-in member's own events are read from and published to (#30, #62), shared by the
+// Where the signed-in member's own events are read from and published to (#30, #62), or an
+// identity's when an administrator edits it (#150): `resolve` takes the key. Shared by the
 // profile (#30) and follow list (#32) pages: their NIP-65 write relays, then the deployment's
 // defaults, then indexer relays, then any relay they asked to search on this visit. Their relay
 // list and Blossom servers are looked up on the defaults and the indexers. Client-only.

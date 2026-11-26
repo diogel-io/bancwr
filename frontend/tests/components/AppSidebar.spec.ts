@@ -34,6 +34,16 @@ describe('AppSidebar', () => {
     expect(component.text()).not.toContain('Team')
   })
 
+  it('marks Config, not the member\'s own Profile, on an identity\'s profile (#150)', async () => {
+    signInAs('administrator')
+    const active = async (route: string) => {
+      const component = await mountSuspended(AppSidebar, { route })
+      return component.findAll('a').filter(a => a.attributes('aria-current') === 'page' || a.attributes('data-active') !== undefined).map(a => a.attributes('href'))
+    }
+    expect(await active(`/identities/${'b'.repeat(64)}/profile`)).toEqual(['/config'])
+    expect(await active('/profile')).toEqual(['/profile'])
+  })
+
   it('offers nothing when no one is signed in', async () => {
     signInAs(undefined)
     const component = await mountSuspended(AppSidebar)

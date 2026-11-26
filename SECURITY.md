@@ -91,6 +91,8 @@ A change to any of these needs the security review:
   `backend/src/main.rs`, which encrypt, decrypt and load the key and the secrets, and seed the first
   administrator
 - `backend/src/backup.rs`, which writes and restores the encrypted backup archives
+- `backend/src/console_signing.rs` and the signing route in `backend/src/identities_api.rs`, which
+  sign an identity's profile, follows and relays for an administrator (#150)
 - `backend/src/nip46.rs`, `backend/src/relay.rs`, `backend/src/connections_api.rs`,
   `backend/src/relays_api.rs` and `backend/src/bunker_relays.rs`, the NIP-46 path and its relays
 - `frontend/server/api/auth/*` and `frontend/server/utils/auth/*`, sign-in, sessions and the
