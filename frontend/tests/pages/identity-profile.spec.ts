@@ -129,6 +129,33 @@ describe('Editing an identity (#150)', () => {
     vi.unstubAllGlobals()
   })
 
+  it('asks before going from one identity\'s profile to another\'s with unsaved changes', async () => {
+    relays.events.push(profileEvent(SALES, { name: 'Sales' }, 100))
+    const component = await mount(NuxtPage, `/identities/${SALES}/profile`)
+    const name = await nameLabel(component)
+    await component.find(`#${name.attributes('for')}`).setValue('Sales team')
+
+    const confirm = vi.fn(() => false)
+    vi.stubGlobal('confirm', confirm)
+    const router = useRouter()
+    await router.push(`/identities/${'9'.repeat(64)}/profile`)
+    expect(confirm).toHaveBeenCalledWith('Leave without saving your profile changes?')
+    expect(router.currentRoute.value.path).toBe(`/identities/${SALES}/profile`)
+    vi.unstubAllGlobals()
+  })
+
+  it('is a route of its own, not an alias of the member\'s page', async () => {
+    const router = useRouter()
+    for (const page of ['profile', 'follows', 'relays']) {
+      const identity = router.resolve(`/identities/${SALES}/${page}`)
+      expect(identity.name).not.toBe(router.resolve(`/${page}`).name)
+      expect(identity.matched.at(-1)?.aliasOf).toBeUndefined()
+      // A relative location keeps the identity's page.
+      await router.push(identity)
+      expect(router.resolve({ query: { tab: '1' } }).path).toBe(`/identities/${SALES}/${page}`)
+    }
+  })
+
   it('says there is no such identity, and reads and edits nothing', async () => {
     const component = await mount(Profile, `/identities/${'9'.repeat(64)}/profile`)
     await vi.waitFor(() => expect(component.find('[data-testid="editing-identity-missing"]').exists()).toBe(true))
