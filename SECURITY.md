@@ -129,9 +129,14 @@ A change to any of these needs the security review:
 
 **Signing**
 
-- [ ] Nothing signs without a connection token an administrator issued, and a connection signs
-      only the kinds it was granted, while its member may sign. There is still no "sign anything"
-      route (T8).
+- [ ] Nothing signs through NIP-46 without a connection token an administrator issued, and a
+      connection signs only the kinds it was granted, while its member may sign. There is still no
+      "sign anything" route (T8).
+- [ ] The one exception is `POST /api/bunker/identities/:pubkey/sign` (#150): no token, but
+      administrators only, as one of the bunker's identities, and only kinds 0, 3, 10002 and a
+      Blossom upload authorisation (24242), checked in `backend/src/console_signing.rs`. A change
+      that widens its kinds, its callers or what it accepts needs the threat model updated first
+      (T8).
 - [ ] An app's self-reported name, URL or image decides nothing (T10).
 
 **Secrets**

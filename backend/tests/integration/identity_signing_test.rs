@@ -87,12 +87,13 @@ async fn an_administrator_has_an_identity_sign_its_profile_follows_and_relays() 
     let entry = logged.iter().find(|l| l["event_id"] == primary.id.to_hex()).unwrap();
     assert_eq!(entry["identity_pubkey"], app.bunker.public_key().to_hex());
 
-    // And in the export, with the administrator as the actor and the console as the detail.
+    // And in the export, with the administrator as the actor, the console as the detail, and no app.
     let exported = export(&app).await;
     let row = exported.iter().find(|r| r["event_id"] == ids[0]).expect("exported");
     assert_eq!(row["action"], "signed");
     assert_eq!(row["actor_pubkey"], admin);
     assert_eq!(row["detail"], "via=console");
+    assert!(row["client_pubkey"].is_null(), "no app asked for it: {row}");
     assert_eq!(row["identity_pubkey"], sales.public_key().to_hex());
 }
 
@@ -117,7 +118,7 @@ async fn anything_but_those_kinds_and_a_short_upload_authorisation_is_refused_an
         (json!({ "kind": 0, "created_at": at, "tags": [], "content": "[1]" }), "bad_content"),
         (json!({ "kind": 3, "created_at": at, "tags": [[]], "content": "" }), "bad_tags"),
         (json!({ "kind": 3, "created_at": at, "tags": [["p", "x".repeat(2000)]], "content": "" }), "bad_tags"),
-        // Blossom: an upload only, one blob, expiring within 5 minutes.
+        // Blossom: an upload only, one blob, expiring within 6 minutes.
         (upload_auth(3600), "bad_upload_auth"),
         (upload_auth(-10), "bad_upload_auth"),
         (json!({ "kind": 24242, "created_at": at, "content": "", "tags": [["x", hash], ["expiration", (at + 60).to_string()]] }), "bad_upload_auth"),

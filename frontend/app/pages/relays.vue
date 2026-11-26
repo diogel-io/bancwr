@@ -7,6 +7,7 @@ import { RelayListError } from '~/composables/useRelayList'
 import { SignerCancelled } from '~/composables/useSignerPrompt'
 import { SignerMismatch } from '~/composables/useUserSigner'
 import { IdentitySignError } from '~/utils/identity-signer'
+import { whenReady } from '~/composables/useEditTarget'
 import { relayKey } from '~/utils/relay-url'
 import type { PublishResult } from '~/utils/relay-io'
 
@@ -65,7 +66,8 @@ const saveError = ref<string>()
 const published = ref<PublishResult>()
 
 onMounted(() => {
-  list.load()
+  // Only once whose account it is is known: an unknown identity's key is never read.
+  whenReady(target, () => list.load())
   void ensure()
 })
 
@@ -98,9 +100,13 @@ function undo(url: string, pending: 'add' | 'remove' | 'markers' | undefined) {
 }
 
 // Staged changes are not lost silently.
-onBeforeRouteLeave(() => {
-  if (dirty.value && !saving.value && !window.confirm('Leave without saving your relay list changes?')) return false
-})
+function mayLeave() {
+  return !dirty.value || saving.value || window.confirm('Leave without saving your relay list changes?')
+}
+onBeforeRouteLeave(() => mayLeave())
+// /profile and /identities/:pubkey/profile are one route record (an alias), so moving between them
+// is an update, not a leave, and the new path's page instance would drop the draft (#150).
+onBeforeRouteUpdate((to, from) => to.path === from.path || mayLeave())
 function beforeUnload(event: BeforeUnloadEvent) {
   if (dirty.value) event.preventDefault()
 }
@@ -119,7 +125,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         class="mb-4"
         :target="target"
       />
-      <template v-if="target.missing.value" />
+      <template v-if="target.missing.value || target.failed.value" />
       <div
         v-else-if="state === 'idle' || state === 'loading'"
         class="flex items-center gap-2 text-sm text-muted"

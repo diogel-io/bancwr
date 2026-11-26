@@ -21,8 +21,8 @@ pub const CONSOLE_KINDS: [u16; 4] = [PROFILE_KIND, FOLLOWS_KIND, RELAY_LIST_KIND
 /// How far `created_at` may be from the bunker's clock, either way. The editors set it a second
 /// past the event they replace, so it can be slightly ahead.
 pub const MAX_CLOCK_SKEW_SECONDS: i64 = 600;
-/// How long an upload authorisation may stay valid: the console asks for 5 minutes
-/// (`frontend/app/utils/blossom.ts`), allowed a minute for the browser's clock.
+/// How long an upload authorisation may stay valid: 6 minutes. The console asks for 5
+/// (`frontend/app/utils/blossom.ts`); the sixth allows for the browser's clock running ahead.
 pub const MAX_UPLOAD_AUTH_SECONDS: i64 = 300 + 60;
 /// Size limits: generous for a follow list of thousands, far below anything abusive.
 pub const MAX_CONTENT_BYTES: usize = 64 * 1024;
@@ -116,7 +116,7 @@ fn check_upload_auth(template: &EventTemplate, now: i64) -> Result<(), Refusal> 
     };
     match expiration {
         Some(at) if at > now && at - now <= MAX_UPLOAD_AUTH_SECONDS => Ok(()),
-        _ => Err(refuse("bad_upload_auth", "An image upload authorisation must expire within 5 minutes.")),
+        _ => Err(refuse("bad_upload_auth", "An image upload authorisation must expire within 6 minutes.")),
     }
 }
 

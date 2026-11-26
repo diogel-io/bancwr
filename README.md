@@ -321,7 +321,9 @@ An administrator edits each identity's own Nostr account from **Config**, **Iden
 Sales" for the Sales identity. The bunker signs each change as the identity, and the signing log
 records it under the administrator, with Console as the app (#150). Changes are published to the
 identity's own NIP-65 relays and the profile relays, as for a member's own, not the bunker's relays.
-With only one identity, nothing changes and none of this appears. See "More than one identity" in
+With only one identity, **May sign as**, the choice of identity and the identity names on
+connections and in the log do not appear, and there is nothing to retire, but **Profile**,
+**Follows** and **Relays** do, for that identity. See "More than one identity" in
 [`backend/README.md`](backend/README.md#more-than-one-identity-103).
 
 ### The key and backups

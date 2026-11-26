@@ -164,8 +164,12 @@ test('an administrator edits the second identity\'s profile and follows, signed 
   pool.close([relay])
 
   // Both are in the log under the administrator, from the console.
-  const logs = await (await page.request.get('/api/bunker/logs')).json() as { event_id: string, origin?: string, identity_pubkey?: string, member_name?: string }[]
-  const edit = logs.find(l => l.event_id === profile.id)
-  expect(edit?.origin).toBe('console')
-  expect(edit?.identity_pubkey).toBe(brand)
+  const admin = getPublicKey(decode(process.env.E2E_ADMIN_NSEC!).data as Uint8Array)
+  const logs = await (await page.request.get('/api/bunker/logs')).json() as { event_id: string, origin?: string, identity_pubkey?: string, member_pubkey?: string }[]
+  for (const id of [profile.id, lists.find(list => list.tags.some(tag => tag[1] === followed))!.id]) {
+    const edit = logs.find(l => l.event_id === id)
+    expect(edit?.origin).toBe('console')
+    expect(edit?.identity_pubkey).toBe(brand)
+    expect(edit?.member_pubkey).toBe(admin)
+  }
 })

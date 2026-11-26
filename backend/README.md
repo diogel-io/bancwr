@@ -711,8 +711,8 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   `bad_upload_auth`, and nothing is signed or logged. An unknown or retired identity is `404`; one
   not unlocked in the running bunker is `409 {"error":"identity_unavailable"}`. Each signature is
   in the signing log with the administrator as `member_pubkey` and `pubkey`, no connection, and
-  `origin` `console`; the export gives the administrator as `actor_pubkey` and `via=console` as
-  `detail`. The console publishes the events itself, to the identity's NIP-65 relays and the
+  `origin` `console`; the export gives the administrator as `actor_pubkey`, `via=console` as
+  `detail`, and no `client_pubkey`, since no app asked for it. The console publishes the events itself, to the identity's NIP-65 relays and the
   profile relays, never the bunker's. There is still no route that signs any kind.
 - **Never a member's key.** No identity's key can be registered as a member, be
   `BANCWR_ADMIN_PUBKEY`, or sign in. `GET /api/bunker/status` lists every identity's key as

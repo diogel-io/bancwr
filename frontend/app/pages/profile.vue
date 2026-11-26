@@ -6,6 +6,7 @@ import { ProfileError } from '~/composables/useProfile'
 import { SignerCancelled } from '~/composables/useSignerPrompt'
 import { SignerMismatch } from '~/composables/useUserSigner'
 import { IdentitySignError } from '~/utils/identity-signer'
+import { whenReady } from '~/composables/useEditTarget'
 import { BlossomError, uploadToBlossom } from '~/utils/blossom'
 import { ImageError, prepareImage, type ImageKind } from '~/utils/image'
 import { validateForm } from '~/utils/profile'
@@ -36,7 +37,8 @@ const saving = ref(false)
 const saveError = ref<string>()
 const published = ref<PublishResult>()
 
-onMounted(() => profile.load())
+// Only once whose account it is is known: an unknown identity's key is never read.
+onMounted(() => whenReady(target, () => profile.load()))
 
 const { reconnecting, withSigner, reconnected } = target
 
@@ -82,9 +84,13 @@ function upload(file: File, kind: ImageKind): Promise<string> {
 }
 
 // Unsaved changes are not lost silently.
-onBeforeRouteLeave(() => {
-  if (dirty.value && !saving.value && !window.confirm('Leave without saving your profile changes?')) return false
-})
+function mayLeave() {
+  return !dirty.value || saving.value || window.confirm('Leave without saving your profile changes?')
+}
+onBeforeRouteLeave(() => mayLeave())
+// /profile and /identities/:pubkey/profile are one route record (an alias), so moving between them
+// is an update, not a leave, and the new path's page instance would drop the draft (#150).
+onBeforeRouteUpdate((to, from) => to.path === from.path || mayLeave())
 function beforeUnload(event: BeforeUnloadEvent) {
   if (dirty.value) event.preventDefault()
 }
@@ -103,7 +109,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         class="mb-4"
         :target="target"
       />
-      <template v-if="target.missing.value" />
+      <template v-if="target.missing.value || target.failed.value" />
       <div
         v-else-if="state === 'idle' || state === 'loading'"
         class="flex items-center gap-2 text-sm text-muted"

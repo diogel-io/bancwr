@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Whose account the Profile, Follows and Relays pages edit (#70, #150): the signed-in member's
 // own ("Signed in as"), or one of the bunker's identities, named in a banner so nobody mistakes it
-// for their own. An identity the bunker does not have is said so, and nothing is edited.
+// for their own. An identity the bunker does not have, or a list of them that could not be read,
+// is said so, and nothing is edited.
 import { npubEncode } from 'nostr-tools/nip19'
 import type { EditTarget } from '~/composables/useEditTarget'
 
@@ -23,6 +24,16 @@ const npub = computed(() => props.target.pubkey ? npubEncode(props.target.pubkey
     description="This bunker has no identity with that key, so there is nothing to edit here."
     :actions="[{ label: 'Back to Config', color: 'neutral', variant: 'outline', to: '/config' }]"
     data-testid="editing-identity-missing"
+  />
+  <UAlert
+    v-else-if="target.failed.value"
+    class="shrink-0"
+    color="error"
+    variant="subtle"
+    title="Couldn't list the bunker's identities"
+    description="It is not known whether this is one of them, so nothing has been read or can be edited."
+    :actions="[{ label: 'Try again', color: 'neutral', variant: 'outline', onClick: () => target.retry() }]"
+    data-testid="editing-identity-failed"
   />
   <UAlert
     v-else

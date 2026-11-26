@@ -35,10 +35,29 @@ export interface EditTarget {
   identity: ComputedRef<BunkerIdentity | undefined>
   /** The list has loaded and holds no such identity, or the key is not a key. */
   missing: ComputedRef<boolean>
+  /** Whose account it is, known and in the bunker: the page reads nothing before. */
+  ready: ComputedRef<boolean>
+  /** The bunker's identities could not be listed, so it is not known whether this is one. */
+  failed: ComputedRef<boolean>
+  /** Lists the identities again, after `failed`. */
+  retry: () => Promise<void>
   withSigner: (work: (signer: NostrSigner) => Promise<void>) => Promise<void>
   /** The member's own signer's reconnect dialog: never opens for an identity. */
   reconnecting: Ref<boolean>
   reconnected: ReturnType<typeof useSignerPrompt>['reconnected']
+}
+
+/** Runs `read` once, as soon as whose account it is is known (`ready`), and never before. */
+export function whenReady(target: Pick<EditTarget, 'ready'>, read: () => unknown): void {
+  if (target.ready.value) {
+    read()
+    return
+  }
+  const stop = watch(target.ready, (ready) => {
+    if (!ready) return
+    stop()
+    read()
+  })
 }
 
 export function useEditTarget(): EditTarget {
@@ -50,6 +69,9 @@ export function useEditTarget(): EditTarget {
       editingIdentity: false,
       identity: computed(() => undefined),
       missing: computed(() => false),
+      ready: computed(() => true),
+      failed: computed(() => false),
+      retry: async () => {},
       ...prompt
     }
   }
@@ -63,6 +85,9 @@ export function useEditTarget(): EditTarget {
     editingIdentity: true,
     identity,
     missing,
+    ready: computed(() => identity.value !== undefined),
+    failed: computed(() => !!pubkey && identities.status.value === 'error'),
+    retry: () => identities.refresh(),
     async withSigner(work) {
       if (!pubkey) return
       await work(identitySigner(pubkey))
