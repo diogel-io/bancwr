@@ -24,9 +24,15 @@ const allLinks: (NavigationMenuItem & { to: string })[] = [
 // Only what the signed-in role may open (#26, #77, utils/access.ts). The middleware refuses the rest
 // anyway, so offering it would only lead to a permission-denied page.
 const auth = useAuth()
+const route = useRoute()
 const links = computed<NavigationMenuItem[]>(() => {
   const state = auth.state.value
-  return state.status === 'signed-in' ? allLinks.filter(link => canOpen(state.role, link.to)) : []
+  if (state.status !== 'signed-in') return []
+  const allowed = allLinks.filter(link => canOpen(state.role, link.to))
+  // An identity's profile, follows and relays (#150) are the member's own pages under another path,
+  // so the router would mark the member's Profile, Follows or Relays active. They are reached from
+  // Config, which is marked instead, so nobody takes the page for their own.
+  return route.path.startsWith('/identities/') ? allowed.map(link => ({ ...link, active: link.to === '/config' })) : allowed
 })
 </script>
 

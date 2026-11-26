@@ -162,6 +162,10 @@ name = "identities_test"
 path = "tests/integration/identities_test.rs"
 
 [[test]]
+name = "identity_signing_test"
+path = "tests/integration/identity_signing_test.rs"
+
+[[test]]
 name = "keyring_test"
 path = "tests/unit/keyring_test.rs"
 

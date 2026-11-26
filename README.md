@@ -168,7 +168,8 @@ change the `FROM` line in the Dockerfile to it.
 The API behind it only answers requests the frontend has signed with `BANCWR_PROXY_SECRET`, naming
 the signed-in key, and checks that key's role in the vault each time. The bunker does not start
 without the secret. There is no `POST /sign`: it signed any event for anyone who could reach the
-port.
+port. The only route that signs on request is an administrator's, as one of the bunker's
+identities, for its profile, follows, relays and profile image uploads (#150).
 
 ### Signing in
 
@@ -315,7 +316,14 @@ backups. Under **Config**, **Identities** lists them; on a member's team page, *
 which they may use, and a connection token is issued for one of them, which its app then signs as.
 An administrator can **Retire** an identity other than the primary: its apps are disconnected, its
 key is destroyed, and its signatures stay in the log.
-With only one identity, nothing changes and none of this appears. See "More than one identity" in
+An administrator edits each identity's own Nostr account from **Config**, **Identities**:
+**Profile**, **Follows** and **Relays** open the same pages as the member's own, named "Editing
+Sales" for the Sales identity. The bunker signs each change as the identity, and the signing log
+records it under the administrator, with Console as the app (#150). Changes are published to the
+identity's own NIP-65 relays and the profile relays, as for a member's own, not the bunker's relays.
+With only one identity, **May sign as**, the choice of identity and the identity names on
+connections and in the log do not appear, and there is nothing to retire, but **Profile**,
+**Follows** and **Relays** do, for that identity. See "More than one identity" in
 [`backend/README.md`](backend/README.md#more-than-one-identity-103).
 
 ### The key and backups

@@ -52,6 +52,8 @@ const ROUTES: &[Route] = &[
     Route { method: "DELETE", path: "/api/bunker/identities/{admin}", roles: &[A], service: false },
     Route { method: "PUT", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
     Route { method: "DELETE", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
+    // Signing an identity's profile, follows or relays in the console (#150).
+    Route { method: "POST", path: "/api/bunker/identities/{admin}/sign", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/approve", roles: &[A], service: false },
     Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/reject", roles: &[A], service: false },
 ];
@@ -71,6 +73,9 @@ fn request_for(app: &common::TestApp, route: &Route, identity: &str) -> common::
     match (route.method, route.path) {
         ("POST", "/api/bunker/team") => request.json(&member_body()),
         ("POST", "/api/bunker/identities") => request.json(&serde_json::json!({ "label": "x" })),
+        ("POST", path) if path.ends_with("/sign") => request.json(&serde_json::json!({
+            "kind": 0, "created_at": chrono::Utc::now().timestamp(), "tags": [], "content": "{}"
+        })),
         ("PATCH", path) if path.starts_with("/api/bunker/identities/") => request.json(&serde_json::json!({ "label": "x" })),
         ("PATCH", _) => request.json(&serde_json::json!({ "role": "signer" })),
         ("PUT", "/api/bunker/relays") => request.json(&serde_json::json!({ "relays": [] })),
@@ -181,6 +186,7 @@ async fn an_administrator_reaches_every_route() {
             "POST" if route.path.contains("/approvals/") => StatusCode::NOT_FOUND,
             // The administrator's key is no identity: 404 from the handler.
             "PUT" if route.path.contains("/identities/") => StatusCode::NOT_FOUND,
+            "POST" if route.path.ends_with("/sign") => StatusCode::NOT_FOUND,
             "POST" if route.path.ends_with("/tokens") || route.path.ends_with("/nostrconnect") => StatusCode::CONFLICT,
             "POST" if route.path == "/api/bunker/identities" => StatusCode::CREATED,
             _ => StatusCode::OK,

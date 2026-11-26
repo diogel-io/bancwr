@@ -59,6 +59,8 @@ export interface LogEntry {
   connection_id?: string | null
   /** The identity that signed (#103), hex. */
   identity_pubkey?: string | null
+  /** `console` when an administrator's edit of an identity's profile, follows or relays asked for it (#150), not an app. */
+  origin?: 'console' | null
 }
 
 /** GET /api/bunker/metrics */

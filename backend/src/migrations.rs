@@ -34,6 +34,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("make every viewer a signer", viewers_become_signers),
     ("retire identities", retire_identities),
     ("connect apps from their nostrconnect:// codes", nostrconnect_connections),
+    ("mark signatures made from the console", console_signatures),
 ];
 
 /// The version a fully migrated database is at.
@@ -596,4 +597,12 @@ fn retire_identities(tx: &Transaction) -> anyhow::Result<()> {
 ///     for those, which are not listed as tokens, and NULL for every token issued as before.
 fn nostrconnect_connections(tx: &Transaction) -> anyhow::Result<()> {
     add_missing_columns(tx, &[("nip46_connections", "relays", "TEXT"), ("nip46_tokens", "origin", "TEXT")])
+}
+
+/// 18. Signatures the console asked for (#150): an administrator editing an identity's profile,
+///     follows or relays, signed by the bunker as that identity. `signing_logs.origin` is `console`
+///     for those, which name the administrator as both the member and the key that asked, and no
+///     connection. NULL for every signature made for a NIP-46 app, as before.
+fn console_signatures(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(tx, &[("signing_logs", "origin", "TEXT")])
 }

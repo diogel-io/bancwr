@@ -122,6 +122,7 @@ its group:
 | `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | |
 | `GET /api/bunker/identities` | all, with members | those they may use | |
 | `POST /api/bunker/identities`; `PATCH`, `DELETE /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | |
+| `POST /api/bunker/identities/:pubkey/sign` | yes | | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
@@ -698,6 +699,21 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   (`{"label":"…"}`, 1 to 100 characters). `PUT` and `DELETE
   /api/bunker/identities/:pubkey/members/:member` grant and remove; a member whose stored role is not
   recognised is `400 {"error":"member_cannot_sign"}`.
+- **Its own profile, follows and relays** (#150): `POST /api/bunker/identities/:pubkey/sign`,
+  administrators only, signs an event the console built as the identity and returns it. The body
+  is a template, `{"kind":…,"created_at":…,"tags":[…],"content":"…"}`, and nothing else: the
+  bunker sets the identity's key, and any other field is `422`. It signs only kind 0 (the content a
+  JSON object), kind 3, kind 10002, and kind 24242 for a Blossom upload: one `t` tag of `upload`
+  and no other verb, one `x` tag with a SHA-256, and an `expiration` in the future and at most 6
+  minutes away. `created_at` must be within 10 minutes of the bunker's clock, the content at most
+  64 KiB, and the tags at most 10,000, each of 1 to 8 values of at most 1 KiB. Anything else is
+  `400` with `kind_not_allowed`, `bad_created_at`, `too_large`, `bad_content`, `bad_tags` or
+  `bad_upload_auth`, and nothing is signed or logged. An unknown or retired identity is `404`; one
+  not unlocked in the running bunker is `409 {"error":"identity_unavailable"}`. Each signature is
+  in the signing log with the administrator as `member_pubkey` and `pubkey`, no connection, and
+  `origin` `console`; the export gives the administrator as `actor_pubkey`, `via=console` as
+  `detail`, and no `client_pubkey`, since no app asked for it. The console publishes the events itself, to the identity's NIP-65 relays and the
+  profile relays, never the bunker's. There is still no route that signs any kind.
 - **Never a member's key.** No identity's key can be registered as a member, be
   `BANCWR_ADMIN_PUBKEY`, or sign in. `GET /api/bunker/status` lists every identity's key as
   `identities`, which sign-in reads.
@@ -706,7 +722,8 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   keep their places. Identity audit events name it too.
 - **Not yet:** retiring or replacing the primary, exporting a key, loading an identity imported
   with `import-key --add` without a restart, and a separate root credential per identity. Every
-  identity uses the bunker's relays.
+  identity uses the bunker's relays for NIP-46. Department leads editing their department's
+  identity waits for departments (#147).
 
 ## Podman
 

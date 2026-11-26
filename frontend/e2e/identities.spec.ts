@@ -3,8 +3,9 @@
 // signer that identity on their team page, issues a token for it, and a real NIP-46 client
 // (nostr-tools' BunkerSigner) signs as that identity, not the primary. A token for an identity the
 // member is not granted is refused. The bunker's relay is the in-process one.
+import { SimplePool } from 'nostr-tools/pool'
 import { BunkerSigner } from 'nostr-tools/nip46'
-import { decode } from 'nostr-tools/nip19'
+import { decode, npubEncode } from 'nostr-tools/nip19'
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { test, expect, sameOrigin } from './fixtures'
 
@@ -125,4 +126,50 @@ test('an administrator creates an identity in the console, an app signs as it, a
   // Its signature stays in the log, still naming it.
   const logs = await (await page.request.get('/api/bunker/logs')).json() as { event_id: string, identity_pubkey?: string }[]
   expect(logs.find(l => l.event_id === signed.id)?.identity_pubkey).toBe(sales)
+})
+
+test('an administrator edits the second identity\'s profile and follows, signed as it (#150)', async ({ page }) => {
+  const brand = hexOf(process.env.E2E_BRAND_NPUB!)
+  const followed = getPublicKey(generateSecretKey())
+  const pool = new SimplePool()
+
+  // From Config, to the identity's own profile page, which names it.
+  await page.goto('/config')
+  await page.getByTestId('identities-section').locator(`[data-identity="${brand}"]`).getByTestId('identity-edit-profile').click()
+  await expect(page).toHaveURL(`/identities/${brand}/profile`)
+  await expect(page.getByTestId('editing-identity')).toContainText('Editing e2e brand')
+  await page.getByLabel('Name', { exact: true }).fill('e2e brand name')
+  const confirmNew = page.getByLabel('I have no profile on another relay: create a new one.')
+  if (await confirmNew.isVisible()) await confirmNew.check()
+  await page.getByTestId('profile-save').click()
+  await expect(page.getByTestId('profile-saved')).toContainText('Accepted by')
+
+  const profiles = await pool.querySync([relay], { kinds: [0], authors: [brand] })
+  const profile = profiles.sort((a, b) => b.created_at - a.created_at)[0]!
+  expect(profile.pubkey).toBe(brand)
+  expect(JSON.parse(profile.content).name).toBe('e2e brand name')
+
+  // Its follows, the same way.
+  await page.goto(`/identities/${brand}/follows`)
+  await expect(page.getByTestId('editing-identity')).toContainText('Editing e2e brand')
+  await page.getByLabel('Follow someone').fill(npubEncode(followed))
+  await page.getByRole('button', { name: 'Find', exact: true }).click()
+  await page.getByTestId('add-follow-preview').getByRole('button', { name: 'Add' }).click()
+  const newList = page.getByLabel('I have no follow list on another relay: start a new one.')
+  if (await newList.isVisible()) await newList.check()
+  await page.getByTestId('follows-save').click()
+  await expect(page.getByTestId('follows-saved')).toBeVisible()
+  const lists = await pool.querySync([relay], { kinds: [3], authors: [brand] })
+  expect(lists.some(list => list.tags.some(tag => tag[0] === 'p' && tag[1] === followed))).toBe(true)
+  pool.close([relay])
+
+  // Both are in the log under the administrator, from the console.
+  const admin = getPublicKey(decode(process.env.E2E_ADMIN_NSEC!).data as Uint8Array)
+  const logs = await (await page.request.get('/api/bunker/logs')).json() as { event_id: string, origin?: string, identity_pubkey?: string, member_pubkey?: string }[]
+  for (const id of [profile.id, lists.find(list => list.tags.some(tag => tag[1] === followed))!.id]) {
+    const edit = logs.find(l => l.event_id === id)
+    expect(edit?.origin).toBe('console')
+    expect(edit?.identity_pubkey).toBe(brand)
+    expect(edit?.member_pubkey).toBe(admin)
+  }
 })

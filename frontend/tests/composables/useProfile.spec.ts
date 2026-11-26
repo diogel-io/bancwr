@@ -66,6 +66,33 @@ describe('useProfile', () => {
     expect(profile.dirty.value).toBe(false)
   })
 
+  it('reads and saves an identity\'s profile when given its key, leaving the footer alone (#150)', async () => {
+    const sales = 'c'.repeat(64)
+    relays.events.push(profileEvent(me, { name: 'me' }, 100), profileEvent(sales, { name: 'Sales', about: 'team' }, 100))
+    const footer = useSignedInProfile()
+    footer.setFromContent(JSON.stringify({ name: 'me' }))
+    const before = footer.profile.value
+    expect(before?.name).toBe('me')
+    const profile = useProfile({ io: relays, pubkey: sales })
+    await profile.load()
+    expect(profile.pubkey.value).toBe(sales)
+    expect(profile.form.value.name).toBe('Sales')
+
+    profile.form.value.display_name = 'Sales team'
+    const sign: NostrSigner = { signEvent: vi.fn(async (template: EventTemplate) => ({ ...template, id: 'f'.repeat(64), pubkey: sales, sig: '' }) as SignedEvent) }
+    await profile.save(sign)
+    expect(JSON.parse(relays.published[0]!.content)).toEqual({ name: 'Sales', about: 'team', display_name: 'Sales team' })
+    expect(footer.profile.value).toEqual(before)
+  })
+
+  it('reads nothing for an empty key, rather than the member\'s own (#150)', async () => {
+    relays.events.push(profileEvent(me, { name: 'me' }, 100))
+    const profile = useProfile({ io: relays, pubkey: '' })
+    await profile.load()
+    expect(profile.state.value).toBe('idle')
+    expect(relays.queries).toBe(0)
+  })
+
   it('gives the footer the saved name and picture, without a reload (#72)', async () => {
     relays.events.push(profileEvent(me, { name: 'alice', picture: 'https://img.example/old.png' }, 100))
     const profile = useProfile({ io: relays })

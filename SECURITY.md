@@ -91,6 +91,8 @@ A change to any of these needs the security review:
   `backend/src/main.rs`, which encrypt, decrypt and load the key and the secrets, and seed the first
   administrator
 - `backend/src/backup.rs`, which writes and restores the encrypted backup archives
+- `backend/src/console_signing.rs` and the signing route in `backend/src/identities_api.rs`, which
+  sign an identity's profile, follows and relays for an administrator (#150)
 - `backend/src/nip46.rs`, `backend/src/relay.rs`, `backend/src/connections_api.rs`,
   `backend/src/relays_api.rs` and `backend/src/bunker_relays.rs`, the NIP-46 path and its relays
 - `frontend/server/api/auth/*` and `frontend/server/utils/auth/*`, sign-in, sessions and the
@@ -127,9 +129,14 @@ A change to any of these needs the security review:
 
 **Signing**
 
-- [ ] Nothing signs without a connection token an administrator issued, and a connection signs
-      only the kinds it was granted, while its member may sign. There is still no "sign anything"
-      route (T8).
+- [ ] Nothing signs through NIP-46 without a connection token an administrator issued, and a
+      connection signs only the kinds it was granted, while its member may sign. There is still no
+      "sign anything" route (T8).
+- [ ] The one exception is `POST /api/bunker/identities/:pubkey/sign` (#150): no token, but
+      administrators only, as one of the bunker's identities, and only kinds 0, 3, 10002 and a
+      Blossom upload authorisation (24242), checked in `backend/src/console_signing.rs`. A change
+      that widens its kinds, its callers or what it accepts needs the threat model updated first
+      (T8).
 - [ ] An app's self-reported name, URL or image decides nothing (T10).
 
 **Secrets**

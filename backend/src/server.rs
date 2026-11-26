@@ -60,6 +60,9 @@ pub struct LogEntry {
     pub connection_id: Option<String>,
     /// The identity that signed (#103), hex.
     pub identity_pubkey: Option<String>,
+    /// `console` when an administrator's edit in the console asked for it (#150), not an app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -182,6 +185,7 @@ impl From<crate::db::SigningLog> for LogEntry {
             member_name: log.member_name,
             connection_id: log.connection_id,
             identity_pubkey: log.identity_pubkey,
+            origin: log.origin,
         }
     }
 }
@@ -479,7 +483,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/bunker/identities/:pubkey/members/:member",
             put(crate::identities_api::grant_identity).delete(crate::identities_api::remove_identity_grant),
-        );
+        )
+        // An identity's profile, follows and relays, edited in the console (#150): signed as the
+        // identity, for those kinds and a Blossom upload authorisation only, and logged.
+        .route("/api/bunker/identities/:pubkey/sign", post(crate::identities_api::sign_as_identity));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
     let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
     // Administrators and signers, each scoped to the caller: their connection tokens (#142) and
@@ -504,7 +511,9 @@ pub fn create_router(state: AppState) -> Router {
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no
-    // POST /sign either: it signed anything for anyone who could reach this port (#25).
+    // POST /sign either: it signed anything for anyone who could reach this port (#25). The only
+    // route that signs on request is an administrator's, as an identity, for its profile, follows,
+    // relays and image uploads (#150, `console_signing`).
     Router::new()
         .route(HEALTH_PATH, get(health_check))
         .merge(guarded(health, Access::Health))

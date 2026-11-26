@@ -1,6 +1,7 @@
 // The signed-in member's follow list (kind 3) (#32): read from their relays, changes staged, and
 // published together, signed by their own signer. Kind 3 is replaceable, so save() is guarded so
-// that nothing the member did not remove can be lost. Client-only: call load() from onMounted.
+// that nothing the member did not remove can be lost. With `pubkey`, one of the bunker's
+// identities' (#150), signed by the signer save() is given. Client-only: call load() from onMounted.
 import type { NostrEvent } from 'nostr-tools/pure'
 import { applyChanges, chunks, onlyStagedChanges, parseFollowProfile, parseFollows, type FollowProfile } from '~/utils/follows'
 import { newestEvent } from '~/utils/profile'
@@ -17,11 +18,12 @@ export const FOLLOWS_INCOMPLETE_READ = 'Couldn\'t read your full follow list: th
 /** Kind 0 lookups per request, so a list of thousands does not become one huge filter. */
 export const PROFILE_CHUNK = 250
 
-export function useFollows(deps: { io?: RelayIO } = {}) {
+export function useFollows(deps: { io?: RelayIO, pubkey?: string } = {}) {
   const member = useMemberRelays(deps)
   const { relays, searched } = member
   const auth = useAuth()
-  const pubkey = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : '')
+  // The account edited (#150): an identity's when given, otherwise the signed-in member's.
+  const pubkey = computed(() => deps.pubkey ?? (auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : ''))
 
   const state = ref<FollowsState>('idle')
   /** The newest kind 3 as last loaded or saved; undefined when none was found. */

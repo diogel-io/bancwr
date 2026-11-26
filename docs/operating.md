@@ -552,6 +552,21 @@ nothing changes. The bunker keeps signing as before.
 - If an identity cannot be decrypted at start (its row altered, or the wrong credential), the
   bunker stays locked and its status names the identity by its label. Nothing signs until it is
   fixed: restore the database from a backup.
+### Editing an identity's profile, follows and relays
+
+Each identity is its own Nostr account, with its own name, picture, follows and relays (#150).
+Under **Config**, **Identities**, select **Profile**, **Follows** or **Relays** beside it. These are
+the same pages as your own, with a banner naming the identity, such as "Editing Sales":
+
+- The bunker signs each change as the identity. You don't need its key, and your own signer isn't
+  asked.
+- Changes go to the identity's own NIP-65 relays and the profile relays, as for your own account.
+  The bunker's relays carry NIP-46 traffic only, so they are left out.
+- A profile picture is uploaded to the identity's Blossom server, or the default one.
+- The signing log records each change under your name, with **Console** as the app.
+- Only administrators can do this. An identity that loads only after a restart has no links until
+  then.
+
 ### Retiring an identity
 
 When an account is no longer needed, select **Retire** beside it under **Config**, **Identities**.

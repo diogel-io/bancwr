@@ -90,9 +90,12 @@ test.describe('signer', () => {
   // The team and members' profiles are the administrators' alone (#143).
   for (const [path, title] of [
     ['/config', 'Config'], ['/logs', 'Logs'], ['/team', 'Team'],
-    [`/team/${randomNpub()}`, 'a team member\'s profile']
+    [`/team/${randomNpub()}`, 'a team member\'s profile'],
+    // An identity's own account (#150).
+    [`/identities/${randomNpub()}/profile`, 'an identity\'s profile'],
+    [`/identities/${randomNpub()}/follows`, 'an identity\'s follows']
   ] as const) {
-    test(`typing ${path.startsWith('/team/') ? '/team/<npub>' : path} gets the permission-denied page`, async ({ page }) => {
+    test(`typing ${path.replace(/npub1\w+/u, '<npub>')} gets the permission-denied page`, async ({ page }) => {
       await expectRefused(page, path, title, 'Signer')
     })
   }

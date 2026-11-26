@@ -1,6 +1,7 @@
 // The signed-in member's NIP-65 relay list (kind 10002) (#33): read from their relays, changes
 // staged, and published together, signed by their own signer. Replaceable, like the follow list
-// (#32), so save() carries the same guards. Client-only: call load() from onMounted.
+// (#32), so save() carries the same guards. With `pubkey`, one of the bunker's identities' (#150),
+// signed by the signer save() is given. Client-only: call load() from onMounted.
 import type { NostrEvent } from 'nostr-tools/pure'
 import { newestEvent } from '~/utils/profile'
 import { applyRelayChanges, onlyStagedRelayChanges, parseRelayEntries, type Markers, type RelayChanges } from '~/utils/relay-list'
@@ -15,11 +16,12 @@ export class RelayListError extends Error {}
 export const RELAY_LIST_NO_RELAY_ON_SAVE = 'Couldn\'t read your relay list from any relay, so saving now could drop relays. Check your connection and try again.'
 export const RELAY_LIST_INCOMPLETE_READ = 'Couldn\'t read your full relay list: the relays that had it did not answer this time, so saving now could drop relays. Try again.'
 
-export function useRelayList(deps: { io?: RelayIO } = {}) {
+export function useRelayList(deps: { io?: RelayIO, pubkey?: string } = {}) {
   const member = useMemberRelays(deps)
   const { relays, searched, defaults, indexers } = member
   const auth = useAuth()
-  const pubkey = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : '')
+  // The account edited (#150): an identity's when given, otherwise the signed-in member's.
+  const pubkey = computed(() => deps.pubkey ?? (auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : ''))
 
   const state = ref<RelayListState>('idle')
   /** The newest kind 10002 as last loaded or saved; undefined when none was found. */
