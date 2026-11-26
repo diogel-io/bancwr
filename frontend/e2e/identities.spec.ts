@@ -139,8 +139,8 @@ test('an administrator edits the second identity\'s profile and follows, signed 
   await expect(page).toHaveURL(`/identities/${brand}/profile`)
   await expect(page.getByTestId('editing-identity')).toContainText('Editing e2e brand')
   await page.getByLabel('Name', { exact: true }).fill('e2e brand name')
-  const confirmNew = page.getByTestId('profile-confirm-new')
-  if (await confirmNew.isVisible()) await confirmNew.getByRole('checkbox').check()
+  const confirmNew = page.getByLabel('I have no profile on another relay: create a new one.')
+  if (await confirmNew.isVisible()) await confirmNew.check()
   await page.getByTestId('profile-save').click()
   await expect(page.getByTestId('profile-saved')).toContainText('Accepted by')
 
