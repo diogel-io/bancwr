@@ -17,8 +17,9 @@ const { data: team, error, refresh: refreshTeam } = useFetch<TeamMember[]>('/api
 
 const departments = computed(() => departmentsOf(list.value))
 const adminOnly = computed(() => list.value.filter(identity => identity.admin_only))
-// Grants decide who may use the primary once there is another identity or a lead (#103, #147).
-const grantsMatter = computed(() => list.value.length > 1 || list.value.some(identity => (identity.leads ?? []).length > 0))
+// Grants decide who may use the primary once there is another identity or a department has had a
+// lead (#103, #147), and from then on someone always holds one, until every grant is removed.
+const grantsMatter = computed(() => list.value.length > 1 || list.value.some(identity => (identity.members ?? []).length > 0))
 
 const actionError = ref<string>()
 async function refresh() {

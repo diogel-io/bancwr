@@ -115,6 +115,21 @@ fn the_first_lead_in_a_single_identity_bunker_first_grants_the_primary_to_everyo
 }
 
 #[test]
+fn once_a_lead_was_appointed_grants_keep_deciding_after_the_last_lead_steps_down() {
+    let (db, _, signer) = bunker();
+    let lead = hex();
+    db.add_team_member("Pam", &lead, Role::Signer).unwrap();
+    db.grant_identity_as(None, &lead, DepartmentRole::Lead, None, Utc::now()).unwrap();
+    // The lead takes Sam out of the primary's department, then steps down.
+    db.remove_identity_grant(None, &signer, Some(&lead), Utc::now()).unwrap();
+    db.grant_identity_as(None, &lead, DepartmentRole::Member, Some(&lead), Utc::now()).unwrap();
+
+    assert!(db.grants_matter().unwrap());
+    assert!(!db.may_use_identity(&signer, None).unwrap(), "Sam does not get the primary back");
+    assert!(db.may_use_identity(&lead, None).unwrap());
+}
+
+#[test]
 fn an_administrator_only_identity_refuses_grants_and_leads() {
     let (db, admin, signer) = bunker();
     let root = hex();

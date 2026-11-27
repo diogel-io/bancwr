@@ -727,7 +727,8 @@ lead" applies only to identities they hold a `lead` grant on, checked on every r
   there are several, or a department has a lead (#147), a signer needs a grant of either role for
   each identity, the primary included; adding the first other identity, or appointing the first
   lead, grants the primary to every member who may sign, in the same transaction, so nobody loses
-  access. Administrators may use every identity without a grant. An **administrator only**
+  access. From then on grants decide for good, even after the last lead steps down, so nobody taken
+  out of the primary's department regains it. Administrators may use every identity without a grant. An **administrator only**
   identity (#147) is used by administrators alone: it refuses grants and leads
   (`409 {"error":"admin_only"}`), and a primary marked so in a single-identity bunker is not used
   by signers. `identity_allowed` and `may_use_identity` in `src/db.rs` decide this, together. A member added through the API gets the identities in

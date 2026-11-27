@@ -830,12 +830,18 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
     value.as_deref().map(parse_time).transpose()
 }
 
+/// The `config` key recording that grants decide who may use the primary (#147), set when the
+/// primary is first granted to everyone. It is never cleared, so a single-identity bunker whose last
+/// lead steps down keeps its grants, and nobody taken out of the primary's department regains it.
+const GRANTS_MATTER_KEY: &str = "grants_matter";
+
 /// Whether grants decide who may use the primary (#103, #147): once the bunker holds an identity
-/// beside the primary, once a department has a lead, or while the primary is administrator only.
-/// Until then everyone who may sign may use the primary, so a single-identity bunker behaves as
-/// before departments.
+/// beside the primary, once a department has had a lead (`GRANTS_MATTER_KEY`), or while the
+/// primary is administrator only. Until then everyone who may sign may use the primary, so a
+/// single-identity bunker behaves as before departments.
 const GRANTS_MATTER: &str = "(EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
        OR EXISTS(SELECT 1 FROM identity_access WHERE role = 'lead')
+       OR EXISTS(SELECT 1 FROM config WHERE key = 'grants_matter')
        OR EXISTS(SELECT 1 FROM identities WHERE is_primary = 1 AND admin_only = 1))";
 
 /// A condition on the `identity_access` row `a`: it is a grant of a recognised role (#147; an
@@ -907,7 +913,8 @@ fn visible_to(table: &str, n: usize) -> String {
 
 /// Grants the primary to every member who may sign, inside the caller's transaction, when grants
 /// do not matter yet, so nobody loses access when they start to (#103, #147): before the first
-/// identity is added beside the primary, or the first lead is appointed.
+/// identity is added beside the primary, or the first lead is appointed. From then on grants matter
+/// for good (`GRANTS_MATTER_KEY`).
 fn grant_primary_before_grants_matter(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<()> {
     let matter: bool = conn.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?;
     if !matter {
@@ -918,6 +925,10 @@ fn grant_primary_before_grants_matter(conn: &Connection, now: DateTime<Utc>) -> 
                 MEMBER_CAN_SIGN
             ),
             params![db_time(now)],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?1, 'true', ?2)",
+            params![GRANTS_MATTER_KEY, db_time(now)],
         )?;
     }
     Ok(())
