@@ -39,7 +39,7 @@ const forPubkey = ref(props.self)
 const PRIMARY = 'primary'
 const identity = ref(PRIMARY)
 const choosesIdentity = computed(() => (props.identities?.length ?? 0) > 1)
-// Only the identities the chosen member may use, as the bunker decides it (IDENTITY_ALLOWED): an
+// Only the identities the chosen member may use, as the bunker decides it (`identity_allowed`): an
 // administrator every one, anyone on a bunker with only the primary that one, anyone else those
 // they are granted. The bunker refuses the rest (no_identity_access).
 // A signer's list is already only those they may use, without `members` (#142): offer it whole.
