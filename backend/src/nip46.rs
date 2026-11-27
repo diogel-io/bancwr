@@ -251,6 +251,12 @@ impl Nip46Handler {
         self.approvals.len()
     }
 
+    /// The request `id` waiting for approval, if any: so the routes can check who may decide it
+    /// (#147) before deciding.
+    pub fn pending_approval(&self, id: Uuid) -> Option<Pending> {
+        self.approvals.get(id)
+    }
+
     /// Requests waiting for approval, oldest first: all, or those for `for_pubkey`.
     pub fn pending_approvals(&self, for_pubkey: Option<&str>) -> Vec<Pending> {
         self.approvals.list(for_pubkey)
@@ -585,6 +591,10 @@ impl Nip46Handler {
         };
 
         let mut detail = pending.audit_detail();
+        // The approver holds the connection themselves (#147): allowed, and shown.
+        if actor == Some(connection.for_pubkey.as_str()) {
+            detail.push_str(";self=true");
+        }
         if let Some(note) = &note {
             detail.push_str(&format!(";note={}", note));
         }

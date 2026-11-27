@@ -615,3 +615,24 @@ async fn an_identity_created_in_the_console_survives_a_backup_and_a_retired_one_
         .unwrap();
     assert_eq!(res.status(), 400);
 }
+
+#[test]
+fn import_key_marks_the_primary_or_an_added_identity_administrator_only() {
+    // The company root's bunker (#147): its primary is imported administrator only.
+    let (bunker, brand, admin) = (Keys::generate(), Keys::generate(), Keys::generate());
+    let host = Host::new(&admin);
+    std::fs::create_dir(host.path("data")).unwrap();
+    let nsec = bunker.secret_key().to_bech32().unwrap();
+    let output = host.command(&["import-key", "--admin-only"], &[("BUNKER_NSEC", nsec), ("BANCWR_ROOT_KEY_FILE", host.secret("root"))]).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("administrator only"));
+
+    let added = host.add_identity(&brand, &["--label", "Holding", "--admin-only"]);
+    assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
+
+    let db = bunker::db::Database::new(host.path("data/bancwr.db").to_str().unwrap()).unwrap();
+    let identities = db.list_identities().unwrap();
+    assert_eq!(identities.len(), 2);
+    assert!(identities.iter().all(|i| i.admin_only), "{:?}", identities);
+    assert_eq!(identities[0].pubkey, bunker.public_key().to_hex());
+}
