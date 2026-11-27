@@ -2,7 +2,7 @@
 // A team member's Nostr profile (#77), read-only, for administrators only (#143): who the vault
 // says they are (name and role, from the bunker), and their kind 0 profile (picture, name, about,
 // NIP-05, links) read from their relays as the profile page reads one (#30, #62). Nothing here
-// edits or publishes, except which identities they may sign as (#103), on a bunker with several.
+// edits or publishes, except their departments (#103, #147), on a bunker with several identities.
 // Reached from each row of the team list; the route takes an npub or hex.
 import { decode, npubEncode } from 'nostr-tools/nip19'
 import { ROLE_LABELS, isRole } from '#shared/types/bunker'
@@ -104,7 +104,7 @@ onMounted(() => {
             </p>
           </UCard>
 
-          <!-- Which identities they may sign as (#103), on a bunker with several. -->
+          <!-- Their departments (#103, #147), on a bunker with several identities. -->
           <IdentitiesIdentityAccess
             v-if="isRole(member.role)"
             :member="member.pubkey"

@@ -17,9 +17,11 @@ const state = reactive<AddTeamMemberRequest>({
 // The two roles (#77, #143), in order of access: Admin, Signer.
 const roles = ROLES.map(value => ({ label: ROLE_LABELS[value], value }))
 
-// The identities a new member may sign as (#103), offered only on a bunker with several: the
-// primary preselected, as the bunker grants it when none is named.
-const { list: identities, several } = useIdentities()
+// The departments a new member joins (#103, #147), offered only on a bunker with several
+// identities: the primary preselected, as the bunker grants it when none is named. Administrator
+// only identities have no members, so they are not offered.
+const { list: allIdentities, several } = useIdentities()
+const identities = computed(() => allIdentities.value.filter(identity => !identity.admin_only))
 const chosenIdentities = ref<string[]>([])
 watch(identities, (now) => {
   if (!chosenIdentities.value.length) chosenIdentities.value = now.filter(i => i.is_primary).map(i => i.pubkey)
@@ -69,6 +71,7 @@ const addMember = async () => {
       >
         <TeamMemberList
           :data="team || []"
+          :identities="allIdentities"
           @refresh="refresh"
         />
 
@@ -103,7 +106,7 @@ const addMember = async () => {
             </UFormField>
             <UFormField
               v-if="offersIdentities"
-              label="May sign as"
+              label="Departments"
               data-testid="team-member-identities"
             >
               <div class="space-y-1.5">

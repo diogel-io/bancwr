@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// Requests held for an administrator's approval before signing (#102). Each shows the event as the
-// bunker will sign it: kind, content as plain text, tags, created_at and event id, with who asked
-// and which app. Administrators approve or reject, with an optional note the app is shown;
-// approving names the event id seen here, so a different event cannot be approved by mistake.
-// Signers see their own requests waiting, without the buttons. Refreshed every few seconds.
+// Requests held for approval before signing (#102). Each shows the event as the bunker will sign
+// it: kind, content as plain text, tags, created_at and event id, with who asked and which app.
+// Administrators, and the leads of its department (#147), approve or reject, with an optional note
+// the app is shown; approving names the event id seen here, so a different event cannot be
+// approved by mistake. Signers see their own requests waiting, without the buttons, and a lead
+// their departments' as well. Refreshed every few seconds.
 import type { PendingApproval } from '#shared/types/bunker'
 import { isForbidden } from '~/utils/access'
 import { bunkerRefusal } from '~/utils/bunker-error'
@@ -13,6 +14,9 @@ const props = defineProps<{ focus?: string }>()
 
 const auth = useAuth()
 const isAdministrator = computed(() => auth.state.value.status === 'signed-in' && auth.state.value.role === 'administrator')
+// Administrators decide every request, and a lead their departments' (#147); the bunker checks it.
+const { leads, isLead } = useIdentities()
+const mayDecide = (request: PendingApproval) => isAdministrator.value || leads(request.identity_pubkey)
 const self = computed(() => auth.state.value.status === 'signed-in' ? auth.state.value.pubkey : '')
 
 const { data, error, refresh } = useFetch<PendingApproval[]>('/api/bunker/approvals', { key: 'approvals', default: () => [] })
@@ -84,7 +88,7 @@ function exact(iso: string): string {
       color="neutral"
       variant="subtle"
       icon="i-lucide-shield-check"
-      :title="isAdministrator ? 'Nothing below is signed until an administrator approves it.' : 'An administrator must approve these before the bunker signs them.'"
+      :title="isAdministrator || isLead ? 'Nothing below is signed until an administrator or a lead of its department approves it.' : 'An administrator must approve these before the bunker signs them.'"
       description="Requests that nobody decides time out, and nothing is signed. The app is told either way."
       data-testid="approvals-explainer"
     />
@@ -167,7 +171,7 @@ function exact(iso: string): string {
           <code data-testid="approval-event-id">{{ request.event_id }}</code>
         </p>
 
-        <template v-if="isAdministrator">
+        <template v-if="mayDecide(request)">
           <UFormField
             label="Note (optional)"
             help="Recorded in the audit log, and shown to the app if you reject."

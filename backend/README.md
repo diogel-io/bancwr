@@ -630,7 +630,7 @@ them is not signed: it is held until an administrator approves or rejects it in 
   Otherwise the event is signed, logged as a signature, recorded as `approval_approved` with the
   administrator, and sent to the app.
 - **`POST /api/bunker/approvals/:id/reject`** with `{"note":"…"}` (optional), for administrators.
-  Nothing is signed; the app is told `Rejected by an administrator`, then `: <note>`.
+  Nothing is signed; the app is told `Rejected by an approver`, then `: <note>`.
 - Either on a request no longer waiting (decided, timed out or unknown) is `404`. Notes are one
   line of at most 280 characters, recorded in the audit `detail`, and shown to the app on a
   rejection.

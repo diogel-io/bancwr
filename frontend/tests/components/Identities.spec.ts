@@ -1,7 +1,6 @@
 // Identities in the console (#103): the Config section that lists, renames, creates and retires
-// them (#146), the team page's
-// "May sign as" for a member, the add-member form's choice, and the log's "Signed as" column, each
-// shown only once the bunker holds more than one identity.
+// them (#146), the team page's departments for a member (#147), the add-member form's choice, and
+// the log's "Signed as" column, each shown only once the bunker holds more than one identity.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
@@ -66,8 +65,9 @@ registerEndpoint(`/api/bunker/identities/${BRAND}`, {
 for (const method of ['PUT', 'DELETE'] as const) {
   registerEndpoint(`/api/bunker/identities/${BRAND}/members/${SAM}`, {
     method,
-    handler: () => {
-      state.calls.push({ method, path: `${BRAND}/${SAM}` })
+    handler: async (event) => {
+      const body = method === 'PUT' ? await readBody(event) : undefined
+      state.calls.push({ method, path: `${BRAND}/${SAM}`, ...(body ? { body } : {}) })
       return { success: true }
     }
   })
@@ -171,14 +171,23 @@ describe('Identities', () => {
     await vi.waitFor(() => expect(component.find('[data-testid="identity-retired"]').text()).toContain('Retired Brand B'))
   })
 
-  it('grants and removes a member\'s identities on their team page, only with several', async () => {
+  it('puts a member in and out of departments on their team page, only with several (#147)', async () => {
     state.identities = two()
     const component = await mount(inApp(IdentityAccess, { member: SAM, administrator: false }), { attachTo: document.body })
-    const brand = component.find(`[data-identity="${BRAND}"]`)
-    const primary = component.find(`[data-identity="${PRIMARY}"]`)
-    expect(primary.attributes('data-state') ?? primary.find('[data-state]').attributes('data-state')).toBe('checked')
-    await (brand.element.tagName === 'BUTTON' ? brand : brand.find('button')).trigger('click')
-    await vi.waitFor(() => expect(state.calls).toEqual([{ method: 'PUT', path: `${BRAND}/${SAM}` }]))
+    expect(component.find('h2').text()).toBe('Departments')
+    // Sam holds the primary as a member, and not Brand B.
+    expect(component.get(`button[aria-label="Role in Primary"]`).text()).toContain('Member')
+    expect(component.get(`button[aria-label="Role in Brand B"]`).text()).toContain('Not in it')
+    await component.get(`button[aria-label="Role in Brand B"]`).trigger('click')
+    await flushPromises()
+    const option = await vi.waitFor(() => {
+      const list = [...document.body.querySelectorAll('[role="listbox"]')].pop()
+      const found = [...(list?.querySelectorAll('[role="option"]') ?? [])].find(o => o.textContent?.trim() === 'Lead')
+      expect(found).toBeDefined()
+      return found as HTMLElement
+    })
+    option.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await vi.waitFor(() => expect(state.calls).toEqual([{ method: 'PUT', path: `${BRAND}/${SAM}`, body: { role: 'lead' } }]))
 
     // With one identity, nothing is shown.
     component.unmount()
@@ -187,6 +196,13 @@ describe('Identities', () => {
     await clearNuxtData()
     const single = await mount(inApp(IdentityAccess, { member: SAM, administrator: false }))
     expect(single.find('[data-testid="identity-access"]').exists()).toBe(false)
+  })
+
+  it('lists administrator only identities apart, with no role to choose (#147)', async () => {
+    state.identities = [...two(), { pubkey: 'f'.repeat(64), npub: 'npub1root', label: 'Company root', is_primary: false, available: true, members: [], admin_only: true }]
+    const component = await mount(inApp(IdentityAccess, { member: SAM, administrator: false }), { attachTo: document.body })
+    expect(component.find('button[aria-label="Role in Company root"]').exists()).toBe(false)
+    expect(component.get('[data-testid="identity-access-admin-only"]').text()).toContain('Company root')
   })
 
   it('offers the identities when adding a member, the primary preselected, and sends them', async () => {

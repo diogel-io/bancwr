@@ -939,7 +939,7 @@ async fn rejecting_signs_nothing_and_tells_the_app_with_the_note() {
 
     let reply = s.handler.reject(pending.id, Some(ADMIN), Some("Not on brand")).unwrap();
     assert_eq!(reply.response.result, None);
-    assert_eq!(reply.response.error.as_deref(), Some("Rejected by an administrator: Not on brand"));
+    assert_eq!(reply.response.error.as_deref(), Some("Rejected by an approver: Not on brand"));
     assert_eq!(s.db.signature_count().unwrap(), 0);
     let rejected = approval_events(&s).into_iter().find(|e| e.action == "approval_rejected").unwrap();
     assert_eq!(rejected.actor_pubkey.as_deref(), Some(ADMIN));

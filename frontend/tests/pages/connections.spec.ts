@@ -434,6 +434,37 @@ describe('Connections page', () => {
     expect(component.find('[data-testid="issued-identity"]').text()).toBe('Signs as Brand B (npub1brand)')
   })
 
+  it('lets a department lead issue for a member of their department, with approval (#147)', async () => {
+    const sales = '7'.repeat(64)
+    state.identities = [
+      { pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, my_role: 'member' },
+      { pubkey: sales, npub: 'npub1sales', label: 'Sales', is_primary: false, available: true, members: [me, other], leads: [me], my_role: 'lead' }
+    ] satisfies BunkerIdentity[]
+    const component = await mount('signer')
+    await flushPromises()
+    const form = component.find('[data-testid="issue-token"]')
+    // As the primary, which Gary only uses: no member select and no approval.
+    expect(form.find('#issue-token-for').exists()).toBe(false)
+    expect(form.find('[data-testid="issue-token-approval"]').exists()).toBe(false)
+
+    await form.find('#issue-token-identity').trigger('click')
+    await flushPromises()
+    ;([...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === 'Sales') as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await flushPromises()
+    await vi.waitFor(() => expect(form.find('#issue-token-for').exists()).toBe(true))
+    await form.find('#issue-token-for').trigger('click')
+    await flushPromises()
+    const offered = [...[...document.body.querySelectorAll('[role="listbox"]')].pop()!.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim())
+    expect(offered).toEqual(['Gary (you)', 'Bob'])
+    ;([...document.body.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === 'Bob') as HTMLElement).dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await flushPromises()
+    await form.find('input[maxlength="100"]').setValue('Sales bot')
+    await form.find('[data-testid="issue-token-approval"]').find('#issue-token-approval-1').trigger('click')
+    await form.trigger('submit')
+    await vi.waitFor(() => expect(state.issued).toHaveLength(1))
+    expect(state.issued[0]).toMatchObject({ for_pubkey: other, identity: sales, approval_kinds: [1] })
+  })
+
   it('shows the rate limit of each token and active connection (#101)', async () => {
     state.connections = [connection({ id: 'c1', rate_per_minute: 30, rate_burst: 10 })]
     state.tokens = [{ id: 't1', for_pubkey: other, issued_by: me, label: 'Bot', kinds: [1], methods: [], created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3_600_000).toISOString(), used_at: null, revoked_at: null, connection_lifetime_hours: null, rate_per_minute: 600, rate_burst: 100, approval_kinds: [] } satisfies Nip46Token]

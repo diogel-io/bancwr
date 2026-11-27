@@ -16,7 +16,10 @@ import { ENCRYPTION_METHODS, LIFETIMES, RATE_LIMITS, isDecrypt, kindLabel, metho
 const props = defineProps<{
   members: TeamMember[]
   self: string
-  /** Whether the signed-in member administers. A signer's form has no member select or approval (#142). */
+  /**
+   * Whether the signed-in member administers. A signer's form has no member select or approval
+   * (#142), unless they lead the department of the identity chosen (#147).
+   */
   administrator?: boolean
   /** The bunker's identities (#103); with more than one, the member chooses. */
   identities?: BunkerIdentity[]
@@ -47,6 +50,11 @@ const identityItems = computed(() => {
 watch(identityItems, (items) => {
   if (!items.some(i => i.value === identity.value)) identity.value = items[0]?.value ?? PRIMARY
 }, { immediate: true })
+/** The identity chosen, once the list has loaded. */
+const chosenIdentity = computed(() => (props.identities ?? []).find(i => identity.value === PRIMARY ? i.is_primary : i.pubkey === identity.value))
+// Who manages a connection that signs as it (#147): administrators, and the leads of its department,
+// who choose the member and may require approval. The bunker checks it again.
+const manages = computed(() => props.administrator || chosenIdentity.value?.my_role === 'lead')
 const signsAs = computed(() => {
   if (!identityItems.value.some(i => i.value === identity.value)) return undefined
   const chosen = (props.identities ?? []).find(i => identity.value === PRIMARY ? i.is_primary : i.pubkey === identity.value)
@@ -55,7 +63,12 @@ const signsAs = computed(() => {
 const noIdentity = computed(() => (props.identities?.length ?? 0) > 0 && !identityItems.value.length)
 const memberItems = computed(() => props.members
   .filter(m => m.npub && isRole(m.role))
+  // A lead issues for the members of the department they chose (#147); an administrator for anyone.
+  .filter(m => props.administrator || (chosenIdentity.value?.members ?? []).includes(m.pubkey))
   .map(m => ({ label: m.pubkey === props.self ? `${m.name} (you)` : m.name, value: m.pubkey })))
+watch(memberItems, (items) => {
+  if (!items.some(i => i.value === forPubkey.value)) forPubkey.value = props.self
+})
 
 const kindsText = ref('')
 const methods = ref<EncryptionMethod[]>([])
@@ -107,7 +120,8 @@ const ERRORS: Record<string, string> = {
   member_cannot_sign: 'This member has no recognised role and cannot sign.',
   no_identity_access: 'That member may not sign as this identity. Grant it on their team page first.',
   forbidden_member: 'You can only connect apps for yourself.',
-  approval_admin_only: 'Only an administrator can require approval.',
+  approval_admin_only: 'Only an administrator or a lead of this department can require approval.',
+  not_your_department: 'That member is not in this department.',
   invalid_identity: 'That is not one of this bunker\'s identities.',
   identity_unavailable: 'That identity is not available in this bunker yet: it loads when the bunker restarts.',
   invalid_kinds: 'Choose at least one kind the app may sign, or a method it may call.',
@@ -154,12 +168,12 @@ async function submit() {
   try {
     await props.connect({
       uri: code.value.trim(),
-      for_pubkey: props.administrator ? forPubkey.value : props.self,
+      for_pubkey: manages.value ? forPubkey.value : props.self,
       kinds: chosenKinds.value,
       methods: methods.value,
       ...(lifetime.value ? { connection_lifetime_hours: lifetime.value } : {}),
       ...rateLimitRequest(),
-      ...(props.administrator && approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {}),
+      ...(manages.value && approvalKinds.value.length ? { approval_kinds: approvalKinds.value } : {}),
       ...(identity.value !== PRIMARY ? { identity: identity.value } : {})
     })
     connected.value = { name: appName.value, signsAs: signsAs.value }
@@ -305,7 +319,7 @@ function reset() {
 
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <UFormField
-          v-if="administrator"
+          v-if="manages"
           label="For"
           help="The member the connection is made for. Their role, identity grants and approvals apply, and the log names them."
         >
@@ -364,9 +378,9 @@ function reset() {
           />
         </UFormField>
         <UFormField
-          v-if="administrator && chosenKinds.length"
+          v-if="manages && chosenKinds.length"
           label="Needs approval"
-          help="An administrator approves each of these on the Approvals page before the bunker signs it."
+          help="An administrator or a lead of this department approves each of these on the Approvals page before the bunker signs it."
           data-testid="connect-app-approval"
         >
           <div class="space-y-1.5">

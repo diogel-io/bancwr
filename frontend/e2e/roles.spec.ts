@@ -36,7 +36,7 @@ async function expectRefused(page: Page, path: string, title: string, roleLabel:
 test.describe('admin', () => {
   test('is offered every page, and sees the whole dashboard', async ({ page }) => {
     await page.goto('/')
-    await expectSidebar(page, ['Dashboard', 'Config', 'Team', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections', 'Approvals'])
+    await expectSidebar(page, ['Dashboard', 'Config', 'Team', 'Departments', 'Logs', 'Profile', 'Follows', 'Relays', 'Connections', 'Approvals'])
     await expect(page.getByText('Total Signatures')).toBeVisible()
     await expect(page.getByText('Recent Activity')).toBeVisible()
   })
@@ -90,6 +90,8 @@ test.describe('signer', () => {
   // The team and members' profiles are the administrators' alone (#143).
   for (const [path, title] of [
     ['/config', 'Config'], ['/logs', 'Logs'], ['/team', 'Team'],
+    // Departments (#147): a signer who leads none.
+    ['/departments', 'Departments'],
     [`/team/${randomNpub()}`, 'a team member\'s profile'],
     // An identity's own account (#150).
     [`/identities/${randomNpub()}/profile`, 'an identity\'s profile'],

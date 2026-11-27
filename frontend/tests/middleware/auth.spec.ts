@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mockNuxtImport } from '@nuxt/test-utils/runtime'
+import { mockNuxtImport, registerEndpoint } from '@nuxt/test-utils/runtime'
 import type { Role } from '#shared/types/bunker'
 import type { AuthState } from '~/composables/useAuth'
 import middleware from '~/middleware/auth.global'
 
-const { refresh, navigateTo, abortNavigation } = vi.hoisted(() => ({
+const { refresh, navigateTo, abortNavigation, identities } = vi.hoisted(() => ({
   refresh: vi.fn(),
   navigateTo: vi.fn((path: string) => `redirect:${path}`),
-  abortNavigation: vi.fn((error: unknown) => ({ aborted: error }))
+  abortNavigation: vi.fn((error: unknown) => ({ aborted: error })),
+  identities: vi.fn(() => [] as unknown[])
 }))
+// The identities the bunker lists to the signed-in member: a lead's departments (#147).
+registerEndpoint('/api/bunker/identities', () => identities())
 mockNuxtImport('useAuth', () => () => ({ refresh }))
 mockNuxtImport('navigateTo', () => navigateTo)
 mockNuxtImport('abortNavigation', () => abortNavigation)
@@ -78,5 +81,19 @@ describe('auth middleware', () => {
       expect(error.status, path).toBe(403)
       expect(error.data).toEqual({ reason: 'forbidden_route', path })
     }
+  })
+
+  it('lets a department lead onto Departments, read from the bunker, and a member not (#147)', async () => {
+    asRole('signer')
+    identities.mockReturnValueOnce([{ pubkey: 'c'.repeat(64), label: 'Sales', my_role: 'lead' }])
+    expect(await run('/departments')).toBeUndefined()
+    identities.mockReturnValueOnce([{ pubkey: 'c'.repeat(64), label: 'Sales', my_role: 'member' }])
+    abortNavigation.mockClear()
+    await run('/departments')
+    expect(abortNavigation).toHaveBeenCalled()
+    // Their role's own pages need no lookup.
+    identities.mockClear()
+    expect(await run('/connections')).toBeUndefined()
+    expect(identities).not.toHaveBeenCalled()
   })
 })

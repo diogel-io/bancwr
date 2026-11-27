@@ -1,6 +1,6 @@
 // Several identities in one bunker (#103) through the real stack: stack.ts adds a second identity
-// with `bunker import-key --add` before start. An administrator sees both on Config, grants the e2e
-// signer that identity on their team page, issues a token for it, and a real NIP-46 client
+// with `bunker import-key --add` before start. An administrator sees both on Config, puts the e2e
+// signer in that identity's department on their team page (#147), issues a token for it, and a real NIP-46 client
 // (nostr-tools' BunkerSigner) signs as that identity, not the primary. A token for an identity the
 // member is not granted is refused. The bunker's relay is the in-process one.
 import { SimplePool } from 'nostr-tools/pool'
@@ -39,13 +39,13 @@ test('an administrator connects an app that signs as a second identity (#103)', 
   const body = await refused.json() as { data?: { error?: string } }
   expect(body.data?.error).toBe('no_identity_access')
 
-  // Granted on their team page.
+  // Put in its department on their team page (#147).
   await page.goto(`/team/${signer}`)
   const access = page.getByTestId('identity-access')
-  const box = access.getByRole('checkbox', { name: 'e2e brand' })
-  await expect(access.getByRole('checkbox', { name: 'Primary' })).toBeChecked()
-  await box.click()
-  await expect(box).toBeChecked()
+  await expect(access.getByLabel('Role in Primary')).toContainText('Member')
+  await access.getByLabel('Role in e2e brand').click()
+  await page.getByRole('option', { name: 'Member', exact: true }).click()
+  await expect(access.getByLabel('Role in e2e brand')).toContainText('Member')
 
   // Issued for the signer, signing as the brand.
   await page.goto('/connections')
@@ -92,11 +92,12 @@ test('an administrator creates an identity in the console, an app signs as it, a
   await expect(row.getByTestId('identity-not-loaded')).toHaveCount(0)
   const sales = (await row.getAttribute('data-identity'))!
 
-  // Granted to the signer on their team page.
+  // The signer joins its department on their team page (#147).
   await page.goto(`/team/${signer}`)
-  const box = page.getByTestId('identity-access').getByRole('checkbox', { name: label })
-  await box.click()
-  await expect(box).toBeChecked()
+  const role = page.getByTestId('identity-access').getByLabel(`Role in ${label}`)
+  await role.click()
+  await page.getByRole('option', { name: 'Member', exact: true }).click()
+  await expect(role).toContainText('Member')
 
   // A token for the signer signs as the new identity.
   const issued = await page.request.post('/api/bunker/connections/tokens', {

@@ -2,6 +2,9 @@
 // the same matrix server-side (#25, backend/src/proxy_auth.rs `Access`); this decides what the UI
 // offers and which routes it refuses, so it is never the only check. A new page registers its route
 // here and nothing else needs to change: the sidebar and the middleware both read it.
+//
+// A department lead (#147) is a signer who leads at least one department: LEAD_ROUTES are the pages
+// they may open as well. Each department's own checks are the bunker's, on every request.
 import { ROLES } from '#shared/types/bunker'
 import type { Role } from '#shared/types/bunker'
 
@@ -26,6 +29,8 @@ export const ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = {
   '/follows': SIGNS,
   '/relays': SIGNS,
   '/connections': SIGNS,
+  // Departments (#147): administrators, and leads (LEAD_ROUTES).
+  '/departments': ADMIN,
   // An identity's profile, follows and relays (#150): the same pages, as the identity.
   '/identities/[pubkey]/profile': ADMIN,
   '/identities/[pubkey]/follows': ADMIN,
@@ -35,12 +40,25 @@ export const ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = {
   '/approvals/[id]': SIGNS
 }
 
+/**
+ * The pages a department lead may open as well as those of their role (#147): the departments they
+ * lead, and their identities' profile, follows and relays. Which department is theirs is the
+ * bunker's check.
+ */
+export const LEAD_ROUTES: ReadonlySet<string> = new Set([
+  '/departments',
+  '/identities/[pubkey]/profile',
+  '/identities/[pubkey]/follows',
+  '/identities/[pubkey]/relays'
+])
+
 /** Page names, for the permission-denied page. */
 export const PAGE_TITLES: Readonly<Record<string, string>> = {
   '/': 'the dashboard',
   '/config': 'Config',
   '/team': 'Team',
   '/team/[pubkey]': 'a team member\'s profile',
+  '/departments': 'Departments',
   '/logs': 'Logs',
   '/profile': 'your profile',
   '/connections': 'connected apps',
@@ -71,9 +89,17 @@ function routeKey(path: string): string {
   return pattern ?? normalised
 }
 
-export function canOpen(role: Role, path: string): boolean {
-  const roles = ROUTE_ROLES[routeKey(path)]
-  return roles ? roles.includes(role) : true
+/** Whether `role`, as a department lead when `lead` is set (#147), may open `path`. */
+export function canOpen(role: Role, path: string, lead = false): boolean {
+  const key = routeKey(path)
+  const roles = ROUTE_ROLES[key]
+  if (!roles || roles.includes(role)) return true
+  return lead && LEAD_ROUTES.has(key)
+}
+
+/** Whether a lead could open `path` though their role alone could not (#147). */
+export function isLeadRoute(path: string): boolean {
+  return LEAD_ROUTES.has(routeKey(path))
 }
 
 export function pageTitle(path: string): string {
