@@ -1,7 +1,7 @@
 use crate::health::{Check, Overall};
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
-use crate::db::{RemoveOutcome, RoleChangeOutcome};
+use crate::db::{Departments, RemoveOutcome, RoleChangeOutcome};
 use crate::proxy_auth::{Access, Guard, Nonces};
 use axum::{
     extract::{Path, State},
@@ -326,44 +326,22 @@ pub async fn add_team_member(
         return Err((StatusCode::BAD_REQUEST, "The bunker's own key cannot be registered".to_string()).into());
     }
 
-    // Which identities they may sign as (#103), their departments (#147), checked before anything
-    // is stored.
-    let database_error = |e: anyhow::Error| {
-        error!("Failed to read identities: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
-    };
-    let grants_matter = state.db.grants_matter().map_err(database_error)?;
-    let mut grants: Vec<Option<String>> = Vec::new();
-    if grants_matter {
-        match &request.identities {
-            None if administrator => grants.push(None),
-            None => return Err(not_your_department()),
-            Some(keys) => {
-                for key in keys {
-                    let parsed = PublicKey::parse(key.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
-                    let identity = state.keyring.identity_of(&parsed).await.ok_or((StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
-                    if !grants.contains(&identity) {
-                        grants.push(identity);
-                    }
-                }
-            }
-        }
-        for identity in &grants {
-            if !administrator && !state.db.may_lead(&by, identity.as_deref()).map_err(database_error)? {
-                return Err(not_your_department());
-            }
-            let admin_only = match identity.as_deref() {
-                Some(hex) => state.db.find_identity(hex).map_err(database_error)?.is_some_and(|i| i.admin_only),
-                None => state.db.list_identities().map_err(database_error)?.iter().any(|i| i.is_primary && i.admin_only),
-            };
-            if admin_only {
-                return Err((StatusCode::CONFLICT, "That identity is administrator only, so nobody can be granted it.".to_string()).into());
-            }
-        }
-        if !administrator && grants.is_empty() {
-            return Err(not_your_department());
+    // Which identities they may sign as (#103), their departments (#147). The keys named are resolved here; whether grants matter, whether a lead leads each one and
+    // whether any is administrator only are read in the transaction that stores the member, so
+    // none of them can change in between.
+    let mut named: Vec<Option<String>> = Vec::new();
+    if let Some(keys) = &request.identities {
+        for key in keys {
+            let parsed = PublicKey::parse(key.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+            let identity = state.keyring.identity_of(&parsed).await.ok_or((StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+            named.push(identity);
         }
     }
+    let departments = match &request.identities {
+        None => Departments::Default,
+        Some(_) => Departments::Named(&named),
+    };
+    let acting_lead = if administrator { None } else { Some(by.as_str()) };
 
     match state.db.find_member_by_pubkey(&pubkey) {
         Ok(Some(_)) => return Err((StatusCode::CONFLICT, "This key is already registered".to_string()).into()),
@@ -374,8 +352,8 @@ pub async fn add_team_member(
         }
     }
 
-    match state.db.add_team_member_with(&request.name, &pubkey, role, crate::audit::actor(&by), &grants) {
-        // Marked administrator only since it was checked above (#147): read again in the transaction.
+    match state.db.add_team_member_with(&request.name, &pubkey, role, crate::audit::actor(&by), acting_lead, departments) {
+        Ok(crate::db::AddMemberOutcome::NotYourDepartment) => Err(not_your_department()),
         Ok(crate::db::AddMemberOutcome::AdminOnly) => {
             Err((StatusCode::CONFLICT, "That identity is administrator only, so nobody can be granted it.".to_string()).into())
         }

@@ -129,8 +129,10 @@ fn label_argument(args: &[String]) -> Option<String> {
 
 /// Whether `--admin-only` is among the command's arguments (#147): the identity belongs to no
 /// department, and only administrators use it, as the company root does.
+/// A value given to `--label` as the next argument is never read as the flag, so
+/// `--label --admin-only` is a label, not a mark.
 fn admin_only_argument(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--admin-only")
+    args.iter().enumerate().any(|(i, a)| a == "--admin-only" && (i == 0 || args[i - 1] != "--label"))
 }
 
 /// `bunker import-key --add --label <label>` (#103): encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC)
@@ -200,6 +202,14 @@ fn add_identity(args: &[String]) -> i32 {
     }
 }
 
+/// What to do when `import-key --admin-only` imported the key but could not mark it (#147). The
+/// key file exists, so running the command again stops before marking: the mark is finished in
+/// the console, and the plain key is still removed first.
+const ADMIN_ONLY_RECOVERY: &str = "To finish: remove BUNKER_NSEC_FILE and BUNKER_NSEC from the bunker's configuration and \
+     delete every plain copy of the key, as after any import. Register nobody but administrators yet. Start the bunker, \
+     sign in as an administrator, open Departments, remove anyone listed on the primary's card, and select Make \
+     administrator only on it. Running import-key again does not mark it, because the key file already exists.";
+
 /// Encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC) under BANCWR_ROOT_KEY_FILE into the key file. Never
 /// replaces an existing key file, and never prints the key. Returns the exit code. With `--add`,
 /// adds another identity instead (#103).
@@ -231,12 +241,14 @@ fn import_key() -> i32 {
                         println!("It is administrator only: it belongs to no department, and only administrators use it.");
                     }
                     Ok(_) => {
-                        eprintln!("The key was imported, but it could not be marked administrator only: signers may still use it. Mark it in the console once they are removed.");
+                        eprintln!("The key was imported, but it could not be marked administrator only: signers may still use it.");
+                        eprintln!("{}", ADMIN_ONLY_RECOVERY);
                         return 1;
                     }
                     Err(e) => {
                         eprintln!("The key was imported, but it could not be marked administrator only: the database could not be updated.");
                         eprintln!("Detail: {}", e);
+                        eprintln!("{}", ADMIN_ONLY_RECOVERY);
                         return 1;
                     }
                 }

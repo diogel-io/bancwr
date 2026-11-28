@@ -708,12 +708,18 @@ lead" applies only to identities they hold a `lead` grant on, checked on every r
   before it was retired brings it back.
 - **Importing one** happens on the host, so a key you already have never passes through a
   browser: `bunker import-key --add --label "Brand B"`, with the key in `BUNKER_NSEC_FILE` (or
-  `BUNKER_NSEC`) and `BANCWR_ROOT_KEY_FILE` set. `--admin-only` marks it administrator only
-  (#147); `bunker import-key --admin-only` marks the primary, for a company root's own bunker. It is encrypted under the same root credential, in
+  `BUNKER_NSEC`) and `BANCWR_ROOT_KEY_FILE` set. It is encrypted under the same root credential, in
   the same `bancwr-key v1` format, and stored in the database, so a backup carries it. It refuses a
   key that is already an identity, the primary, or a team member's key. A running bunker loads it on
-  its next restart. The plain-key rules of #94 apply: while `BUNKER_NSEC*` is set, the bunker stays
-  locked.
+  its next restart. `--admin-only` marks it administrator only (#147). The plain-key rules of #94
+  apply: while `BUNKER_NSEC*` is set, the bunker stays locked.
+- **The primary administrator only** (#147), for a company root's own bunker: `bunker import-key
+  --admin-only` writes the primary's encrypted key to the key file (`bunker-key.enc`), as any
+  primary import does, and records the primary's row, with the mark, in the database. The key itself
+  is never in the database. If the key is imported but the mark cannot be stored, the command says
+  so and exits 1. Running it again stops at the existing key file, so finish in the console: remove
+  the plain key, start the bunker, and select **Make administrator only** on the primary's card on
+  **Departments** (see `docs/operating.md`).
 - **Unlocking.** At start the bunker decrypts the primary, then every other identity, each of which
   must decrypt to the public key its row records. If any does not, the bunker stays locked, and
   `/health` says which, by its label.
@@ -732,7 +738,11 @@ lead" applies only to identities they hold a `lead` grant on, checked on every r
   identity (#147) is used by administrators alone: it refuses grants and leads
   (`409 {"error":"admin_only"}`), and a primary marked so in a single-identity bunker is not used
   by signers. `identity_allowed` and `may_use_identity` in `src/db.rs` decide this, together. A member added through the API gets the identities in
-  `identities`, or the primary when it is omitted. Removing a grant revokes their connections and
+  `identities`, or, from an administrator, the primary when it is omitted. An administrator sends
+  `"identities":[]` to register someone into no department, which is the way to register a signer
+  while the primary is administrator only. A lead must name at least one department, each one they
+  lead. All of this, and whether grants matter yet, is read in the transaction that stores the
+  member; until grants matter, `identities` is ignored and the member gets no grant. Removing a grant revokes their connections and
   unused tokens for that identity, as `access_removed`.
 - **`GET /api/bunker/identities`** lists `pubkey`, `npub`, `label`, `is_primary`, `available`
   (unlocked in the running bunker), `admin_only` (#147), `my_role` (the caller's own role in its

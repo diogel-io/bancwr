@@ -31,7 +31,7 @@
 //! department (#147).
 use crate::connections_api::{api_error, caller, database_error, ApiError};
 use crate::console_signing::{self, EventTemplate};
-use crate::db::{AddIdentityRefusal, AdminOnlyOutcome, GrantOutcome, Identity, NewIdentity, RemoveGrantOutcome, RetireOutcome, MAX_IDENTITY_LABEL_CHARS};
+use crate::db::{AddIdentityRefusal, GrantOutcome, UpdateIdentityOutcome, Identity, NewIdentity, RemoveGrantOutcome, RetireOutcome, MAX_IDENTITY_LABEL_CHARS};
 use crate::proxy_auth::Caller;
 use crate::registry::{canonical_pubkey, DepartmentRole};
 use crate::state::AppState;
@@ -111,11 +111,17 @@ pub struct UpdateIdentityRequest {
     pub admin_only: Option<bool>,
 }
 
-/// The role a grant gives (#147): `member` when omitted.
+/// The role a grant gives (#147): `member` when omitted. `role` is Some(None) when it is present
+/// but null, which is refused rather than read as omitted.
 #[derive(Deserialize, Default)]
 pub struct GrantRequest {
-    #[serde(default)]
-    pub role: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub role: Option<Option<String>>,
+}
+
+/// Marks a field that is present, even as null, so it is told apart from one that is omitted.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// An identity's department, for the routes that list it: its members and leads.
@@ -148,11 +154,12 @@ async fn response(state: &AppState, identity: Identity, department: Option<Depar
 }
 
 fn department(state: &AppState, reference: Option<&str>) -> Result<Department, ApiError> {
-    let grants = state.db.identity_grants(reference).map_err(database_error)?;
+    // One snapshot, so the members and the access mode describe the same state.
+    let (grants, grants_matter) = state.db.department_of(reference).map_err(database_error)?;
     Ok(Department {
         leads: grants.iter().filter(|g| g.role == Some(DepartmentRole::Lead)).map(|g| g.member_pubkey.clone()).collect(),
         members: grants.into_iter().map(|g| g.member_pubkey).collect(),
-        grants_matter: state.db.grants_matter().map_err(database_error)?,
+        grants_matter,
     })
 }
 
@@ -352,10 +359,13 @@ pub async fn rename_identity(
         return Err(forbidden("Only an administrator can mark an identity administrator only."));
     }
     // The mark and the label change together or not at all, with their audit events.
-    match state.db.update_identity(&identity.pubkey, identity.reference(), label, request.admin_only, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
-        AdminOnlyOutcome::Changed | AdminOnlyOutcome::Unchanged => {}
-        AdminOnlyOutcome::NotFound => return Err(not_found()),
-        AdminOnlyOutcome::HasMembers => {
+    // A lead's authority is read again in that transaction (#147).
+    let acting_lead = if administrator { None } else { Some(by.as_str()) };
+    match state.db.update_identity(&identity.pubkey, identity.reference(), label, request.admin_only, crate::audit::actor(&by), acting_lead, Utc::now()).map_err(database_error)? {
+        UpdateIdentityOutcome::Updated => {}
+        UpdateIdentityOutcome::NotALead => return Err(forbidden(EDIT)),
+        UpdateIdentityOutcome::NotFound => return Err(not_found()),
+        UpdateIdentityOutcome::HasMembers => {
             return Err(api_error(
                 StatusCode::CONFLICT,
                 "has_members",
@@ -391,15 +401,16 @@ fn grant_role(body: &[u8]) -> Result<DepartmentRole, ApiError> {
         return Ok(DepartmentRole::Member);
     }
     let invalid = || api_error(StatusCode::BAD_REQUEST, "invalid_role", INVALID);
-    // An object only: serde would also read a struct from an array.
-    let value: Value = serde_json::from_slice(body).map_err(|_| invalid())?;
-    if !value.is_object() {
+    // An object only, since serde would also read a struct from an array. Read straight from the
+    // bytes, so a repeated `role` is refused as a duplicate field rather than the last one kept.
+    if body.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'{') {
         return Err(invalid());
     }
-    let request: GrantRequest = serde_json::from_value(value).map_err(|_| invalid())?;
+    let request: GrantRequest = serde_json::from_slice(body).map_err(|_| invalid())?;
     match request.role {
         None => Ok(DepartmentRole::Member),
-        Some(role) => role.parse().map_err(|_| invalid()),
+        Some(None) => Err(invalid()),
+        Some(Some(role)) => role.parse().map_err(|_| invalid()),
     }
 }
 

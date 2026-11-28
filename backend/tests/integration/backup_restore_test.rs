@@ -635,4 +635,11 @@ fn import_key_marks_the_primary_or_an_added_identity_administrator_only() {
     assert_eq!(identities.len(), 2);
     assert!(identities.iter().all(|i| i.admin_only), "{:?}", identities);
     assert_eq!(identities[0].pubkey, bunker.public_key().to_hex());
+
+    // A label that reads like the flag is only a label.
+    let other = Keys::generate();
+    let labelled = host.add_identity(&other, &["--label", "--admin-only"]);
+    assert_eq!(labelled.status.code(), Some(0), "{}", stderr(&labelled));
+    let added = db.find_identity(&other.public_key().to_hex()).unwrap().unwrap();
+    assert_eq!((added.label.as_str(), added.admin_only), ("--admin-only", false));
 }

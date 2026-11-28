@@ -343,23 +343,66 @@ impl Database {
 
     /// Adds a team member and records who added them (#96), in one transaction.
     pub fn add_team_member_as(&self, name: &str, pubkey: &str, role: Role, actor: Option<&str>) -> anyhow::Result<Uuid> {
-        match self.add_team_member_with(name, pubkey, role, actor, &[])? {
+        match self.add_team_member_with(name, pubkey, role, actor, None, Departments::Named(&[]))? {
             AddMemberOutcome::Added(id) => Ok(id),
-            AddMemberOutcome::AdminOnly => anyhow::bail!("no department was named, so none can be administrator only"),
+            other => anyhow::bail!("no department was named and nobody acted as a lead, yet it was refused: {:?}", other),
         }
     }
 
-    /// `add_team_member_as`, granting the new member each of `departments` (None: the primary) as
-    /// a `member`, in the same transaction (#103, #147). `member_added` names the departments in its
-    /// detail, and each grant is recorded as `identity_access_granted`, all by `actor`: an
-    /// administrator, or a lead registering someone into their departments. An administrator only
-    /// department refuses the whole registration, read in the same transaction, so nothing is stored.
-    pub fn add_team_member_with(&self, name: &str, pubkey: &str, role: Role, actor: Option<&str>, departments: &[Option<String>]) -> anyhow::Result<AddMemberOutcome> {
+    /// `add_team_member_as`, granting the new member departments as a `member`, in the same
+    /// transaction (#103, #147). Everything that decides it is read in that transaction, so it
+    /// cannot change between the check and the write: whether grants matter yet (until then the
+    /// member gets no grant, and may use the primary like everyone); `Departments::Default`, the
+    /// primary, for an administrator who named none; and, with `acting_lead`, that they lead every
+    /// department named, and named one. An administrator only department refuses the whole
+    /// registration, and nothing is stored. `member_added` names the departments in its detail, and
+    /// each grant is recorded as `identity_access_granted`, all by `actor`.
+    pub fn add_team_member_with(
+        &self,
+        name: &str,
+        pubkey: &str,
+        role: Role,
+        actor: Option<&str>,
+        acting_lead: Option<&str>,
+        departments: Departments,
+    ) -> anyhow::Result<AddMemberOutcome> {
         let id = Uuid::new_v4();
         let id_str = id.to_string();
         let now = Utc::now();
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
+        let matter: bool = tx.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?;
+        let mut grants: Vec<Option<String>> = Vec::new();
+        if matter {
+            match departments {
+                Departments::Default if acting_lead.is_some() => return Ok(AddMemberOutcome::NotYourDepartment),
+                Departments::Default => grants.push(None),
+                Departments::Named(named) => {
+                    for identity in named {
+                        if !grants.contains(identity) {
+                            grants.push(identity.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(lead) = acting_lead {
+            // A lead exists only once grants matter, so before then nobody registers as one.
+            if grants.is_empty() {
+                return Ok(AddMemberOutcome::NotYourDepartment);
+            }
+            for identity in &grants {
+                if !may_lead(&tx, lead, identity.as_deref())? {
+                    return Ok(AddMemberOutcome::NotYourDepartment);
+                }
+            }
+        }
+        for identity in &grants {
+            if is_admin_only(&tx, identity.as_deref())? {
+                return Ok(AddMemberOutcome::AdminOnly);
+            }
+        }
+        let departments = &grants[..];
         tx.execute(
             "INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id_str, name, pubkey, role.as_str(), now.to_rfc3339()],
@@ -371,9 +414,6 @@ impl Database {
         }
         audit::record(&tx, &Audit { actor, member: Some(pubkey), detail: Some(detail), ..Audit::new(action::MEMBER_ADDED) }, now)?;
         for identity in departments {
-            if is_admin_only(&tx, identity.as_deref())? {
-                return Ok(AddMemberOutcome::AdminOnly);
-            }
             tx.execute(
                 "INSERT OR IGNORE INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at, role) VALUES (?1, ?2, ?3, ?4, 'member')",
                 params![access_key(identity.as_deref()), pubkey, actor, db_time(now)],
@@ -1862,6 +1902,29 @@ pub enum AddMemberOutcome {
     Added(Uuid),
     /// A department it named is administrator only, so nothing was stored.
     AdminOnly,
+    /// The acting lead named no department, or one they do not lead now, so nothing was stored.
+    NotYourDepartment,
+}
+
+/// The departments a new member is registered into (#103, #147), once grants matter.
+#[derive(Debug, Clone, Copy)]
+pub enum Departments<'a> {
+    /// None were named: the primary, for an administrator; refused for a lead.
+    Default,
+    /// These, by reference (None: the primary). Empty: none, for an administrator.
+    Named(&'a [Option<String>]),
+}
+
+/// What `update_identity` did (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateIdentityOutcome {
+    /// Changed as asked, or already so.
+    Updated,
+    NotFound,
+    /// Marking it would take it from members who may use it now.
+    HasMembers,
+    /// The acting lead no longer leads its department.
+    NotALead,
 }
 
 /// How an identity is added (#147): marked administrator only, and led by the member who created
@@ -2077,7 +2140,10 @@ impl Database {
 
     /// Marks or unmarks `identity` administrator only and renames it (#147), either or both, in one
     /// transaction with their audit events, so both change or neither does. `pubkey` is its hex,
-    /// `identity` its reference (None: the primary). A refused mark changes nothing.
+    /// `identity` its reference (None: the primary). A refused mark changes nothing. With
+    /// `acting_lead`, refused unless they lead its department, read in the same transaction; None:
+    /// an administrator.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_identity(
         &self,
         pubkey: &str,
@@ -2085,24 +2151,30 @@ impl Database {
         label: Option<&str>,
         admin_only: Option<bool>,
         actor: Option<&str>,
+        acting_lead: Option<&str>,
         now: DateTime<Utc>,
-    ) -> anyhow::Result<AdminOnlyOutcome> {
+    ) -> anyhow::Result<UpdateIdentityOutcome> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
-        let outcome = match admin_only {
-            Some(admin_only) => set_admin_only_in(&tx, identity, admin_only, actor, now)?,
-            None => AdminOnlyOutcome::Unchanged,
-        };
-        if matches!(outcome, AdminOnlyOutcome::NotFound | AdminOnlyOutcome::HasMembers) {
-            return Ok(outcome);
+        if let Some(lead) = acting_lead {
+            if !may_lead(&tx, lead, identity)? {
+                return Ok(UpdateIdentityOutcome::NotALead);
+            }
+        }
+        if let Some(admin_only) = admin_only {
+            match set_admin_only_in(&tx, identity, admin_only, actor, now)? {
+                AdminOnlyOutcome::NotFound => return Ok(UpdateIdentityOutcome::NotFound),
+                AdminOnlyOutcome::HasMembers => return Ok(UpdateIdentityOutcome::HasMembers),
+                AdminOnlyOutcome::Changed | AdminOnlyOutcome::Unchanged => {}
+            }
         }
         if let Some(label) = label {
             if !rename_in(&tx, pubkey, label, actor, now)? {
-                return Ok(AdminOnlyOutcome::NotFound);
+                return Ok(UpdateIdentityOutcome::NotFound);
             }
         }
         tx.commit()?;
-        Ok(outcome)
+        Ok(UpdateIdentityOutcome::Updated)
     }
 
     /// Whether this bunker has an identity beside the primary.
@@ -2169,6 +2241,22 @@ impl Database {
             })?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// The grants of `identity` (None: the primary) and whether grants matter (#147), read under one
+    /// lock, so a response never pairs one state's members with another's access mode.
+    pub fn department_of(&self, identity: Option<&str>) -> anyhow::Result<(Vec<DepartmentGrant>, bool)> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.unchecked_transaction()?;
+        let grants = tx
+            .prepare("SELECT member_pubkey, role FROM identity_access WHERE identity_pubkey = ?1 ORDER BY member_pubkey")?
+            .query_map(params![access_key(identity)], |row| {
+                Ok(DepartmentGrant { member_pubkey: row.get(0)?, role: row.get::<_, String>(1)?.parse().ok() })
+            })?
+            .collect::<Result<_, _>>()?;
+        let matter: bool = tx.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?;
+        tx.commit()?;
+        Ok((grants, matter))
     }
 
     /// `member`'s grant of `identity` (None: the primary), if any (#147).

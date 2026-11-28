@@ -615,6 +615,13 @@ in any number of departments. **Departments** lists each one with its members an
 
   `import-key --add --admin-only --label "Holding"` does the same for an identity added beside the
   primary.
+
+  If the key is imported but the mark can't be stored, the command says so and exits 1. Running it
+  again stops at the existing key file, so finish in the console. First remove `BUNKER_NSEC_FILE`
+  and `BUNKER_NSEC` and delete every plain copy of the key, as after any import, and register
+  nobody but administrators. Then start the bunker, sign in as an administrator, open
+  **Departments**, remove anyone listed on the primary's card, and select **Make administrator
+  only** on it. Until then signers may use the primary.
 - **Upgrading needs no step of yours.** Every existing grant becomes a department membership, nobody
   becomes a lead and nothing becomes administrator only, so nobody gains or loses access. The audit
   log records one `department_migrated` event per grant. A bunker with only its primary records

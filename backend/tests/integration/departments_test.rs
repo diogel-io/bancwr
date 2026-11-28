@@ -156,13 +156,23 @@ async fn only_an_administrator_appoints_leads_and_marks_an_identity_administrato
     let bad = send(&c.app, Method::PUT, &format!("/api/bunker/identities/{}/members/{}", c.support, c.james), &admin, Some(json!({ "role": "boss" }))).await;
     assert_eq!(error(bad).await, (StatusCode::BAD_REQUEST, json!("invalid_role")));
     // A body that is not a grant request is refused, never read as `member`: James stays a lead.
-    for body in [json!({ "role": 7 }), json!("lead"), json!([])] {
+    for body in [json!({ "role": 7 }), json!({ "role": null }), json!("lead"), json!([])] {
         let bad = send(&c.app, Method::PUT, &format!("/api/bunker/identities/{}/members/{}", c.support, c.james), &admin, Some(body.clone())).await;
         assert_eq!(error(bad).await, (StatusCode::BAD_REQUEST, json!("invalid_role")), "{}", body);
     }
+    // A repeated `role` is refused, not read as its last value.
+    let path = format!("/api/bunker/identities/{}/members/{}", c.support, c.james);
+    let repeated = c.app.signed(Method::PUT, &path, &admin).header("content-type", "application/json").body(r#"{"role":7,"role":"member"}"#).send().await.unwrap();
+    assert_eq!(error(repeated).await, (StatusCode::BAD_REQUEST, json!("invalid_role")));
     assert!(c.app.db.may_lead(&c.james, Some(&c.support)).unwrap());
     // The access mode is the bunker's own, listed with each department.
     let listed: Vec<IdentityResponse> = send(&c.app, Method::GET, "/api/bunker/identities", &admin, None).await.json().await.unwrap();
+    let mut keys: Vec<&str> = listed.iter().map(|i| i.pubkey.as_str()).collect();
+    keys.sort();
+    let primary = c.app.db.list_identities().unwrap().into_iter().find(|i| i.is_primary).unwrap().pubkey;
+    let mut expected = vec![primary.as_str(), c.sales.as_str(), c.support.as_str(), c.root.as_str()];
+    expected.sort();
+    assert_eq!(keys, expected);
     assert!(listed.iter().all(|i| i.grants_matter == Some(true)), "an identity beside the primary");
 
     // The root refuses grants; Support, with members, can't be marked.
