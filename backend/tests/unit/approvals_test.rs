@@ -126,8 +126,8 @@ fn notes_are_one_trimmed_line_of_at_most_280_characters() {
 
 #[test]
 fn the_app_is_told_why_nothing_was_signed() {
-    assert_eq!(rejected_message(None), "Rejected by an administrator");
-    assert_eq!(rejected_message(Some("Wrong price")), "Rejected by an administrator: Wrong price");
+    assert_eq!(rejected_message(None), "Rejected by an approver");
+    assert_eq!(rejected_message(Some("Wrong price")), "Rejected by an approver: Wrong price");
     assert_eq!(timed_out_message(Duration::minutes(30)), "Approval timed out after 30 minutes: nothing was signed");
     assert_eq!(describe_timeout(Duration::minutes(1)), "1 minute");
     assert_eq!(describe_timeout(Duration::seconds(45)), "45 seconds");

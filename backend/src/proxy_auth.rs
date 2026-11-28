@@ -222,13 +222,16 @@ impl Nonces {
 pub enum Access {
     /// Bunker health: every registered role, and the service identity.
     Health,
-    /// Administrators only: logs, metrics, config, bunker relays, and reading and changing the team.
+    /// Administrators only: logs, metrics, config, bunker relays, removing members and changing
+    /// their roles.
     Administrator,
     /// Administrators and the service identity: the key lookup, which sign-in needs before any
     /// session exists, and an administrator's member profile page (#77, #143).
     AdministratorOrService,
     /// Administrators and signers, not the service identity: routes that scope what they return
-    /// to the caller (#53's connection list, #142's connection tokens, #77's own recent signatures).
+    /// to the caller (#53's connection list, #142's connection tokens, #77's own recent signatures),
+    /// and the department routes (#147), whose handlers allow administrators and the leads of the
+    /// department a request names, read from the database on every request.
     Signer,
 }
 

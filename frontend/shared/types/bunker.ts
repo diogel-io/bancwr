@@ -237,6 +237,12 @@ export interface IssueTokenResponse {
  * GET /api/bunker/identities (#103): an identity this bunker signs as, never its key.
  * Administrators see every identity with its members; others those they may use.
  */
+/**
+ * A member's role in a department (#147): each identity that isn't administrator only is one
+ * department, and a grant of it is a membership. A lead also manages the department.
+ */
+export type DepartmentRole = 'member' | 'lead'
+
 export interface BunkerIdentity {
   pubkey: string
   npub: string | null
@@ -244,8 +250,22 @@ export interface BunkerIdentity {
   is_primary: boolean
   /** Unlocked in the running bunker: one added since it started loads on restart. */
   available: boolean
-  /** Members granted it (hex), for administrators. Administrators may use every identity. */
+  /**
+   * Members granted it (hex), leads included: for administrators and the leads of its department.
+   * Administrators may use every identity.
+   */
   members?: string[]
+  /** The leads of its department (#147), hex: listed with `members`. */
+  leads?: string[]
+  /**
+   * Whether grants decide who may use the primary (#103, #147), as the bunker holds it: listed
+   * with `members`. False only while everyone who may sign may use the primary.
+   */
+  grants_matter?: boolean
+  /** Belongs to no department (#147): only administrators use it, as the company root does. */
+  admin_only?: boolean
+  /** The signed-in member's own role in its department, when they hold a grant of it (#147). */
+  my_role?: DepartmentRole
   /** What retiring it would revoke (#146), for administrators, on identities that can be retired. */
   usage?: { connections: number, tokens: number }
   /** When it was retired (#146): listed only with `?retired=true`, for administrators. */
@@ -264,6 +284,8 @@ export interface PendingApproval {
   client_pubkey: string
   /** What the app calls itself: never verified. */
   client_name: string | null
+  /** The identity it would be signed as (#103), hex. Null: the primary. */
+  identity_pubkey?: string | null
   kind: number
   content: string
   tags: string[][]

@@ -79,3 +79,40 @@ pub fn canonical_pubkey(input: &str) -> Result<String, InvalidPubkey> {
 pub fn npub(stored: &str) -> Option<String> {
     PublicKey::from_hex(stored).ok().and_then(|key| key.to_bech32().ok())
 }
+
+/// A grant's role in its department (#147): every grant is a department membership, and a `lead`
+/// also manages the department. Stored lowercase in `identity_access.role`. A stored value that is
+/// not one of these grants nothing, as an unrecognised team role grants nothing (T4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DepartmentRole {
+    Member,
+    Lead,
+}
+
+impl DepartmentRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DepartmentRole::Member => "member",
+            DepartmentRole::Lead => "lead",
+        }
+    }
+}
+
+impl fmt::Display for DepartmentRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DepartmentRole {
+    type Err = InvalidRole;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "member" => Ok(DepartmentRole::Member),
+            "lead" => Ok(DepartmentRole::Lead),
+            _ => Err(InvalidRole),
+        }
+    }
+}

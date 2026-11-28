@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Role } from '#shared/types/bunker'
-import { canOpen, isForbidden, pageTitle } from '~/utils/access'
+import { canOpen, isForbidden, isLeadRoute, pageTitle } from '~/utils/access'
 
 // The whole matrix from #77 (which replaced #26's) and #143, so a change to who may open what is a
 // deliberate edit here. Admin is a superset of the signer.
@@ -17,7 +17,9 @@ const MATRIX: [string, Record<Role, boolean>][] = [
   // An identity's own account (#150): administrators only.
   [`/identities/${'b'.repeat(64)}/profile`, { administrator: true, signer: false}],
   [`/identities/${'b'.repeat(64)}/follows`, { administrator: true, signer: false}],
-  [`/identities/${'b'.repeat(64)}/relays`, { administrator: true, signer: false}]
+  [`/identities/${'b'.repeat(64)}/relays`, { administrator: true, signer: false}],
+  // Departments (#147): administrators; a lead too, below.
+  ['/departments', { administrator: true, signer: false}]
 ]
 
 describe('access matrix', () => {
@@ -28,6 +30,18 @@ describe('access matrix', () => {
       })
     }
   }
+
+  it('lets a department lead open Departments and their identities\' pages, and nothing else more (#147)', () => {
+    const identity = `/identities/${'b'.repeat(64)}`
+    for (const path of ['/departments', `${identity}/profile`, `${identity}/follows`, `${identity}/relays`]) {
+      expect(canOpen('signer', path, true), path).toBe(true)
+      expect(isLeadRoute(path), path).toBe(true)
+    }
+    for (const path of ['/config', '/logs', '/team', `/team/${'b'.repeat(64)}`]) {
+      expect(canOpen('signer', path, true), path).toBe(false)
+      expect(isLeadRoute(path), path).toBe(false)
+    }
+  })
 
   it('ignores a trailing slash, query or fragment', () => {
     expect(canOpen('signer', '/config/')).toBe(false)

@@ -4,6 +4,7 @@ const pages = [
   { link: 'Dashboard', path: '/', title: 'Dashboard' },
   { link: 'Config', path: '/config', title: 'Bunker Configuration' },
   { link: 'Team', path: '/team', title: 'Team Management' },
+  { link: 'Departments', path: '/departments', title: 'Departments' },
   { link: 'Logs', path: '/logs', title: 'Signing Activity Log' }
 ]
 

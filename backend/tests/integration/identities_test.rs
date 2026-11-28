@@ -352,7 +352,7 @@ async fn an_identity_created_in_the_console_signs_at_once_and_its_key_never_leav
     secret.assert_absent(&body, "the create response");
     // Only the fields an identity always has: nothing that could carry a key.
     let fields: Vec<String> = serde_json::from_str::<Value>(&body).unwrap().as_object().unwrap().keys().cloned().collect();
-    assert_eq!(fields, ["available", "is_primary", "label", "members", "npub", "pubkey", "usage"]);
+    assert_eq!(fields, ["admin_only", "available", "grants_matter", "is_primary", "label", "leads", "members", "npub", "pubkey", "usage"]);
 
     // Unlocked and listened for without a restart.
     assert!(app.state.keyring.is_identity(&created.pubkey).await);

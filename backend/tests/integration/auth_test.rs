@@ -1,5 +1,5 @@
-// Who may call /api/bunker/* (#25, #77, #143), with BANCWR_PROXY_SECRET set. Every route is listed, not
-// sampled, so a route added without a guard fails here.
+// Who may call /api/bunker/* (#25, #77, #143, #147), with BANCWR_PROXY_SECRET set. Every route is
+// listed, not sampled, so a route added without a guard fails here.
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -8,13 +8,17 @@ use nostr::prelude::*;
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 
-/// Who may call each route (#77, #143): `A`dministrator, `S`igner, and the service identity.
-/// Every guarded route is listed, so a route added without a guard, or in the wrong group, fails.
+/// Who may call each route (#77, #143, #147): `A`dministrator, `S`igner, a department lead (a
+/// signer with a `lead` grant), and the service identity. Every guarded route is listed, so a route
+/// added without a guard, or in the wrong group, fails.
 struct Route {
     method: &'static str,
     path: &'static str,
     roles: &'static [Role],
     service: bool,
+    /// A department lead gets past the department checks (#147), whatever the handler then
+    /// answers for an identity they don't lead. True wherever a signer already may.
+    lead: bool,
 }
 
 const A: Role = Role::Administrator;
@@ -23,39 +27,39 @@ const S: Role = Role::Signer;
 const LOOKUP: &str = "/api/bunker/team/by-pubkey/{admin}";
 
 const ROUTES: &[Route] = &[
-    Route { method: "GET", path: "/api/bunker/status", roles: &[A, S], service: true },
-    Route { method: "GET", path: "/api/bunker/logs", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/logs/mine", roles: &[A, S], service: false },
-    Route { method: "GET", path: "/api/bunker/logs/export?format=csv&from=2026-06-01&to=2026-06-01", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/logs/retention", roles: &[A], service: false },
-    Route { method: "PUT", path: "/api/bunker/logs/retention", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/metrics", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/config", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/relays", roles: &[A], service: false },
-    Route { method: "PUT", path: "/api/bunker/relays", roles: &[A], service: false },
-    Route { method: "GET", path: "/api/bunker/team", roles: &[A], service: false },
-    Route { method: "POST", path: "/api/bunker/team", roles: &[A], service: false },
-    Route { method: "DELETE", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
-    Route { method: "PATCH", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false },
-    Route { method: "GET", path: LOOKUP, roles: &[A], service: true },
-    Route { method: "GET", path: "/api/bunker/connections/tokens", roles: &[A, S], service: false },
-    Route { method: "POST", path: "/api/bunker/connections/tokens", roles: &[A, S], service: false },
-    Route { method: "DELETE", path: "/api/bunker/connections/tokens/no-such-token", roles: &[A, S], service: false },
-    Route { method: "GET", path: "/api/bunker/connections", roles: &[A, S], service: false },
-    Route { method: "DELETE", path: "/api/bunker/connections/no-such-connection", roles: &[A, S], service: false },
-    Route { method: "POST", path: "/api/bunker/connections/nostrconnect/preview", roles: &[A, S], service: false },
-    Route { method: "POST", path: "/api/bunker/connections/nostrconnect", roles: &[A, S], service: false },
-    Route { method: "GET", path: "/api/bunker/approvals", roles: &[A, S], service: false },
-    Route { method: "GET", path: "/api/bunker/identities", roles: &[A, S], service: false },
-    Route { method: "POST", path: "/api/bunker/identities", roles: &[A], service: false },
-    Route { method: "PATCH", path: "/api/bunker/identities/{admin}", roles: &[A], service: false },
-    Route { method: "DELETE", path: "/api/bunker/identities/{admin}", roles: &[A], service: false },
-    Route { method: "PUT", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
-    Route { method: "DELETE", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false },
+    Route { method: "GET", path: "/api/bunker/status", roles: &[A, S], service: true, lead: true },
+    Route { method: "GET", path: "/api/bunker/logs", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: "/api/bunker/logs/mine", roles: &[A, S], service: false, lead: true },
+    Route { method: "GET", path: "/api/bunker/logs/export?format=csv&from=2026-06-01&to=2026-06-01", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: "/api/bunker/logs/retention", roles: &[A], service: false, lead: false },
+    Route { method: "PUT", path: "/api/bunker/logs/retention", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: "/api/bunker/metrics", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: "/api/bunker/config", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: "/api/bunker/relays", roles: &[A], service: false, lead: false },
+    Route { method: "PUT", path: "/api/bunker/relays", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: "/api/bunker/team", roles: &[A], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/team", roles: &[A], service: false, lead: true },
+    Route { method: "DELETE", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false, lead: false },
+    Route { method: "PATCH", path: "/api/bunker/team/00000000-0000-4000-8000-000000000000", roles: &[A], service: false, lead: false },
+    Route { method: "GET", path: LOOKUP, roles: &[A], service: true, lead: false },
+    Route { method: "GET", path: "/api/bunker/connections/tokens", roles: &[A, S], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/connections/tokens", roles: &[A, S], service: false, lead: true },
+    Route { method: "DELETE", path: "/api/bunker/connections/tokens/no-such-token", roles: &[A, S], service: false, lead: true },
+    Route { method: "GET", path: "/api/bunker/connections", roles: &[A, S], service: false, lead: true },
+    Route { method: "DELETE", path: "/api/bunker/connections/no-such-connection", roles: &[A, S], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/connections/nostrconnect/preview", roles: &[A, S], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/connections/nostrconnect", roles: &[A, S], service: false, lead: true },
+    Route { method: "GET", path: "/api/bunker/approvals", roles: &[A, S], service: false, lead: true },
+    Route { method: "GET", path: "/api/bunker/identities", roles: &[A, S], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/identities", roles: &[A], service: false, lead: true },
+    Route { method: "PATCH", path: "/api/bunker/identities/{admin}", roles: &[A], service: false, lead: true },
+    Route { method: "DELETE", path: "/api/bunker/identities/{admin}", roles: &[A], service: false, lead: true },
+    Route { method: "PUT", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false, lead: true },
+    Route { method: "DELETE", path: "/api/bunker/identities/{admin}/members/{admin}", roles: &[A], service: false, lead: true },
     // Signing an identity's profile, follows or relays in the console (#150).
-    Route { method: "POST", path: "/api/bunker/identities/{admin}/sign", roles: &[A], service: false },
-    Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/approve", roles: &[A], service: false },
-    Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/reject", roles: &[A], service: false },
+    Route { method: "POST", path: "/api/bunker/identities/{admin}/sign", roles: &[A], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/approve", roles: &[A], service: false, lead: true },
+    Route { method: "POST", path: "/api/bunker/approvals/00000000-0000-4000-8000-000000000000/reject", roles: &[A], service: false, lead: true },
 ];
 
 fn path_of(app: &common::TestApp, route: &Route) -> String {
@@ -149,25 +153,42 @@ async fn an_unregistered_key_is_403_not_registered_with_its_npub() {
     }
 }
 
-/// The access matrix (#77), every route for every role: an allowed caller gets past the guard
-/// (whatever the handler then answers), a refused one gets 403 `forbidden`.
+/// The access matrix (#77, #147), every route for every role: an allowed caller gets past the guard
+/// and the department checks (whatever the handler then answers), a refused one gets 403
+/// `forbidden`. The lead leads a department of their own, not the one the paths name.
 #[tokio::test]
 async fn each_role_reaches_exactly_its_routes() {
-    let app = common::spawn(true).await;
-    for role in [A, S] {
-        let member = if role == A { app.admin.public_key().to_hex() } else { app.register(role).public_key().to_hex() };
+    let app = common::spawn_with_identities(true, None, &[("Sales", Keys::generate())]).await;
+    let sales = app.db.list_identities().unwrap().into_iter().find(|i| i.label == "Sales").unwrap().pubkey;
+    for (name, role) in [("administrator", Some(A)), ("signer", Some(S)), ("lead", None)] {
+        let member = match role {
+            Some(A) => app.admin.public_key().to_hex(),
+            Some(role) => app.register(role).public_key().to_hex(),
+            None => {
+                let lead = app.register(S).public_key().to_hex();
+                app.db.grant_identity_as(Some(&sales), &lead, bunker::registry::DepartmentRole::Lead, None, chrono::Utc::now()).unwrap();
+                lead
+            }
+        };
         for route in ROUTES {
             let res = request_for(&app, route, &member).send().await.unwrap();
             let status = res.status();
-            if route.roles.contains(&role) {
+            let allowed = match role {
+                Some(role) => route.roles.contains(&role),
+                None => route.lead,
+            };
+            if allowed {
+                // A refusal of this request's payload, such as `not_your_department`, is the
+                // handler's answer: only `forbidden` refuses the route itself.
+                let error = body(res).await["error"].clone();
                 assert!(
-                    status != StatusCode::FORBIDDEN && status != StatusCode::UNAUTHORIZED,
-                    "{} should reach {} {}, got {}",
-                    role, route.method, route.path, status
+                    status != StatusCode::UNAUTHORIZED && !(status == StatusCode::FORBIDDEN && error == "forbidden"),
+                    "{} should reach {} {}, got {} {}",
+                    name, route.method, route.path, status, error
                 );
             } else {
-                assert_eq!(status, StatusCode::FORBIDDEN, "{} on {} {}", role, route.method, route.path);
-                assert_eq!(body(res).await["error"], "forbidden", "{} on {} {}", role, route.method, route.path);
+                assert_eq!(status, StatusCode::FORBIDDEN, "{} on {} {}", name, route.method, route.path);
+                assert_eq!(body(res).await["error"], "forbidden", "{} on {} {}", name, route.method, route.path);
             }
         }
     }

@@ -1,15 +1,20 @@
 <script setup lang="ts">
 // The vault's members, for administrators (#143): name (linking to their read-only profile, #77),
 // npub and role. Each role is a select that changes it in one step (#99), and each row has a remove
-// button.
+// button. A department lead's role reads "Lead of Sales" beside it (#147).
 import { useToast, ref } from '#imports'
 import type { TableColumn } from '@nuxt/ui'
 import { ROLE_LABELS, ROLES, isRole } from '#shared/types/bunker'
-import type { ChangeRoleRequest, Role, TeamMember } from '#shared/types/bunker'
+import type { BunkerIdentity, ChangeRoleRequest, Role, TeamMember } from '#shared/types/bunker'
+import { leadOf } from '~/utils/departments'
 
-defineProps<{
+const props = defineProps<{
   data: TeamMember[]
+  /** The bunker's identities, with their leads (#147). */
+  identities?: BunkerIdentity[]
 }>()
+
+const leads = (member: TeamMember) => leadOf(props.identities ?? [], member.pubkey)
 
 const emit = defineEmits<{
   refresh: []
@@ -99,6 +104,7 @@ const removeMember = async (member: TeamMember) => {
       </template>
       <!-- A value outside the two roles can only be from before #24; shown as stored. -->
       <template #role-cell="{ row }">
+        <div class="flex flex-wrap items-center gap-2">
         <USelect
           v-if="isRole(row.original.role)"
           :key="`${row.original.id}-${row.original.role}-${revision}`"
@@ -111,6 +117,15 @@ const removeMember = async (member: TeamMember) => {
         <template v-else>
           {{ row.original.role }}
         </template>
+        <UBadge
+          v-if="leads(row.original)"
+          color="primary"
+          variant="subtle"
+          :data-lead-of="row.original.pubkey"
+        >
+          {{ leads(row.original) }}
+        </UBadge>
+        </div>
       </template>
       <template #actions-cell="{ row }">
         <UButton

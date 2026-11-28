@@ -127,9 +127,18 @@ fn label_argument(args: &[String]) -> Option<String> {
     })
 }
 
+/// Whether `--admin-only` is among the command's arguments (#147): the identity belongs to no
+/// department, and only administrators use it, as the company root does.
+/// A value given to `--label` as the next argument is never read as the flag, so
+/// `--label --admin-only` is a label, not a mark.
+fn admin_only_argument(args: &[String]) -> bool {
+    args.iter().enumerate().any(|(i, a)| a == "--admin-only" && (i == 0 || args[i - 1] != "--label"))
+}
+
 /// `bunker import-key --add --label <label>` (#103): encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC)
 /// under BANCWR_ROOT_KEY_FILE and adds it as another identity, in the database beside the primary.
-/// A running bunker loads it when it restarts. Never prints the key. Returns the exit code.
+/// With `--admin-only` (#147) it is marked administrator only. A running bunker loads it when it
+/// restarts. Never prints the key. Returns the exit code.
 fn add_identity(args: &[String]) -> i32 {
     let db_path = database_path();
     let label = label_argument(args).map(|l| l.trim().to_string()).unwrap_or_default();
@@ -155,10 +164,16 @@ fn add_identity(args: &[String]) -> i32 {
         eprintln!("Could not add the identity: that key is already this bunker's primary identity.");
         return 1;
     }
-    let added = Database::new(&db_path).and_then(|db| db.add_identity(&public_key.to_hex(), &label, &key_file, chrono::Utc::now()));
+    let admin_only = admin_only_argument(args);
+    let added = Database::new(&db_path).and_then(|db| {
+        db.add_identity_with(&public_key.to_hex(), &label, &key_file, None, bunker::db::NewIdentity { admin_only, lead: None }, chrono::Utc::now())
+    });
     match added {
         Ok(Ok(())) => {
             println!("Added the identity \"{}\", encrypted at rest.", label);
+            if admin_only {
+                println!("It is administrator only: it belongs to no department, and only administrators use it.");
+            }
             println!("Public key: {}", public_key.to_bech32().unwrap_or_default());
             println!(
                 "Next: remove BUNKER_NSEC_FILE and BUNKER_NSEC, delete every plain copy of the key, and \
@@ -175,6 +190,10 @@ fn add_identity(args: &[String]) -> i32 {
             eprintln!("Could not add the identity: that key is a team member's, and an identity's key can never sign in.");
             1
         }
+        Ok(Err(bunker::db::AddIdentityRefusal::NotALead)) => {
+            eprintln!("Could not add the identity: the member who would lead it leads no department.");
+            1
+        }
         Err(e) => {
             eprintln!("Could not add the identity: the database could not be updated.");
             eprintln!("Detail: {}", e);
@@ -182,6 +201,14 @@ fn add_identity(args: &[String]) -> i32 {
         }
     }
 }
+
+/// What to do when `import-key --admin-only` imported the key but could not mark it (#147). The
+/// key file exists, so running the command again stops before marking: the mark is finished in
+/// the console, and the plain key is still removed first.
+const ADMIN_ONLY_RECOVERY: &str = "To finish: remove BUNKER_NSEC_FILE and BUNKER_NSEC from the bunker's configuration and \
+     delete every plain copy of the key, as after any import. Register nobody but administrators yet. Start the bunker, \
+     sign in as an administrator, open Departments, remove anyone listed on the primary's card, and select Make \
+     administrator only on it. Running import-key again does not mark it, because the key file already exists.";
 
 /// Encrypts BUNKER_NSEC_FILE (or BUNKER_NSEC) under BANCWR_ROOT_KEY_FILE into the key file. Never
 /// replaces an existing key file, and never prints the key. Returns the exit code. With `--add`,
@@ -202,6 +229,30 @@ fn import_key() -> i32 {
         Ok(public_key) => {
             println!("Imported the bunker's key, encrypted at rest.");
             println!("Public key: {}", public_key.to_bech32().unwrap_or_default());
+            // The primary's row is recorded here rather than at the next start, so it can be marked.
+            if admin_only_argument(&args) {
+                let marked = Database::new(&db_path).and_then(|db| {
+                    let now = chrono::Utc::now();
+                    db.ensure_primary_identity(&public_key.to_hex(), now)?;
+                    db.set_identity_admin_only(None, true, None, now)
+                });
+                match marked {
+                    Ok(bunker::db::AdminOnlyOutcome::Changed | bunker::db::AdminOnlyOutcome::Unchanged) => {
+                        println!("It is administrator only: it belongs to no department, and only administrators use it.");
+                    }
+                    Ok(_) => {
+                        eprintln!("The key was imported, but it could not be marked administrator only: signers may still use it.");
+                        eprintln!("{}", ADMIN_ONLY_RECOVERY);
+                        return 1;
+                    }
+                    Err(e) => {
+                        eprintln!("The key was imported, but it could not be marked administrator only: the database could not be updated.");
+                        eprintln!("Detail: {}", e);
+                        eprintln!("{}", ADMIN_ONLY_RECOVERY);
+                        return 1;
+                    }
+                }
+            }
             println!(
                 "Next: remove BUNKER_NSEC_FILE and BUNKER_NSEC from the bunker's configuration, delete \
                  every plain copy of the key (the secret file, .env, editor backups), and restart. \

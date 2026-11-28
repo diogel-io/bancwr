@@ -492,7 +492,8 @@ default is 60 signing and encryption requests a minute with a burst of 20, and t
 
 A brand often wants a person to check what a bot or a member's app posts before it goes out (#102).
 When issuing a token under **Connections**, tick the kinds under **Needs approval**: each request
-to sign one of them waits under **Approvals** until an administrator decides.
+to sign one of them waits under **Approvals** until an administrator, or a lead of the department
+whose identity the app signs as (#147), decides.
 
 - Each request shows the note or event exactly as it will be signed, who it is for and which app
   asked. **Approve and sign** signs it and sends it to the app, which publishes it. **Reject** signs
@@ -505,10 +506,12 @@ to sign one of them waits under **Approvals** until an administrator decides.
   even if you approve it later: approve promptly, or set the app's own timeout longer if it has one.
 - Requests waiting are lost when the bunker restarts, and their apps get no answer. They are kept
   only in memory so their content is never written to disk.
-- Signers see their own requests waiting, and cannot decide them. Any administrator can, their own
-  apps' requests included.
+- Signers see their own requests waiting, and cannot decide them. Any administrator can, and a lead
+  can for their department, their own apps' requests included. The audit log marks an approval by
+  the app's own member with `self=true`.
 - Which kinds need approval cannot be changed on an existing connection: issue a new token.
-- Only an administrator can require approval. A signer's own tokens never need it (#142).
+- Only an administrator, or a lead for their department, can require approval. Other signers' own
+  tokens never need it (#142).
 
 ## More than one identity
 
@@ -523,7 +526,8 @@ department. The key you imported first is the **primary**.
 2. Take a backup straight away (see "The key and backups"). The key is never shown and can't be
    exported: if you lose this bunker's database, every backup or the root credential, the
    identity is gone for good.
-3. Grant members the identity and issue tokens for it, as in steps 3 and 4 below.
+3. Put members in its department and issue tokens for it, as in steps 3 and 4 below. A lead who
+   creates an identity leads its new department.
 
 If the bunker can't read its root credential (`BANCWR_ROOT_KEY_FILE`), creating is refused and
 nothing changes. The bunker keeps signing as before.
@@ -540,13 +544,13 @@ nothing changes. The bunker keeps signing as before.
    after the first import.
 2. Restart the bunker: a new identity loads at start. Until then, **Config**, **Identities** shows it
    as "Loads when the bunker restarts".
-3. Grant members the identities they may sign as, on their team page under **May sign as**.
-   Administrators may sign as every identity. When you add the first identity beside the primary,
-   every member who could sign keeps the primary.
+3. Put members in the departments they sign for, on their team page under **Departments**, or on
+   the **Departments** page. Administrators may sign as every identity. When you add the first
+   identity beside the primary, every member who could sign keeps the primary.
 4. Issue connection tokens for the identity under **Connections**, **Sign as**.
 
-- Removing a member's grant disconnects their apps for that identity, and revokes their unused
-  tokens for it. Their other identities are untouched.
+- Taking a member out of a department disconnects their apps for that identity, and revokes their
+  unused tokens for it. Their other departments are untouched.
 - Every identity is encrypted under the same root credential, and every backup carries them all.
   Restoring needs that credential, as it always has.
 - If an identity cannot be decrypted at start (its row altered, or the wrong credential), the
@@ -564,8 +568,8 @@ the same pages as your own, with a banner naming the identity, such as "Editing 
   The bunker's relays carry NIP-46 traffic only, so they are left out.
 - A profile picture is uploaded to the identity's Blossom server, or the default one.
 - The signing log records each change under your name, with **Console** as the app.
-- Only administrators can do this. An identity that loads only after a restart has no links until
-  then.
+- Administrators can do this for every identity, and a lead for their department's, from
+  **Departments**. An identity that loads only after a restart has no links until then.
 
 ### Retiring an identity
 
@@ -580,6 +584,49 @@ The confirmation says how many connected apps and unused tokens it revokes. Reti
 The primary can't be retired. A restore from a backup taken before you retired an identity brings
 it back, with its key, as it brings back a member removed since that backup. Its apps still need
 new tokens, as after every restore.
+
+## Departments
+
+Each identity is a department (#147), such as Sales or Support, used by its members. A person can be
+in any number of departments. **Departments** lists each one with its members and its leads.
+
+- **Leads.** An administrator makes someone a lead with **Make lead** on **Departments**, or with
+  their role in that department on their team page. A lead adds and removes their department's
+  members, registers new people's keys into it as signers, issues its connections with approval
+  kinds, approves its requests, edits its identity's profile, and can create a new identity, which
+  they then lead, or retire their own. A lead can't touch another department, change anyone's role,
+  remove anyone from the bunker, or open Config or Logs. A person a lead registered stays in the
+  bunker after leaving every department, until an administrator removes them.
+- **Making a lead a member** keeps them in the department, with their apps. Taking someone out of a
+  department disconnects their apps for it.
+- **Administrator only.** An identity can belong to no department, such as the company root: only
+  administrators sign as it, manage its connections and approve its requests, and nobody can be
+  added to it. Select **Make administrator only** on its card once nobody is in it; the bunker
+  refuses while anyone but an administrator may still use it. **Make it a department** undoes it.
+- **The company root's own bunker** (several bunkers ADR): import its key administrator only, so
+  no member is ever granted it:
+
+  ```bash
+  podman compose run --rm --no-deps \
+    -v ./secrets/bunker_nsec:/run/secrets/bunker_nsec:ro,Z \
+    -e BUNKER_NSEC_FILE=/run/secrets/bunker_nsec \
+    bunker import-key --admin-only
+  ```
+
+  `import-key --add --admin-only --label "Holding"` does the same for an identity added beside the
+  primary.
+
+  If the key is imported but the mark can't be stored, the command says so and exits 1. Running it
+  again stops at the existing key file, so finish in the console. First remove `BUNKER_NSEC_FILE`
+  and `BUNKER_NSEC` and delete every plain copy of the key, as after any import, and register
+  nobody but administrators. Then start the bunker, sign in as an administrator, open
+  **Departments**, remove anyone listed on the primary's card, and select **Make administrator
+  only** on it. Until then signers may use the primary.
+- **Upgrading needs no step of yours.** Every existing grant becomes a department membership, nobody
+  becomes a lead and nothing becomes administrator only, so nobody gains or loses access. The audit
+  log records one `department_migrated` event per grant. A bunker with only its primary records
+  none, and behaves as before until a lead is appointed or another identity is added.
+- Every change, who made it, and every approval are in the audit log and the export.
 
 ## Apps that read and send private messages
 

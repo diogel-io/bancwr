@@ -35,6 +35,7 @@ const MIGRATIONS: &[(&str, Migration)] = &[
     ("retire identities", retire_identities),
     ("connect apps from their nostrconnect:// codes", nostrconnect_connections),
     ("mark signatures made from the console", console_signatures),
+    ("group identities into departments", departments),
 ];
 
 /// The version a fully migrated database is at.
@@ -605,4 +606,31 @@ fn nostrconnect_connections(tx: &Transaction) -> anyhow::Result<()> {
 ///     connection. NULL for every signature made for a NIP-46 app, as before.
 fn console_signatures(tx: &Transaction) -> anyhow::Result<()> {
     add_missing_columns(tx, &[("signing_logs", "origin", "TEXT")])
+}
+
+/// 19. Departments (#147, departments ADR). Each grant gains a `role`, `member` or `lead`, and each
+///     identity an `admin_only` mark. Every existing grant becomes a `member`: nobody becomes a
+///     lead and no identity is marked, so nobody gains or loses access. One `department_migrated`
+///     audit event is recorded per grant, naming the identity, the member and when the grant was
+///     made, so the log names each change. Its id is derived from the grant, so a database whose
+///     version was rewound re-runs this without recording any grant twice.
+fn departments(tx: &Transaction) -> anyhow::Result<()> {
+    add_missing_columns(
+        tx,
+        &[("identity_access", "role", "TEXT NOT NULL DEFAULT 'member'"), ("identities", "admin_only", "INTEGER NOT NULL DEFAULT 0")],
+    )?;
+    let now = db_time(chrono::Utc::now());
+    tx.execute(
+        "INSERT OR IGNORE INTO audit_events (id, action, timestamp, actor_pubkey, member_pubkey, member_name, identity_pubkey, detail)
+         SELECT 'migration:department_migrated:' || a.identity_pubkey || ':' || a.member_pubkey, 'department_migrated', ?1, NULL,
+                a.member_pubkey, (SELECT name FROM team_members WHERE pubkey = a.member_pubkey), NULLIF(a.identity_pubkey, ''),
+                'role=' || a.role || ';granted_at=' || a.granted_at
+         FROM identity_access a",
+        params![now],
+    )?;
+    let count: i64 = tx.query_row("SELECT count(*) FROM identity_access", [], |row| row.get(0))?;
+    if count > 0 {
+        info!("Made {} identity grants department memberships (#147)", count);
+    }
+    Ok(())
 }

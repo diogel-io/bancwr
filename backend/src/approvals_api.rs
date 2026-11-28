@@ -2,12 +2,17 @@
 //!
 //! | Route | Who |
 //! |-------|-----|
-//! | `GET /api/bunker/approvals` | administrator and signer: administrators see all, signers their own |
-//! | `POST /api/bunker/approvals/:id/approve` | administrator |
-//! | `POST /api/bunker/approvals/:id/reject` | administrator |
+//! | `GET /api/bunker/approvals` | administrator and signer: administrators see all, signers their own, and a lead also their department's (#147) |
+//! | `POST /api/bunker/approvals/:id/approve` | administrator, and a lead of the department whose identity the connection signs as (#147) |
+//! | `POST /api/bunker/approvals/:id/reject` | administrator, and a lead of that department (#147) |
 //!
 //! A request waiting for approval shows what will be signed: its kind, content, tags, `created_at`
-//! and event id. Approving names that event id, so an administrator approves exactly what they saw.
+//! and event id. Approving names that event id, so an approver approves exactly what they saw.
+//!
+//! Who decides is amendment 1 to the signing approval ADR (departments ADR, #147): administrators,
+//! and the leads of the department whose identity the connection signs as, their own requests
+//! included. On an administrator only identity, administrators alone decide. Signers list their own
+//! requests waiting, but don't decide them.
 use crate::approvals::Pending;
 use crate::connections_api::{api_error, caller, ApiError};
 use crate::nip46::ApprovalError;
@@ -93,12 +98,18 @@ fn not_found() -> ApiError {
     api_error(StatusCode::NOT_FOUND, "not_found", "No request with that id is waiting for approval.")
 }
 
-/// Requests waiting for approval, oldest first: an administrator sees all, anyone else their own.
+/// Requests waiting for approval, oldest first: an administrator sees all, anyone else their own,
+/// and a lead also those that would sign as their department's identity (#147).
 /// GET /api/bunker/approvals
 pub async fn list_approvals(State(state): State<AppState>, who: Option<Extension<Caller>>) -> Result<Json<Vec<ApprovalResponse>>, ApiError> {
     let (pubkey, administrator) = caller(who);
-    let scope = if administrator { None } else { Some(pubkey.as_str()) };
-    let pending = state.nip46_handler.pending_approvals(scope);
+    let mut pending = state.nip46_handler.pending_approvals(None);
+    if !administrator {
+        let led = state.db.led_identities(&pubkey).map_err(crate::connections_api::database_error)?;
+        pending.retain(|request| {
+            request.connection.for_pubkey == pubkey || led.iter().any(|key| key.as_str() == request.connection.identity_pubkey.as_deref().unwrap_or(""))
+        });
+    }
     let mut names = std::collections::HashMap::new();
     let mut listed = Vec::with_capacity(pending.len());
     for request in pending {
@@ -112,6 +123,28 @@ pub async fn list_approvals(State(state): State<AppState>, who: Option<Extension
     Ok(Json(listed))
 }
 
+/// Whether the caller may decide the waiting request `id` (#147): an administrator, or a lead of
+/// the department whose identity its connection signs as, read from the database now. Anyone who
+/// leads no department is a 403 before the request is looked up. A lead is refused someone else's
+/// request outside their departments with a 404, as an unknown one is, and their own with a 403.
+fn may_decide(state: &AppState, id: Uuid, pubkey: &str, administrator: bool) -> Result<(), ApiError> {
+    if administrator {
+        return Ok(());
+    }
+    let forbidden = || api_error(StatusCode::FORBIDDEN, "forbidden", "Only an administrator or a lead of this department can decide this request.");
+    if !state.db.leads_any_department(pubkey).map_err(crate::connections_api::database_error)? {
+        return Err(forbidden());
+    }
+    let waiting = state.nip46_handler.pending_approval(id).ok_or_else(not_found)?;
+    if state.db.may_lead(pubkey, waiting.connection.identity_pubkey.as_deref()).map_err(crate::connections_api::database_error)? {
+        return Ok(());
+    }
+    if waiting.connection.for_pubkey == pubkey {
+        return Err(forbidden());
+    }
+    Err(not_found())
+}
+
 /// Approve a waiting request: the bunker signs the event and sends it to the app.
 /// POST /api/bunker/approvals/:id/approve
 pub async fn approve(
@@ -121,7 +154,8 @@ pub async fn approve(
     Json(request): Json<ApproveRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let id = pending_id(&id)?;
-    let (actor, _) = caller(who);
+    let (actor, administrator) = caller(who);
+    may_decide(&state, id, &actor, administrator)?;
     match state.nip46_handler.approve(id, &request.event_id, crate::audit::actor(&actor), request.note.as_deref()).await {
         Ok(reply) => {
             let signed = reply.response.result.is_some();
@@ -153,7 +187,8 @@ pub async fn reject(
     request: Option<Json<RejectRequest>>,
 ) -> Result<Json<Value>, ApiError> {
     let id = pending_id(&id)?;
-    let (actor, _) = caller(who);
+    let (actor, administrator) = caller(who);
+    may_decide(&state, id, &actor, administrator)?;
     let request = request.map(|Json(r)| r).unwrap_or_default();
     match state.nip46_handler.reject(id, crate::audit::actor(&actor), request.note.as_deref()) {
         Ok(reply) => {

@@ -26,6 +26,17 @@ describe('TeamMemberList', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows "Lead of Sales" beside the role of a department lead (#147)', async () => {
+    const component = await mountSuspended(TeamMemberList, {
+      props: {
+        data: mockTeam,
+        identities: [{ pubkey: 's'.repeat(64), npub: null, label: 'Sales', is_primary: false, available: true, members: ['b'.repeat(64)], leads: ['b'.repeat(64)] }]
+      }
+    })
+    expect(component.find(`[data-lead-of="${'b'.repeat(64)}"]`).text()).toBe('Lead of Sales')
+    expect(component.find(`[data-lead-of="${'a'.repeat(64)}"]`).exists()).toBe(false)
+  })
+
   it('renders list from props', async () => {
     const component = await mountSuspended(TeamMemberList, {
       props: {

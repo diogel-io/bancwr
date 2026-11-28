@@ -110,23 +110,37 @@ its group:
 | `GET /api/bunker/logs`, `/metrics`, `/config` | yes | | |
 | `GET /api/bunker/logs/export`; `GET`, `PUT /api/bunker/logs/retention` | yes | | |
 | `GET /api/bunker/logs/mine` | own | own | |
-| `GET /api/bunker/team` | yes | | |
-| `POST /api/bunker/team`; `DELETE`, `PATCH /api/bunker/team/:id` | yes | | |
+| `GET /api/bunker/team` | yes | a lead | |
+| `POST /api/bunker/team` | yes | a lead: signers into their departments | |
+| `DELETE`, `PATCH /api/bunker/team/:id` | yes | | |
 | `GET /api/bunker/team/by-pubkey/:pubkey` | yes | | yes |
 | `GET`, `PUT /api/bunker/relays` | yes | | |
-| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | all | own | |
-| `GET /api/bunker/connections` | all | own | |
-| `DELETE /api/bunker/connections/:id` | any | own | |
-| `POST /api/bunker/connections/nostrconnect/preview`, `POST /api/bunker/connections/nostrconnect` | for any member | for themselves | |
-| `GET /api/bunker/approvals` | all | own | |
-| `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | | |
-| `GET /api/bunker/identities` | all, with members | those they may use | |
-| `POST /api/bunker/identities`; `PATCH`, `DELETE /api/bunker/identities/:pubkey`; `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | | |
-| `POST /api/bunker/identities/:pubkey/sign` | yes | | |
+| `POST`, `GET /api/bunker/connections/tokens`; `DELETE /api/bunker/connections/tokens/:id` | all | own, and a lead's department's | |
+| `GET /api/bunker/connections` | all | own, and a lead's department's | |
+| `DELETE /api/bunker/connections/:id` | any | own, and a lead's department's | |
+| `POST /api/bunker/connections/nostrconnect/preview`, `POST /api/bunker/connections/nostrconnect` | for any member | for themselves; a lead for their department's members | |
+| `GET /api/bunker/approvals` | all | own, and a lead's department's | |
+| `POST /api/bunker/approvals/:id/approve`, `/reject` | yes | a lead: their department's | |
+| `GET /api/bunker/identities` | all, with members and leads | those they may use; a lead's with members and leads | |
+| `POST /api/bunker/identities` | yes | a lead, who leads the new one | |
+| `PATCH`, `DELETE /api/bunker/identities/:pubkey` | yes | a lead: their department's (renaming, retiring; never the mark) | |
+| `PUT`, `DELETE /api/bunker/identities/:pubkey/members/:member` | yes | a lead: their department's members, or themselves | |
+| `POST /api/bunker/identities/:pubkey/sign` | yes | a lead: their department's | |
 
 Refusals: `401 {"error":"not_authenticated","reason":…}` without a valid signature;
 `403 {"error":"not_registered","npub":…}` for a key not in the vault; `403 {"error":"forbidden"}`
 for a role the route does not allow.
+
+**Departments (#147).** "A lead" is a signer holding a `lead` grant on an identity (see "More than
+one identity"). The routes marked for a lead are in the guard's signer group, and each handler
+allows an administrator, or a lead of the department of the identity the request names, read from
+the database on every request with `Database::may_lead`. A signer who leads nothing gets
+`403 {"error":"forbidden"}` from them, as from the administrator group. A lead is refused another
+department's identity with `403 {"error":"forbidden"}`, another department's token, connection or
+held request with 404, as if it did not exist, and a registration outside their departments, or of
+anything but a signer, with `403 {"error":"not_your_department"}`. Only administrators appoint or
+remove a lead, mark an identity administrator only, remove members from the bunker, change roles,
+or read logs, metrics, relays and configuration.
 
 `BANCWR_PROXY_SECRET` is required: the bunker does not start without it (#11). The bunker has no
 CORS headers: browsers never call it directly.
@@ -178,7 +192,12 @@ Returns an array of team members.
 Adds a new team member. Valid roles are `administrator` and `signer` (#77, #143); older names,
 such as `user` and `viewer`, are refused with 400. The pubkey may be an
 npub or hex; it is stored as hex, and a key already registered, in either form, gets 409. The
-bunker's own key cannot be registered.
+bunker's own key cannot be registered, nor any identity's. `identities`, a list of identity keys,
+names the departments they join as a `member`, once grants decide who may use each (#103, #147);
+an administrator only identity is 409. A department lead (#147) registers a `signer` only, into one
+or more departments they lead (`403 {"error":"not_your_department"}` otherwise), under every other
+check. The member and their grants are stored in one transaction, and `member_added` names the
+departments in its detail, with the lead or administrator as actor.
 
 `DELETE /api/bunker/team/:id` removes a member, except the only administrator (409).
 
@@ -309,7 +328,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `token_revoked` | A token is revoked, or ends with its member's removal, demotion or a restore, or their grant of its identity being removed (#103), or is used up by a `connect` that was refused (no actor; the app's key in `client_pubkey`) | `reason=revoked`, `member_removed`, `role_changed`, `restored`, `access_removed` or `identity_retired` (#146); for a refused `connect`, `reason=connect_refused;refusal=…`: `other_identity`, `member_removed`, `member_cannot_sign`, `no_identity_access` or `nothing_grantable` |
 | `connection_created` | An app connects with a token | `perms=…`, then `;expires_at=…` when it has a lifetime |
 | `connection_revoked` | A connection ends | `reason=revoked`, `logout`, `replaced`, `member_removed`, `role_changed`, `restored`, `expired`, `access_removed` (#103) or `identity_retired` (#146) |
-| `member_added`, `member_removed` | Team changes | `role=…` |
+| `member_added`, `member_removed` | Team changes, by an administrator, or a lead registering a signer (#147) | `role=…`, then `;departments=…` when they join departments as they are added |
 | `member_role_changed` | An administrator changes a role (#99), or the `BANCWR_ADMIN_PUBKEY` bootstrap promotes | `from=…;to=…` |
 | `relays_changed` | An administrator saves the bunker relays | `relays=…` |
 | `retention_changed` | An administrator sets the retention policy | `max_age_days=…;max_rows=…` |
@@ -318,13 +337,16 @@ Audit actions, each recorded in the same transaction as the change:
 | `restored` | `bunker restore` revoked connections and tokens | `connections=…;tokens=…;backup_created_at=…`, when the restored backup was taken (RFC 3339, UTC) |
 | `nip44_decrypt`, `nip04_decrypt` | A NIP-46 app asks the bunker to decrypt (#97) | `peer=…`: the hex key of the other party |
 | `approval_requested` | A `sign_event` of a kind that needs approval is held (#102) | `request=…;kind=…;event_id=…` |
-| `approval_approved`, `approval_rejected` | An administrator decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;note=…` when given |
+| `approval_approved`, `approval_rejected` | An administrator or a lead of its department (#147) decides a held request (#102) | `request=…;kind=…;event_id=…`, then `;self=true` on an approval by the connection's own member, and `;note=…` when given |
 | `approval_expired` | Nobody decided in time (#102) | `request=…;kind=…;event_id=…;timeout_seconds=…` |
 | `approval_cancelled` | The request's connection ended while it waited (#102) | `request=…;kind=…;event_id=…;reason=connection_ended` |
 | `identity_added` | `bunker import-key --add` adds an identity (#103), with no actor, or an administrator creates one in the console (#146), as actor | `label=…` |
 | `identity_retired` | An administrator retires an identity (#146) | `label=… connections_revoked=… tokens_revoked=…` |
 | `identity_renamed` | An administrator renames one | `label=…` |
-| `identity_access_granted`, `identity_access_removed` | An administrator grants a member an identity, or removes the grant | none |
+| `identity_access_granted`, `identity_access_removed` | An administrator or a lead (#147) adds a member to a department (grants them its identity), or removes them. Also recorded with no actor for each member the bunker grants the primary when grants start to matter | `role=member` or `role=lead` on a grant; `reason=grants_matter` on the bunker's own |
+| `department_lead_appointed`, `department_lead_removed` | An administrator appoints a lead, a lead creates an identity (#147), or a lead is made a member | `role=lead` on a new grant; `from=…;to=…` on a changed one |
+| `department_migrated` | Migration 19 made an existing grant a department membership (#147), one per grant, with no actor | `role=member;granted_at=…` |
+| `identity_admin_only_changed` | An administrator marks or unmarks an identity administrator only, or `import-key --admin-only` does (#147) | `admin_only=true` or `admin_only=false` |
 | `connection_rate_limited` | A NIP-46 app is refused for going over its connection's rate limit (#101), at most once a minute per connection | `rate_per_minute=…;burst=…` |
 
 A decrypt changes nothing, so it has no transaction of its own: its event is written before the
@@ -606,8 +628,8 @@ Upgrading: tokens and connections from before #101 have no stored limit, so they
 
 ### Approval before signing (#102)
 A token can mark some of its kinds as needing approval (`approval_kinds`). A `sign_event` for one of
-them is not signed: it is held until an administrator approves or rejects it in the console, under
-**Approvals**. Other kinds sign as before, and so do all connections made without approval kinds.
+them is not signed: it is held until an administrator, or a lead of the department whose identity
+the connection signs as (#147), approves or rejects it in the console, under **Approvals**. Other kinds sign as before, and so do all connections made without approval kinds.
 
 - **The app waits.** The bunker answers a held request at once with a NIP-46 auth challenge,
   `{"id":…,"result":"auth_url","error":"<console>/approvals/<id>"}`, then sends the real answer later
@@ -620,17 +642,20 @@ them is not signed: it is held until an administrator approves or rejects it in 
   past that, `Too many requests are waiting for approval`. Each hold is recorded as
   `approval_requested` first, and refused if that cannot be written.
 - **`GET /api/bunker/approvals`** lists the requests waiting, oldest first: all for an
-  administrator, their own for a signer. Each shows the event as it will be signed (`kind`,
+  administrator, their own for a signer, and for a lead also those that would sign as their
+  department's identity (#147). Each shows the event as it will be signed (`kind`,
   `content`, `tags`, `created_at` and `event_id`, under the bunker's key), the member, the
   connection, the app's self-reported name, and when it was asked and times out.
 - **`POST /api/bunker/approvals/:id/approve`** with `{"event_id":"…","note":"…"}`, for
-  administrators. `event_id` must be the one shown, or it is `409 {"error":"event_changed"}`, and
+  administrators and the leads of the department whose identity the connection signs as (#147). `event_id` must be the one shown, or it is `409 {"error":"event_changed"}`, and
   the request still waits. The connection is checked again: if it has ended, or may no longer sign
   the kind, the request is cancelled, the app told, and it is `409 {"error":"connection_ended"}`.
   Otherwise the event is signed, logged as a signature, recorded as `approval_approved` with the
-  administrator, and sent to the app.
-- **`POST /api/bunker/approvals/:id/reject`** with `{"note":"…"}` (optional), for administrators.
-  Nothing is signed; the app is told `Rejected by an administrator`, then `: <note>`.
+  approver, and sent to the app. When the approver holds the connection themselves, the detail
+  ends `;self=true`.
+- **`POST /api/bunker/approvals/:id/reject`** with `{"note":"…"}` (optional), for the same
+  people.
+  Nothing is signed; the app is told `Rejected by an approver`, then `: <note>`.
 - Either on a request no longer waiting (decided, timed out or unknown) is `404`. Notes are one
   line of at most 280 characters, recorded in the audit `detail`, and shown to the app on a
   rejection.
@@ -645,22 +670,33 @@ them is not signed: it is held until an administrator approves or rejects it in 
 - **Signed after the app gave up.** If an app's own timeout is shorter and it gives up, a later
   approval still signs and sends the event, but the app is not listening, so it is never
   published. The signature is still in the signing log.
-- **Who decides.** Any administrator, including for their own apps' requests. Signers see their own
-  requests waiting, without the buttons. `GET /api/bunker/metrics` returns `approvals_pending`.
+- **Who decides** (amendment 1, departments ADR, #147). Any administrator, and the leads of the
+  department whose identity the connection signs as, each including for their own apps' requests.
+  On an administrator only identity, administrators alone decide. A signer who leads no department
+  is `403`; a lead is refused another department's request with `404`, as if it did not exist, and
+  their own outside their departments with `403`. Signers see their own requests waiting, without
+  the buttons. `GET /api/bunker/metrics` returns `approvals_pending`.
 
 ### More than one identity (#103)
 One bunker can sign as several Nostr keys, its **identities**, so an agency or a brand with several
 accounts needs one deployment, not one per key. The key in `bunker-key.enc` is the **primary**.
 
+Each identity that isn't administrator only is a **department** (#147, departments ADR): its members
+are the members granted it, and each grant has a `role`, `member` or `lead`. A stored role that is
+not one of those grants nothing. A **lead** manages their department: everything below marked "a
+lead" applies only to identities they hold a `lead` grant on, checked on every request.
+
 - **Creating one** (#146): `POST /api/bunker/identities` with `{"label":"…"}` (1 to 100
-  characters), administrators only. The bunker reads the root credential from
+  characters), by an administrator, or a lead of any department, who is granted `lead` on the new
+  identity in the same transaction, so it starts a department they lead (#147). The bunker reads the root credential from
   `BANCWR_ROOT_KEY_FILE`, as it does at start, generates a key, encrypts it, decrypts it back once
   to check it, and stores it. It is unlocked and listened for on the relays at once, without a
   restart. The response is `201` with the identity as `GET` lists it: never any key material, and
   the key is never logged or recorded. If the root credential can't be read, nothing changes and
   the answer is `503 {"error":"root_key_unavailable"}`. A generated key can't be exported, so it
   exists only in the database and its backups.
-- **Retiring one** (#146): `DELETE /api/bunker/identities/:pubkey`, administrators only. In one
+- **Retiring one** (#146): `DELETE /api/bunker/identities/:pubkey`, by an administrator, or a lead
+  of its department (#147), which ends the department. In one
   transaction it revokes every active connection and unused token that signs as the identity
   (`identity_retired`), removes its grants, clears its encrypted key and sets `retired_at`. It
   leaves the running keyring and the relay subscription at once, so a request addressed to it gets
@@ -675,8 +711,15 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   `BUNKER_NSEC`) and `BANCWR_ROOT_KEY_FILE` set. It is encrypted under the same root credential, in
   the same `bancwr-key v1` format, and stored in the database, so a backup carries it. It refuses a
   key that is already an identity, the primary, or a team member's key. A running bunker loads it on
-  its next restart. The plain-key rules of #94 apply: while `BUNKER_NSEC*` is set, the bunker stays
-  locked.
+  its next restart. `--admin-only` marks it administrator only (#147). The plain-key rules of #94
+  apply: while `BUNKER_NSEC*` is set, the bunker stays locked.
+- **The primary administrator only** (#147), for a company root's own bunker: `bunker import-key
+  --admin-only` writes the primary's encrypted key to the key file (`bunker-key.enc`), as any
+  primary import does, and records the primary's row, with the mark, in the database. The key itself
+  is never in the database. If the key is imported but the mark cannot be stored, the command says
+  so and exits 1. Running it again stops at the existing key file, so finish in the console: remove
+  the plain key, start the bunker, and select **Make administrator only** on the primary's card on
+  **Departments** (see `docs/operating.md`).
 - **Unlocking.** At start the bunker decrypts the primary, then every other identity, each of which
   must decrypt to the public key its row records. If any does not, the bunker stays locked, and
   `/health` says which, by its label.
@@ -686,21 +729,44 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   each as the identity its `p` tag names. An app connected to one identity that sends to another
   gets `Not connected`; a token for another identity is refused at `connect`
   (`This connection token is for another identity`). One app key holds one connection at a time.
-- **Who may use which.** With only the primary, everyone may, exactly as before. Once there are
-  several, a signer needs a grant for each identity, the primary included; adding the first other
-  identity grants the primary to every member who may sign, so nobody loses access. Administrators
-  may use every identity without a grant. A member added through the API gets the identities in
-  `identities`, or the primary when it is omitted. Removing a grant revokes their connections and
+- **Who may use which.** With only the primary and no leads, everyone may, exactly as before. Once
+  there are several, or a department has a lead (#147), a signer needs a grant of either role for
+  each identity, the primary included; adding the first other identity, or appointing the first
+  lead, grants the primary to every member who may sign, in the same transaction, so nobody loses
+  access. From then on grants decide for good, even after the last lead steps down, so nobody taken
+  out of the primary's department regains it. Administrators may use every identity without a grant. An **administrator only**
+  identity (#147) is used by administrators alone: it refuses grants and leads
+  (`409 {"error":"admin_only"}`), and a primary marked so in a single-identity bunker is not used
+  by signers. `identity_allowed` and `may_use_identity` in `src/db.rs` decide this, together. A member added through the API gets the identities in
+  `identities`, or, from an administrator, the primary when it is omitted. An administrator sends
+  `"identities":[]` to register someone into no department, which is the way to register a signer
+  while the primary is administrator only. A lead must name at least one department, each one they
+  lead. All of this, and whether grants matter yet, is read in the transaction that stores the
+  member; until grants matter, `identities` is ignored and the member gets no grant. Removing a grant revokes their connections and
   unused tokens for that identity, as `access_removed`.
 - **`GET /api/bunker/identities`** lists `pubkey`, `npub`, `label`, `is_primary`, `available`
-  (unlocked in the running bunker) and, for administrators, `members` and, on each identity but the
-  primary, `usage` (`connections` and `tokens`: what retiring it would revoke). Retired identities
-  are left out; an administrator gets them too with `?retired=true`, each with `retired_at`. `PATCH` renames one
-  (`{"label":"…"}`, 1 to 100 characters). `PUT` and `DELETE
-  /api/bunker/identities/:pubkey/members/:member` grant and remove; a member whose stored role is not
-  recognised is `400 {"error":"member_cannot_sign"}`.
-- **Its own profile, follows and relays** (#150): `POST /api/bunker/identities/:pubkey/sign`,
-  administrators only, signs an event the console built as the identity and returns it. The body
+  (unlocked in the running bunker), `admin_only` (#147), `my_role` (the caller's own role in its
+  department, when they hold a grant) and, for administrators and its leads, `members` (leads
+  included), `leads`, `grants_matter` (whether grants decide who may use the primary yet) and, on
+  each identity but the primary, `usage` (`connections` and `tokens`: what retiring it would
+  revoke). Retired identities
+  are left out; an administrator gets them too with `?retired=true`, each with `retired_at`. `PATCH`
+  renames one (`{"label":"…"}`, 1 to 100 characters), for an administrator or a lead of its
+  department, and an administrator marks or unmarks it with `{"admin_only":true|false}` (#147).
+  Marking is refused with `409 {"error":"has_members"}` while anyone but an administrator may use
+  it, so nobody loses access without their removal being recorded. A label and a mark in one
+  request change together, or neither does. `PUT
+  /api/bunker/identities/:pubkey/members/:member`, with an optional `{"role":"member"|"lead"}`
+  (`member` by default), adds a member to the department or changes their role; `DELETE` removes
+  them, revoking their connections and unused tokens for it. A lead adds `member`s, removes members
+  and themselves, and may make themselves a `member`; appointing a lead, or removing or demoting
+  another lead, is an administrator's. Making a lead a member keeps their grant and connections. A
+  member whose stored role is not recognised is `400 {"error":"member_cannot_sign"}`, and a role
+  that is neither, or a body that is not such an object, is `400 {"error":"invalid_role"}`, never
+  read as `member`. A lead's authority, and whether the member is another lead, are read in the
+  transaction that makes the change.
+- **Its own profile, follows and relays** (#150): `POST /api/bunker/identities/:pubkey/sign`, by
+  an administrator or a lead of its department (#147), signs an event the console built as the identity and returns it. The body
   is a template, `{"kind":…,"created_at":…,"tags":[…],"content":"…"}`, and nothing else: the
   bunker sets the identity's key, and any other field is `422`. It signs only kind 0 (the content a
   JSON object), kind 3, kind 10002, and kind 24242 for a Blossom upload: one `t` tag of `upload`
@@ -710,8 +776,8 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   `400` with `kind_not_allowed`, `bad_created_at`, `too_large`, `bad_content`, `bad_tags` or
   `bad_upload_auth`, and nothing is signed or logged. An unknown or retired identity is `404`; one
   not unlocked in the running bunker is `409 {"error":"identity_unavailable"}`. Each signature is
-  in the signing log with the administrator as `member_pubkey` and `pubkey`, no connection, and
-  `origin` `console`; the export gives the administrator as `actor_pubkey`, `via=console` as
+  in the signing log with the administrator or lead as `member_pubkey` and `pubkey`, no
+  connection, and `origin` `console`; the export gives them as `actor_pubkey`, `via=console` as
   `detail`, and no `client_pubkey`, since no app asked for it. The console publishes the events itself, to the identity's NIP-65 relays and the
   profile relays, never the bunker's. There is still no route that signs any kind.
 - **Never a member's key.** No identity's key can be registered as a member, be
@@ -722,8 +788,8 @@ accounts needs one deployment, not one per key. The key in `bunker-key.enc` is t
   keep their places. Identity audit events name it too.
 - **Not yet:** retiring or replacing the primary, exporting a key, loading an identity imported
   with `import-key --add` without a restart, and a separate root credential per identity. Every
-  identity uses the bunker's relays for NIP-46. Department leads editing their department's
-  identity waits for departments (#147).
+  identity uses the bunker's relays for NIP-46. Leads reading their department's signing log is an
+  open question in the departments ADR: the log stays with administrators.
 
 ## Podman
 

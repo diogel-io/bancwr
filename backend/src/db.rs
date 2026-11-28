@@ -343,22 +343,89 @@ impl Database {
 
     /// Adds a team member and records who added them (#96), in one transaction.
     pub fn add_team_member_as(&self, name: &str, pubkey: &str, role: Role, actor: Option<&str>) -> anyhow::Result<Uuid> {
+        match self.add_team_member_with(name, pubkey, role, actor, None, Departments::Named(&[]))? {
+            AddMemberOutcome::Added(id) => Ok(id),
+            other => anyhow::bail!("no department was named and nobody acted as a lead, yet it was refused: {:?}", other),
+        }
+    }
+
+    /// `add_team_member_as`, granting the new member departments as a `member`, in the same
+    /// transaction (#103, #147). Everything that decides it is read in that transaction, so it
+    /// cannot change between the check and the write: whether grants matter yet (until then the
+    /// member gets no grant, and may use the primary like everyone); `Departments::Default`, the
+    /// primary, for an administrator who named none; and, with `acting_lead`, that they lead every
+    /// department named, and named one. An administrator only department refuses the whole
+    /// registration, and nothing is stored. `member_added` names the departments in its detail, and
+    /// each grant is recorded as `identity_access_granted`, all by `actor`.
+    pub fn add_team_member_with(
+        &self,
+        name: &str,
+        pubkey: &str,
+        role: Role,
+        actor: Option<&str>,
+        acting_lead: Option<&str>,
+        departments: Departments,
+    ) -> anyhow::Result<AddMemberOutcome> {
         let id = Uuid::new_v4();
         let id_str = id.to_string();
         let now = Utc::now();
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
+        let matter: bool = tx.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?;
+        let mut grants: Vec<Option<String>> = Vec::new();
+        if matter {
+            match departments {
+                Departments::Default if acting_lead.is_some() => return Ok(AddMemberOutcome::NotYourDepartment),
+                Departments::Default => grants.push(None),
+                Departments::Named(named) => {
+                    for identity in named {
+                        if !grants.contains(identity) {
+                            grants.push(identity.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(lead) = acting_lead {
+            // A lead exists only once grants matter, so before then nobody registers as one.
+            if grants.is_empty() {
+                return Ok(AddMemberOutcome::NotYourDepartment);
+            }
+            for identity in &grants {
+                if !may_lead(&tx, lead, identity.as_deref())? {
+                    return Ok(AddMemberOutcome::NotYourDepartment);
+                }
+            }
+        }
+        for identity in &grants {
+            if is_admin_only(&tx, identity.as_deref())? {
+                return Ok(AddMemberOutcome::AdminOnly);
+            }
+        }
+        let departments = &grants[..];
         tx.execute(
             "INSERT INTO team_members (id, name, pubkey, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id_str, name, pubkey, role.as_str(), now.to_rfc3339()],
         )?;
-        audit::record(
-            &tx,
-            &Audit { actor, member: Some(pubkey), detail: Some(format!("role={}", role.as_str())), ..Audit::new(action::MEMBER_ADDED) },
-            now,
-        )?;
+        let mut detail = format!("role={}", role.as_str());
+        if !departments.is_empty() {
+            let names: Vec<&str> = departments.iter().map(|d| d.as_deref().unwrap_or("primary")).collect();
+            detail.push_str(&format!(";departments={}", names.join(",")));
+        }
+        audit::record(&tx, &Audit { actor, member: Some(pubkey), detail: Some(detail), ..Audit::new(action::MEMBER_ADDED) }, now)?;
+        for identity in departments {
+            tx.execute(
+                "INSERT OR IGNORE INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at, role) VALUES (?1, ?2, ?3, ?4, 'member')",
+                params![access_key(identity.as_deref()), pubkey, actor, db_time(now)],
+            )?;
+            audit::record(
+                &tx,
+                &Audit { actor, member: Some(pubkey), identity: identity.as_deref(), detail: Some("role=member".to_string()), ..Audit::new(action::IDENTITY_ACCESS_GRANTED) },
+                now,
+            )?;
+        }
         tx.commit()?;
-        Ok(id)
+        Ok(AddMemberOutcome::Added(id))
     }
 
     /// Get all team members
@@ -810,27 +877,144 @@ fn parse_optional_time(value: Option<String>) -> rusqlite::Result<Option<DateTim
     value.as_deref().map(parse_time).transpose()
 }
 
-/// A condition on `nip46_connections c`: its member may use its identity (#103). Administrators
-/// may use every identity; with no identity but the primary, everyone may; otherwise the member
-/// needs a grant. Matches `may_use_identity`.
-const IDENTITY_ALLOWED: &str = "(EXISTS(SELECT 1 FROM team_members ma WHERE ma.pubkey = c.for_pubkey AND ma.role = 'administrator')
-       OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
-       OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = c.for_pubkey AND a.identity_pubkey = COALESCE(c.identity_pubkey, '')))";
+/// The `config` key recording that grants decide who may use the primary (#147), set when the
+/// primary is first granted to everyone. It is never cleared, so a single-identity bunker whose last
+/// lead steps down keeps its grants, and nobody taken out of the primary's department regains it.
+const GRANTS_MATTER_KEY: &str = "grants_matter";
+
+/// Whether grants decide who may use the primary (#103, #147): once the bunker holds an identity
+/// beside the primary, once a department has had a lead (`GRANTS_MATTER_KEY`), or while the
+/// primary is administrator only. Until then everyone who may sign may use the primary, so a
+/// single-identity bunker behaves as before departments.
+const GRANTS_MATTER: &str = "(EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
+       OR EXISTS(SELECT 1 FROM identity_access WHERE role = 'lead')
+       OR EXISTS(SELECT 1 FROM config WHERE key = 'grants_matter')
+       OR EXISTS(SELECT 1 FROM identities WHERE is_primary = 1 AND admin_only = 1))";
+
+/// A condition on the `identity_access` row `a`: it is a grant of a recognised role (#147; an
+/// unrecognised one grants nothing, T4) on an identity that is not administrator only.
+const GRANT_COUNTS: &str = "a.role IN ('member', 'lead')
+       AND NOT EXISTS(SELECT 1 FROM identities i WHERE i.admin_only = 1
+                      AND CASE WHEN a.identity_pubkey = '' THEN i.is_primary = 1 ELSE i.pubkey = a.identity_pubkey END)";
+
+/// A condition on `nip46_connections c`: its member may use its identity (#103, #147).
+/// Administrators may use every identity; until grants matter (`GRANTS_MATTER`) everyone may;
+/// otherwise the member needs a grant that counts (`GRANT_COUNTS`). Matches `may_use_identity`,
+/// and both change together.
+fn identity_allowed() -> String {
+    format!(
+        "(EXISTS(SELECT 1 FROM team_members ma WHERE ma.pubkey = c.for_pubkey AND ma.role = 'administrator')
+       OR NOT {}
+       OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = c.for_pubkey AND a.identity_pubkey = COALESCE(c.identity_pubkey, '') AND {}))",
+        GRANTS_MATTER, GRANT_COUNTS
+    )
+}
 
 /// The key `identity_access` stores an identity under: its pubkey, or '' for the primary.
 fn access_key(identity: Option<&str>) -> &str {
     identity.unwrap_or("")
 }
 
-/// Whether `member` may use `identity` (#103), as `IDENTITY_ALLOWED` decides it.
+/// Whether `member` may use `identity` (#103, #147), as `identity_allowed` decides it.
 fn may_use_identity(conn: &Connection, member: &str, identity: Option<&str>) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1 AND role = 'administrator')
-             OR NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)
-             OR EXISTS(SELECT 1 FROM identity_access WHERE member_pubkey = ?1 AND identity_pubkey = ?2)",
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM team_members WHERE pubkey = ?1 AND role = 'administrator')
+                 OR NOT {}
+                 OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = ?1 AND a.identity_pubkey = ?2 AND {})",
+            GRANTS_MATTER, GRANT_COUNTS
+        ),
         params![member, access_key(identity)],
         |row| row.get(0),
     )
+}
+
+/// Whether `member` leads the department of `identity` (#147): they hold a `lead` grant that
+/// counts on it and a recognised team role. Administrators manage every department without one;
+/// callers check that separately.
+fn may_lead(conn: &Connection, member: &str, identity: Option<&str>) -> rusqlite::Result<bool> {
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = ?1 {})
+                AND EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = ?1 AND a.identity_pubkey = ?2 AND a.role = 'lead' AND {})",
+            MEMBER_CAN_SIGN, GRANT_COUNTS
+        ),
+        params![member, access_key(identity)],
+        |row| row.get(0),
+    )
+}
+
+/// Whether `identity` (None: the primary) is administrator only (#147), read in the caller's
+/// transaction.
+fn is_admin_only(conn: &Connection, identity: Option<&str>) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM identities WHERE admin_only = 1 AND CASE WHEN ?1 = '' THEN is_primary = 1 ELSE pubkey = ?1 END)",
+        params![access_key(identity)],
+        |row| row.get(0),
+    )
+}
+
+/// Whether `member` leads any department (#147), read in the caller's transaction.
+fn leads_any(conn: &Connection, member: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = ?1 {})
+                AND EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = ?1 AND a.role = 'lead' AND {})",
+            MEMBER_CAN_SIGN, GRANT_COUNTS
+        ),
+        params![member],
+        |row| row.get(0),
+    )
+}
+
+/// A condition on a row of `table` (`nip46_tokens` or `nip46_connections`, unaliased), with
+/// `?<n>` the member whose view applies: the row is theirs, or signs as an identity whose
+/// department they lead (#147). `?<n>` NULL: every row, an administrator's view.
+fn visible_to(table: &str, n: usize) -> String {
+    format!(
+        "(?{n} IS NULL OR {t}.for_pubkey = ?{n}
+          OR EXISTS(SELECT 1 FROM identity_access a WHERE a.member_pubkey = ?{n} AND a.role = 'lead'
+                    AND a.identity_pubkey = COALESCE({t}.identity_pubkey, '') AND {counts}))",
+        n = n,
+        t = table,
+        counts = GRANT_COUNTS
+    )
+}
+
+/// Grants the primary to every member who may sign, inside the caller's transaction, when grants
+/// do not matter yet, so nobody loses access when they start to (#103, #147): before the first
+/// identity is added beside the primary, or the first lead is appointed. From then on grants matter
+/// for good (`GRANTS_MATTER_KEY`).
+fn grant_primary_before_grants_matter(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<()> {
+    let matter: bool = conn.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?;
+    if !matter {
+        // Each new grant recorded, with no actor: the bunker made it, so nobody lost access.
+        let members: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT m.pubkey FROM team_members m WHERE 1 = 1 {}
+                   AND NOT EXISTS(SELECT 1 FROM identity_access a WHERE a.identity_pubkey = '' AND a.member_pubkey = m.pubkey)
+                 ORDER BY m.pubkey",
+                MEMBER_CAN_SIGN
+            ))?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        for member in &members {
+            conn.execute(
+                "INSERT INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at, role) VALUES ('', ?1, NULL, ?2, 'member')",
+                params![member, db_time(now)],
+            )?;
+            audit::record(
+                conn,
+                &Audit { member: Some(member), detail: Some("role=member;reason=grants_matter".to_string()), ..Audit::new(action::IDENTITY_ACCESS_GRANTED) },
+                now,
+            )?;
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?1, 'true', ?2)",
+            params![GRANTS_MATTER_KEY, db_time(now)],
+        )?;
+    }
+    Ok(())
 }
 
 /// Appended inside `EXISTS(SELECT 1 FROM team_members m WHERE ...)`: the member holds a recognised
@@ -1010,13 +1194,14 @@ impl Database {
         self.list_nip46_tokens_for(None)
     }
 
-    /// `list_nip46_tokens`, only those issued for `only_for` when it is given (#142: a signer
-    /// lists their own).
+    /// `list_nip46_tokens`, only those `only_for` may see when it is given: issued for them (#142:
+    /// a signer lists their own), or signing as an identity whose department they lead (#147).
     pub fn list_nip46_tokens_for(&self, only_for: Option<&str>) -> anyhow::Result<Vec<Nip46Token>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(&format!(
-            "SELECT {} FROM nip46_tokens WHERE (?1 IS NULL OR for_pubkey = ?1) AND origin IS NULL ORDER BY created_at DESC",
-            TOKEN_COLUMNS
+            "SELECT {} FROM nip46_tokens WHERE {} AND origin IS NULL ORDER BY created_at DESC",
+            TOKEN_COLUMNS,
+            visible_to("nip46_tokens", 1)
         ))?;
         let tokens = stmt.query_map(params![only_for], token_from_row)?.collect::<Result<_, _>>()?;
         Ok(tokens)
@@ -1032,14 +1217,18 @@ impl Database {
         self.revoke_nip46_token_scoped(id, actor, None, now)
     }
 
-    /// `revoke_nip46_token_as`, only a token issued for `only_for` when it is given (#142: a signer
-    /// revokes their own). Another member's token is false, as an unknown one is.
+    /// `revoke_nip46_token_as`, only a token `only_for` may see when it is given (#142: a signer
+    /// revokes their own; #147: a lead also their department's). Any other token is false, as an
+    /// unknown one is.
     pub fn revoke_nip46_token_scoped(&self, id: &str, actor: Option<&str>, only_for: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let changed = tx.execute(
-            "UPDATE nip46_tokens SET revoked_at = ?2
-             WHERE id = ?1 AND revoked_at IS NULL AND used_at IS NULL AND (?3 IS NULL OR for_pubkey = ?3)",
+            &format!(
+                "UPDATE nip46_tokens SET revoked_at = ?2
+                 WHERE id = ?1 AND revoked_at IS NULL AND used_at IS NULL AND {}",
+                visible_to("nip46_tokens", 3)
+            ),
             params![id, now.to_rfc3339(), only_for],
         )?;
         if changed > 0 {
@@ -1219,7 +1408,7 @@ impl Database {
                     CONNECTION_COLUMNS.split(", ").map(|c| format!("c.{}", c)).collect::<Vec<_>>().join(", "),
                     not_expired(2),
                     MEMBER_CAN_SIGN,
-                    IDENTITY_ALLOWED
+                    identity_allowed()
                 ),
                 params![client_pubkey, db_time(now)],
                 connection_from_row,
@@ -1327,15 +1516,19 @@ impl Database {
     }
 
     /// Revokes an active connection on someone's behalf (#31): `revoked_by` is recorded, and with
-    /// `only_for` set, only a connection made for that key is touched. False when there is no such
-    /// active connection, so a caller cannot tell another member's connection from none.
+    /// `only_for` set, only a connection that key may see is touched: made for it, or signing as an
+    /// identity whose department it leads (#147). False when there is no such active connection, so
+    /// a caller cannot tell another member's connection from none.
     pub fn revoke_nip46_connection_as(&self, id: &str, reason: &str, revoked_by: Option<&str>, only_for: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let target: Option<(String, String)> = tx
             .query_row(
-                "SELECT for_pubkey, client_pubkey FROM nip46_connections
-                 WHERE id = ?1 AND revoked_at IS NULL AND (?2 IS NULL OR for_pubkey = ?2)",
+                &format!(
+                    "SELECT for_pubkey, client_pubkey FROM nip46_connections
+                     WHERE id = ?1 AND revoked_at IS NULL AND {}",
+                    visible_to("nip46_connections", 2)
+                ),
                 params![id, only_for],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1400,12 +1593,14 @@ impl Database {
         Ok((connections, tokens))
     }
 
-    /// Every connection, newest first, or only those for `for_pubkey`.
+    /// Every connection, newest first, or only those `for_pubkey` may see: made for them, or
+    /// signing as an identity whose department they lead (#147).
     pub fn list_nip46_connections(&self, for_pubkey: Option<&str>) -> anyhow::Result<Vec<Nip46Connection>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(&format!(
-            "SELECT {} FROM nip46_connections WHERE ?1 IS NULL OR for_pubkey = ?1 ORDER BY connected_at DESC",
-            CONNECTION_COLUMNS
+            "SELECT {} FROM nip46_connections WHERE {} ORDER BY connected_at DESC",
+            CONNECTION_COLUMNS,
+            visible_to("nip46_connections", 1)
         ))?;
         let rows = stmt.query_map(params![for_pubkey], connection_from_row)?.collect::<Result<_, _>>()?;
         Ok(rows)
@@ -1668,6 +1863,9 @@ pub struct Identity {
     /// When an administrator retired it (#146): its key is destroyed and it never signs again. Its
     /// row stays so the logs still name it and its key can never sign in.
     pub retired_at: Option<DateTime<Utc>>,
+    /// Belongs to no department (#147): only administrators use it, and it refuses grants. The
+    /// company root is one.
+    pub admin_only: bool,
 }
 
 impl Identity {
@@ -1693,6 +1891,99 @@ pub enum AddIdentityRefusal {
     AlreadyAnIdentity,
     /// It is a team member's key, and an identity's key never signs in (T2).
     IsAMember,
+    /// The lead who would lead it is no longer a member who may sign, or leads no department now
+    /// (#147), read in the same transaction.
+    NotALead,
+}
+
+/// What `add_team_member_with` did (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddMemberOutcome {
+    Added(Uuid),
+    /// A department it named is administrator only, so nothing was stored.
+    AdminOnly,
+    /// The acting lead named no department, or one they do not lead now, so nothing was stored.
+    NotYourDepartment,
+}
+
+/// The departments a new member is registered into (#103, #147), once grants matter.
+#[derive(Debug, Clone, Copy)]
+pub enum Departments<'a> {
+    /// None were named: the primary, for an administrator; refused for a lead.
+    Default,
+    /// These, by reference (None: the primary). Empty: none, for an administrator.
+    Named(&'a [Option<String>]),
+}
+
+/// What `update_identity` did (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateIdentityOutcome {
+    /// Changed as asked, or already so.
+    Updated,
+    NotFound,
+    /// Marking it would take it from members who may use it now.
+    HasMembers,
+    /// The acting lead no longer leads its department.
+    NotALead,
+}
+
+/// How an identity is added (#147): marked administrator only, and led by the member who created
+/// it, if any.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NewIdentity<'a> {
+    pub admin_only: bool,
+    /// The lead who created it, granted `lead` on it in the same transaction, so it starts a
+    /// department they lead.
+    pub lead: Option<&'a str>,
+}
+
+/// What `grant_identity` did (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantOutcome {
+    /// A new grant, with this role.
+    Granted,
+    /// The member held the identity already; their role in its department changed.
+    RoleChanged,
+    /// The member held it already, with this role.
+    Unchanged,
+    /// The identity is administrator only, and refuses grants.
+    AdminOnly,
+    /// The acting lead no longer leads this department (#147).
+    NotALead,
+    /// The member is another lead, whom only an administrator changes (#147).
+    AnotherLead,
+}
+
+/// What `remove_identity_grant_by` did (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveGrantOutcome {
+    /// Removed, with how many connections and unused tokens it revoked.
+    Removed { connections: usize, tokens: usize },
+    /// The member held no grant of it.
+    NotGranted,
+    /// The acting lead no longer leads this department.
+    NotALead,
+    /// The member is another lead, whom only an administrator removes.
+    AnotherLead,
+}
+
+/// What `set_identity_admin_only` did (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminOnlyOutcome {
+    Changed,
+    Unchanged,
+    NotFound,
+    /// Marking it would take it from members who may use it now: their grants are removed first.
+    HasMembers,
+}
+
+/// One member's grant of an identity (#147): their department membership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepartmentGrant {
+    /// Hex.
+    pub member_pubkey: String,
+    /// `member` or `lead`; None for a stored value that is not recognised, which grants nothing.
+    pub role: Option<crate::registry::DepartmentRole>,
 }
 
 /// The longest label an identity may have.
@@ -1705,11 +1996,12 @@ fn identity_from_row(row: &rusqlite::Row) -> rusqlite::Result<Identity> {
         is_primary: row.get::<_, i64>(2)? != 0,
         added_at: parse_time(&row.get::<_, String>(3)?)?,
         retired_at: parse_optional_time(row.get(4)?)?,
+        admin_only: row.get::<_, i64>(5)? != 0,
     })
 }
 
 /// The columns `identity_from_row` reads.
-const IDENTITY_COLUMNS: &str = "pubkey, label, is_primary, added_at, retired_at";
+const IDENTITY_COLUMNS: &str = "pubkey, label, is_primary, added_at, retired_at, admin_only";
 
 /// What `retire_identity` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1778,6 +2070,21 @@ impl Database {
     /// `add_identity`, recording `actor` on `identity_added`: the administrator who created it in
     /// the console (#146).
     pub fn add_identity_as(&self, pubkey: &str, label: &str, key_file: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
+        self.add_identity_with(pubkey, label, key_file, actor, NewIdentity::default(), now)
+    }
+
+    /// `add_identity_as`, marked administrator only, or led by `new.lead`, in the same
+    /// transaction (#147). The lead's grant is recorded as `identity_access_granted` and
+    /// `department_lead_appointed`, the mark as `identity_admin_only_changed`.
+    pub fn add_identity_with(
+        &self,
+        pubkey: &str,
+        label: &str,
+        key_file: &str,
+        actor: Option<&str>,
+        new: NewIdentity,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Result<(), AddIdentityRefusal>> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
         let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE pubkey = ?1)", params![pubkey], |row| row.get(0))?;
@@ -1788,22 +2095,28 @@ impl Database {
         if member {
             return Ok(Err(AddIdentityRefusal::IsAMember));
         }
-        let first: bool = tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)", [], |row| row.get(0))?;
-        if first {
-            tx.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at)
-                     SELECT '', m.pubkey, NULL, ?1 FROM team_members m WHERE 1 = 1 {}",
-                    MEMBER_CAN_SIGN
-                ),
-                params![db_time(now)],
-            )?;
+        if let Some(lead) = new.lead {
+            if !leads_any(&tx, lead)? {
+                return Ok(Err(AddIdentityRefusal::NotALead));
+            }
         }
+        grant_primary_before_grants_matter(&tx, now)?;
         tx.execute(
-            "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at) VALUES (?1, ?2, ?3, 0, ?4)",
-            params![pubkey, label, key_file, db_time(now)],
+            "INSERT INTO identities (pubkey, label, key_file, is_primary, added_at, admin_only) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+            params![pubkey, label, key_file, db_time(now), new.admin_only as i64],
         )?;
         audit::record(&tx, &Audit { actor, identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_ADDED) }, now)?;
+        if new.admin_only {
+            audit::record(&tx, &Audit { actor, identity: Some(pubkey), detail: Some("admin_only=true".to_string()), ..Audit::new(action::IDENTITY_ADMIN_ONLY_CHANGED) }, now)?;
+        } else if let Some(lead) = new.lead {
+            tx.execute(
+                "INSERT INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at, role) VALUES (?1, ?2, ?3, ?4, 'lead')",
+                params![pubkey, lead, actor, db_time(now)],
+            )?;
+            let detail = Some("role=lead".to_string());
+            audit::record(&tx, &Audit { actor, member: Some(lead), identity: Some(pubkey), detail: detail.clone(), ..Audit::new(action::IDENTITY_ACCESS_GRANTED) }, now)?;
+            audit::record(&tx, &Audit { actor, member: Some(lead), identity: Some(pubkey), detail, ..Audit::new(action::DEPARTMENT_LEAD_APPOINTED) }, now)?;
+        }
         tx.commit()?;
         Ok(Ok(()))
     }
@@ -1820,18 +2133,61 @@ impl Database {
     pub fn rename_identity(&self, pubkey: &str, label: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
-        let changed = tx.execute("UPDATE identities SET label = ?2 WHERE pubkey = ?1", params![pubkey, label])?;
-        if changed > 0 {
-            audit::record(&tx, &Audit { actor, identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_RENAMED) }, now)?;
-        }
+        let changed = rename_in(&tx, pubkey, label, actor, now)?;
         tx.commit()?;
-        Ok(changed > 0)
+        Ok(changed)
     }
 
-    /// Whether this bunker has an identity beside the primary, from when grants matter.
+    /// Marks or unmarks `identity` administrator only and renames it (#147), either or both, in one
+    /// transaction with their audit events, so both change or neither does. `pubkey` is its hex,
+    /// `identity` its reference (None: the primary). A refused mark changes nothing. With
+    /// `acting_lead`, refused unless they lead its department, read in the same transaction; None:
+    /// an administrator.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_identity(
+        &self,
+        pubkey: &str,
+        identity: Option<&str>,
+        label: Option<&str>,
+        admin_only: Option<bool>,
+        actor: Option<&str>,
+        acting_lead: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<UpdateIdentityOutcome> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        if let Some(lead) = acting_lead {
+            if !may_lead(&tx, lead, identity)? {
+                return Ok(UpdateIdentityOutcome::NotALead);
+            }
+        }
+        if let Some(admin_only) = admin_only {
+            match set_admin_only_in(&tx, identity, admin_only, actor, now)? {
+                AdminOnlyOutcome::NotFound => return Ok(UpdateIdentityOutcome::NotFound),
+                AdminOnlyOutcome::HasMembers => return Ok(UpdateIdentityOutcome::HasMembers),
+                AdminOnlyOutcome::Changed | AdminOnlyOutcome::Unchanged => {}
+            }
+        }
+        if let Some(label) = label {
+            if !rename_in(&tx, pubkey, label, actor, now)? {
+                return Ok(UpdateIdentityOutcome::NotFound);
+            }
+        }
+        tx.commit()?;
+        Ok(UpdateIdentityOutcome::Updated)
+    }
+
+    /// Whether this bunker has an identity beside the primary.
     pub fn has_several_identities(&self) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE is_primary = 0)", [], |row| row.get(0))?)
+    }
+
+    /// Whether grants decide who may use the primary (#103, #147): an identity beside it, a lead,
+    /// or an administrator only primary. Until then everyone who may sign may use it.
+    pub fn grants_matter(&self) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(conn.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?)
     }
 
     /// Whether `member` may use `identity` (None: the primary).
@@ -1840,29 +2196,185 @@ impl Database {
         Ok(may_use_identity(&conn, member, identity)?)
     }
 
-    /// The members granted `identity` (None: the primary), hex. Administrators may use every
-    /// identity without a grant, and are not listed unless granted.
-    pub fn identity_members(&self, identity: Option<&str>) -> anyhow::Result<Vec<String>> {
+    /// Whether `member` leads the department of `identity` (None: the primary), #147. Read from the
+    /// database on every request, never from a session. Administrators manage every department
+    /// without a lead grant: callers check the role as well.
+    pub fn may_lead(&self, member: &str, identity: Option<&str>) -> anyhow::Result<bool> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        let mut stmt = conn.prepare("SELECT member_pubkey FROM identity_access WHERE identity_pubkey = ?1 ORDER BY member_pubkey")?;
-        let rows = stmt.query_map(params![access_key(identity)], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        Ok(may_lead(&conn, member, identity)?)
+    }
+
+    /// Whether `member` leads any department (#147).
+    pub fn leads_any_department(&self, member: &str) -> anyhow::Result<bool> {
+        Ok(!self.led_identities(member)?.is_empty())
+    }
+
+    /// The identities whose departments `member` leads (#147), as `identity_access` keys them:
+    /// hex, or '' for the primary. Empty for a member whose team role is not recognised.
+    pub fn led_identities(&self, member: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT a.identity_pubkey FROM identity_access a
+             WHERE a.member_pubkey = ?1 AND a.role = 'lead' AND {}
+               AND EXISTS(SELECT 1 FROM team_members m WHERE m.pubkey = ?1 {})
+             ORDER BY a.identity_pubkey",
+            GRANT_COUNTS, MEMBER_CAN_SIGN
+        ))?;
+        let rows = stmt.query_map(params![member], |row| row.get(0))?.collect::<Result<_, _>>()?;
         Ok(rows)
     }
 
-    /// Grants `member` `identity` (None: the primary), recorded as `identity_access_granted` by
-    /// `actor`. False when it was granted already.
+    /// The members granted `identity` (None: the primary), hex. Administrators may use every
+    /// identity without a grant, and are not listed unless granted.
+    pub fn identity_members(&self, identity: Option<&str>) -> anyhow::Result<Vec<String>> {
+        Ok(self.identity_grants(identity)?.into_iter().map(|grant| grant.member_pubkey).collect())
+    }
+
+    /// Every grant of `identity` (None: the primary), with its role (#147): the department's
+    /// members and leads.
+    pub fn identity_grants(&self, identity: Option<&str>) -> anyhow::Result<Vec<DepartmentGrant>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT member_pubkey, role FROM identity_access WHERE identity_pubkey = ?1 ORDER BY member_pubkey")?;
+        let rows = stmt
+            .query_map(params![access_key(identity)], |row| {
+                Ok(DepartmentGrant { member_pubkey: row.get(0)?, role: row.get::<_, String>(1)?.parse().ok() })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// The grants of `identity` (None: the primary) and whether grants matter (#147), read under one
+    /// lock, so a response never pairs one state's members with another's access mode.
+    pub fn department_of(&self, identity: Option<&str>) -> anyhow::Result<(Vec<DepartmentGrant>, bool)> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.unchecked_transaction()?;
+        let grants = tx
+            .prepare("SELECT member_pubkey, role FROM identity_access WHERE identity_pubkey = ?1 ORDER BY member_pubkey")?
+            .query_map(params![access_key(identity)], |row| {
+                Ok(DepartmentGrant { member_pubkey: row.get(0)?, role: row.get::<_, String>(1)?.parse().ok() })
+            })?
+            .collect::<Result<_, _>>()?;
+        let matter: bool = tx.query_row(&format!("SELECT {}", GRANTS_MATTER), [], |row| row.get(0))?;
+        tx.commit()?;
+        Ok((grants, matter))
+    }
+
+    /// `member`'s grant of `identity` (None: the primary), if any (#147).
+    pub fn find_grant(&self, identity: Option<&str>, member: &str) -> anyhow::Result<Option<DepartmentGrant>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        Ok(conn
+            .query_row(
+                "SELECT member_pubkey, role FROM identity_access WHERE identity_pubkey = ?1 AND member_pubkey = ?2",
+                params![access_key(identity), member],
+                |row| Ok(DepartmentGrant { member_pubkey: row.get(0)?, role: row.get::<_, String>(1)?.parse().ok() }),
+            )
+            .optional()?)
+    }
+
+    /// Grants `member` `identity` (None: the primary) as a `member`, recorded as
+    /// `identity_access_granted` by `actor`. False when it was granted already.
     pub fn grant_identity(&self, identity: Option<&str>, member: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<bool> {
+        Ok(self.grant_identity_as(identity, member, crate::registry::DepartmentRole::Member, actor, now)? == GrantOutcome::Granted)
+    }
+
+    /// Grants `member` `identity` (None: the primary) with `role` in its department (#147), in one
+    /// transaction. A new grant is recorded as `identity_access_granted`; a lead appointed, by a new
+    /// grant or a changed role, also as `department_lead_appointed`, and a lead made a member as
+    /// `department_lead_removed`, all by `actor`. An administrator only identity refuses it.
+    /// Appointing the first lead while grants don't matter yet first grants the primary to every
+    /// member who may sign, as adding the first identity does. A lead made a member keeps their
+    /// grant and connections.
+    pub fn grant_identity_as(
+        &self,
+        identity: Option<&str>,
+        member: &str,
+        role: crate::registry::DepartmentRole,
+        actor: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GrantOutcome> {
+        self.grant_identity_by(identity, member, role, actor, None, now)
+    }
+
+    /// `grant_identity_as`, for a lead acting on their department (#147): with `acting_lead`,
+    /// refused unless they lead it, and when `member` is another lead, both read in the same
+    /// transaction as the write. None: an administrator, who changes any grant.
+    pub fn grant_identity_by(
+        &self,
+        identity: Option<&str>,
+        member: &str,
+        role: crate::registry::DepartmentRole,
+        actor: Option<&str>,
+        acting_lead: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GrantOutcome> {
+        use crate::registry::DepartmentRole;
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
-        let added = tx.execute(
-            "INSERT OR IGNORE INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at) VALUES (?1, ?2, ?3, ?4)",
-            params![access_key(identity), member, actor, db_time(now)],
-        )?;
-        if added > 0 {
-            audit::record(&tx, &Audit { actor, member: Some(member), identity, ..Audit::new(action::IDENTITY_ACCESS_GRANTED) }, now)?;
+        if is_admin_only(&tx, identity)? {
+            return Ok(GrantOutcome::AdminOnly);
         }
+        if let Some(lead) = acting_lead {
+            if !may_lead(&tx, lead, identity)? {
+                return Ok(GrantOutcome::NotALead);
+            }
+        }
+        if role == DepartmentRole::Lead {
+            grant_primary_before_grants_matter(&tx, now)?;
+        }
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT role FROM identity_access WHERE identity_pubkey = ?1 AND member_pubkey = ?2",
+                params![access_key(identity), member],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if acting_lead.is_some_and(|lead| lead != member) && current.as_deref() == Some(DepartmentRole::Lead.as_str()) {
+            return Ok(GrantOutcome::AnotherLead);
+        }
+        let detail = Some(format!("role={}", role));
+        let outcome = match current {
+            None => {
+                tx.execute(
+                    "INSERT INTO identity_access (identity_pubkey, member_pubkey, granted_by, granted_at, role) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![access_key(identity), member, actor, db_time(now), role.as_str()],
+                )?;
+                audit::record(&tx, &Audit { actor, member: Some(member), identity, detail: detail.clone(), ..Audit::new(action::IDENTITY_ACCESS_GRANTED) }, now)?;
+                if role == DepartmentRole::Lead {
+                    audit::record(&tx, &Audit { actor, member: Some(member), identity, detail, ..Audit::new(action::DEPARTMENT_LEAD_APPOINTED) }, now)?;
+                }
+                GrantOutcome::Granted
+            }
+            Some(current) if current == role.as_str() => GrantOutcome::Unchanged,
+            Some(current) => {
+                tx.execute(
+                    "UPDATE identity_access SET role = ?3 WHERE identity_pubkey = ?1 AND member_pubkey = ?2",
+                    params![access_key(identity), member, role.as_str()],
+                )?;
+                let change = if role == DepartmentRole::Lead { action::DEPARTMENT_LEAD_APPOINTED } else { action::DEPARTMENT_LEAD_REMOVED };
+                audit::record(
+                    &tx,
+                    &Audit { actor, member: Some(member), identity, detail: Some(format!("from={};to={}", current, role)), ..Audit::new(change) },
+                    now,
+                )?;
+                GrantOutcome::RoleChanged
+            }
+        };
         tx.commit()?;
-        Ok(added > 0)
+        Ok(outcome)
+    }
+
+    /// Marks or unmarks `identity` (None: the primary) administrator only (#147), recorded as
+    /// `identity_admin_only_changed` by `actor`. Marking is refused while anyone but an
+    /// administrator may use it: while it has grants, or, for a primary whose grants don't matter
+    /// yet, while any signer may sign. Their access is removed first, each removal recorded.
+    pub fn set_identity_admin_only(&self, identity: Option<&str>, admin_only: bool, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<AdminOnlyOutcome> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let tx = conn.transaction()?;
+        let outcome = set_admin_only_in(&tx, identity, admin_only, actor, now)?;
+        if outcome == AdminOnlyOutcome::Changed {
+            tx.commit()?;
+        }
+        Ok(outcome)
     }
 
     /// Removes `member`'s grant of `identity` (None: the primary), and in the same transaction
@@ -1870,17 +2382,50 @@ impl Database {
     /// as a role change does (#77). Recorded as `identity_access_removed` by `actor`. Returns how
     /// many connections and tokens it revoked, or None when there was no grant.
     pub fn remove_identity_grant(&self, identity: Option<&str>, member: &str, actor: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<Option<(usize, usize)>> {
+        match self.remove_identity_grant_by(identity, member, actor, None, now)? {
+            RemoveGrantOutcome::Removed { connections, tokens } => Ok(Some((connections, tokens))),
+            RemoveGrantOutcome::NotGranted => Ok(None),
+            RemoveGrantOutcome::NotALead | RemoveGrantOutcome::AnotherLead => anyhow::bail!("no acting lead was named"),
+        }
+    }
+
+    /// `remove_identity_grant`, for a lead acting on their department (#147): with `acting_lead`,
+    /// refused unless they lead it, and when `member` is another lead, both read in the same
+    /// transaction as the removal. None: an administrator, who removes any grant.
+    pub fn remove_identity_grant_by(
+        &self,
+        identity: Option<&str>,
+        member: &str,
+        actor: Option<&str>,
+        acting_lead: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<RemoveGrantOutcome> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let tx = conn.transaction()?;
+        if let Some(lead) = acting_lead {
+            if !may_lead(&tx, lead, identity)? {
+                return Ok(RemoveGrantOutcome::NotALead);
+            }
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT role FROM identity_access WHERE identity_pubkey = ?1 AND member_pubkey = ?2",
+                    params![access_key(identity), member],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if lead != member && current.as_deref() == Some(crate::registry::DepartmentRole::Lead.as_str()) {
+                return Ok(RemoveGrantOutcome::AnotherLead);
+            }
+        }
         let removed = tx.execute("DELETE FROM identity_access WHERE identity_pubkey = ?1 AND member_pubkey = ?2", params![access_key(identity), member])?;
         if removed == 0 {
-            return Ok(None);
+            return Ok(RemoveGrantOutcome::NotGranted);
         }
         audit::record(&tx, &Audit { actor, member: Some(member), identity, ..Audit::new(action::IDENTITY_ACCESS_REMOVED) }, now)?;
         // An administrator may still use it, so only a member who no longer may loses anything.
-        let revoked = if may_use_identity(&tx, member, identity)? { (0, 0) } else { revoke_identity_access(&tx, member, identity, now)? };
+        let (connections, tokens) = if may_use_identity(&tx, member, identity)? { (0, 0) } else { revoke_identity_access(&tx, member, identity, now)? };
         tx.commit()?;
-        Ok(Some(revoked))
+        Ok(RemoveGrantOutcome::Removed { connections, tokens })
     }
 
     /// Retires an identity other than the primary (#146), in one transaction: every active
@@ -1926,6 +2471,48 @@ impl Database {
             conn.query_row("SELECT count(*) FROM nip46_tokens WHERE identity_pubkey = ?1 AND revoked_at IS NULL AND used_at IS NULL", params![identity], |row| row.get(0))?;
         Ok((connections as usize, tokens as usize))
     }
+}
+
+/// `set_identity_admin_only`, in the caller's transaction, which commits only on `Changed`.
+fn set_admin_only_in(conn: &Connection, identity: Option<&str>, admin_only: bool, actor: Option<&str>, now: DateTime<Utc>) -> rusqlite::Result<AdminOnlyOutcome> {
+    let target = "CASE WHEN ?1 = '' THEN is_primary = 1 ELSE pubkey = ?1 END";
+    let current: Option<(String, bool)> = conn
+        .query_row(
+            &format!("SELECT pubkey, admin_only FROM identities WHERE retired_at IS NULL AND {}", target),
+            params![access_key(identity)],
+            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+        )
+        .optional()?;
+    let Some((_, current)) = current else { return Ok(AdminOnlyOutcome::NotFound) };
+    if current == admin_only {
+        return Ok(AdminOnlyOutcome::Unchanged);
+    }
+    if admin_only {
+        let granted: bool =
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM identity_access WHERE identity_pubkey = ?1)", params![access_key(identity)], |row| row.get(0))?;
+        let implicit: bool = identity.is_none()
+            && conn.query_row(
+                &format!("SELECT NOT {} AND EXISTS(SELECT 1 FROM team_members WHERE role = 'signer')", GRANTS_MATTER),
+                [],
+                |row| row.get(0),
+            )?;
+        if granted || implicit {
+            return Ok(AdminOnlyOutcome::HasMembers);
+        }
+    }
+    conn.execute(&format!("UPDATE identities SET admin_only = ?2 WHERE retired_at IS NULL AND {}", target), params![access_key(identity), admin_only as i64])?;
+    audit::record(conn, &Audit { actor, identity, detail: Some(format!("admin_only={}", admin_only)), ..Audit::new(action::IDENTITY_ADMIN_ONLY_CHANGED) }, now)?;
+    Ok(AdminOnlyOutcome::Changed)
+}
+
+/// Renames an identity in the caller's transaction, recorded as `identity_renamed`. False when
+/// there is none.
+fn rename_in(conn: &Connection, pubkey: &str, label: &str, actor: Option<&str>, now: DateTime<Utc>) -> rusqlite::Result<bool> {
+    let changed = conn.execute("UPDATE identities SET label = ?2 WHERE pubkey = ?1", params![pubkey, label])?;
+    if changed > 0 {
+        audit::record(conn, &Audit { actor, identity: Some(pubkey), detail: Some(format!("label={}", label)), ..Audit::new(action::IDENTITY_RENAMED) }, now)?;
+    }
+    Ok(changed > 0)
 }
 
 /// Why connections and tokens are revoked when their identity is retired (#146).

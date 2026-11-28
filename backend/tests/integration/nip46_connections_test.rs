@@ -837,7 +837,7 @@ async fn a_standard_nip46_client_is_told_when_its_request_is_rejected() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let error = signing.await.unwrap().expect_err("rejected").to_string();
-    assert!(error.contains("Rejected by an administrator: Not today"), "{}", error);
+    assert!(error.contains("Rejected by an approver: Not today"), "{}", error);
     assert_eq!(app.db.signature_count().unwrap(), 0);
 }
 

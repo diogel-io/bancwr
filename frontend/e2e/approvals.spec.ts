@@ -88,7 +88,7 @@ test('a rejected note is not signed, and the app is given the note (#102)', asyn
   await expect(card).toBeVisible({ timeout: 15_000 })
   await card.getByLabel(/Note for request/).fill('Not on brand')
   await card.getByTestId('approval-reject').click()
-  expect(await within(outcome)).toBe('Rejected by an administrator: Not on brand')
+  expect(await within(outcome)).toBe('Rejected by an approver: Not on brand')
   await expect(card).toHaveCount(0)
   // Ended, so later specs that count connected apps see only their own.
   await within(app.logout())

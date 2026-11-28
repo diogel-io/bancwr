@@ -92,7 +92,10 @@ A change to any of these needs the security review:
   administrator
 - `backend/src/backup.rs`, which writes and restores the encrypted backup archives
 - `backend/src/console_signing.rs` and the signing route in `backend/src/identities_api.rs`, which
-  sign an identity's profile, follows and relays for an administrator (#150)
+  sign an identity's profile, follows and relays for an administrator or a lead of its department
+  (#150, #147)
+- `backend/src/identities_api.rs` and `backend/src/approvals_api.rs`, which decide who manages each
+  identity and department and who decides held requests (#147)
 - `backend/src/nip46.rs`, `backend/src/relay.rs`, `backend/src/connections_api.rs`,
   `backend/src/relays_api.rs` and `backend/src/bunker_relays.rs`, the NIP-46 path and its relays
 - `frontend/server/api/auth/*` and `frontend/server/utils/auth/*`, sign-in, sessions and the
@@ -122,7 +125,8 @@ A change to any of these needs the security review:
 - [ ] Every new `/api/bunker/*` route sits in a guarded group in `create_router` and appears in the
       access table in `backend/README.md` and in `backend/tests/integration/auth_test.rs` (T5).
 - [ ] Roles and identities come from the verified caller and the registry on every request, never
-      from a request body, a query string, or the session cookie (T4, T5).
+      from a request body, a query string, or the session cookie (T4, T5). So does a lead's
+      department (`may_lead`, #147): a route open to leads checks the identity the request names.
 - [ ] The frontend builds the proxy's identity headers from the session, never from the browser's
       request, and the `service` identity reaches only the routes sign-in needs (T6).
 - [ ] The bunker's port stays unpublished, and nothing adds a CORS layer (B3, T7).
@@ -133,8 +137,9 @@ A change to any of these needs the security review:
       connection signs only the kinds it was granted, while its member may sign. There is still no
       "sign anything" route (T8).
 - [ ] The one exception is `POST /api/bunker/identities/:pubkey/sign` (#150): no token, but
-      administrators only, as one of the bunker's identities, and only kinds 0, 3, 10002 and a
-      Blossom upload authorisation (24242), checked in `backend/src/console_signing.rs`. A change
+      administrators and the leads of the identity's department only (#147), as one of the
+      bunker's identities, and only kinds 0, 3, 10002 and a Blossom upload authorisation (24242),
+      checked in `backend/src/console_signing.rs`. A change
       that widens its kinds, its callers or what it accepts needs the threat model updated first
       (T8).
 - [ ] An app's self-reported name, URL or image decides nothing (T10).

@@ -24,8 +24,11 @@ const waiting = (over: Partial<PendingApproval> = {}): PendingApproval => ({
 const state = vi.hoisted(() => ({
   pending: [] as unknown[],
   decisions: [] as { path: string, body: unknown }[],
-  refuse: undefined as string | undefined
+  refuse: undefined as string | undefined,
+  identities: [] as unknown[]
 }))
+
+registerEndpoint('/api/bunker/identities', () => state.identities)
 
 registerEndpoint('/api/bunker/status', () => ({ status: 'healthy', pubkey: 'npub1test', version: '0.1.0', checks: [] }))
 registerEndpoint('/api/bunker/approvals', () => state.pending)
@@ -66,7 +69,7 @@ describe('Approvals page', () => {
   beforeEach(async () => {
     document.body.innerHTML = ''
     await clearNuxtData()
-    Object.assign(state, { pending: [], decisions: [], refuse: undefined })
+    Object.assign(state, { pending: [], decisions: [], refuse: undefined, identities: [] })
   })
 
   it('says when nothing is waiting', async () => {
@@ -123,5 +126,21 @@ describe('Approvals page', () => {
     expect(component.find('[data-testid="approval-approve"]').exists()).toBe(false)
     expect(component.find('[data-testid="approval-reject"]').exists()).toBe(false)
     expect(component.find('[data-testid="approvals-explainer"]').text()).toContain('An administrator must approve these')
+  })
+
+  it('lets a department lead decide their department\'s requests, and only see another\'s own (#147)', async () => {
+    const sales = '7'.repeat(64)
+    const support = '6'.repeat(64)
+    state.identities = [
+      { pubkey: sales, npub: 'npub1sales', label: 'Sales', is_primary: false, available: true, members: [me], leads: [me], my_role: 'lead' },
+      { pubkey: support, npub: 'npub1support', label: 'Support', is_primary: false, available: true, my_role: 'member' }
+    ]
+    state.pending = [waiting({ identity_pubkey: sales }), waiting({ id: 'p2', identity_pubkey: support, member_pubkey: me, member_name: 'Gary' })]
+    const component = await mount('signer')
+    await vi.waitFor(() => expect(component.find('[data-approval="p1"] [data-testid="approval-approve"]').exists()).toBe(true))
+    expect(component.find('[data-approval="p2"] [data-testid="approval-approve"]').exists()).toBe(false)
+    expect(component.find('[data-testid="approvals-explainer"]').text()).toContain('an administrator or a lead of its department')
+    await component.find('[data-approval="p1"] [data-testid="approval-approve"]').trigger('click')
+    await vi.waitFor(() => expect(state.decisions).toEqual([{ path: 'approve', body: { event_id: 'e'.repeat(64) } }]))
   })
 })

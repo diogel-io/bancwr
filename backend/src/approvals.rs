@@ -148,11 +148,12 @@ pub fn describe_timeout(timeout: Duration) -> String {
     format!("{} {}{}", value, unit, if value == 1 { "" } else { "s" })
 }
 
-/// What the app is told when an administrator rejects its request.
+/// What the app is told when an administrator or a lead of its department (#147) rejects its
+/// request.
 pub fn rejected_message(note: Option<&str>) -> String {
     match note {
-        Some(note) => format!("Rejected by an administrator: {}", note),
-        None => "Rejected by an administrator".to_string(),
+        Some(note) => format!("Rejected by an approver: {}", note),
+        None => "Rejected by an approver".to_string(),
     }
 }
 

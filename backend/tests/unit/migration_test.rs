@@ -743,3 +743,95 @@ fn migrating_to_14_adds_the_nip46_senders_table_and_keeps_connected_apps_refused
     assert_eq!(user_version(&file), LATEST_VERSION as i64);
     assert!(db.is_nip46_client(sender).unwrap());
 }
+
+/// As #146 to #150 left a bunker (version 18): grants with no role, identities with no
+/// administrator only mark. Returns the file, the signer's key and the Sales identity's.
+fn database_before_147() -> (NamedTempFile, String, String) {
+    let file = NamedTempFile::new().unwrap();
+    let path = file.path().to_str().unwrap().to_string();
+    let db = Database::new(&path).unwrap();
+    let signer = Keys::generate().public_key().to_hex();
+    let sales = Keys::generate().public_key().to_hex();
+    db.add_team_member("Pam", &signer, Role::Signer).unwrap();
+    db.ensure_primary_identity(&Keys::generate().public_key().to_hex(), chrono::Utc::now()).unwrap();
+    // The first identity beside the primary grants the primary to Pam; then she is granted Sales.
+    db.add_identity(&sales, "Sales", "line", chrono::Utc::now()).unwrap().unwrap();
+    db.grant_identity(Some(&sales), &signer, None, chrono::Utc::now()).unwrap();
+    drop(db);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE identity_access DROP COLUMN role;
+             ALTER TABLE identities DROP COLUMN admin_only;
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+    (file, signer, sales)
+}
+
+fn migrated_events(file: &NamedTempFile) -> Vec<(String, Option<String>, String)> {
+    let conn = Connection::open(file.path()).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT member_pubkey, identity_pubkey, detail FROM audit_events WHERE action = 'department_migrated' ORDER BY identity_pubkey")
+        .unwrap();
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    rows.collect::<Result<_, _>>().unwrap()
+}
+
+#[test]
+fn migration_19_makes_every_grant_a_member_and_records_each() {
+    let (file, signer, sales) = database_before_147();
+    let db = Database::new(file.path().to_str().unwrap()).unwrap();
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+
+    // Every grant is a member: nobody leads, nothing is administrator only, nobody gains or loses.
+    let roles: Vec<String> = {
+        let conn = Connection::open(file.path()).unwrap();
+        let mut stmt = conn.prepare("SELECT role FROM identity_access ORDER BY identity_pubkey").unwrap();
+        let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(roles, ["member", "member"]);
+    assert!(db.led_identities(&signer).unwrap().is_empty());
+    assert!(db.list_identities().unwrap().iter().all(|i| !i.admin_only));
+    assert!(db.may_use_identity(&signer, None).unwrap());
+    assert!(db.may_use_identity(&signer, Some(&sales)).unwrap());
+    assert!(!db.may_lead(&signer, Some(&sales)).unwrap());
+
+    // One event per grant, naming the identity (None: the primary), the member and the grant's time.
+    let events = migrated_events(&file);
+    assert_eq!(events.len(), 2);
+    assert_eq!((events[0].0.as_str(), events[0].1.as_deref()), (signer.as_str(), None));
+    assert_eq!((events[1].0.as_str(), events[1].1.as_deref()), (signer.as_str(), Some(sales.as_str())));
+    assert!(events.iter().all(|(_, _, detail)| detail.starts_with("role=member;granted_at=")), "{:?}", events);
+}
+
+#[test]
+fn rerunning_migration_19_records_nothing_twice() {
+    let (file, _, _) = database_before_147();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    Connection::open(file.path()).unwrap().execute_batch("PRAGMA user_version = 18;").unwrap();
+    drop(Database::new(file.path().to_str().unwrap()).unwrap());
+    assert_eq!(user_version(&file), LATEST_VERSION as i64);
+    assert_eq!(migrated_events(&file).len(), 2);
+}
+
+#[test]
+fn migration_19_leaves_a_single_identity_bunker_as_it_was() {
+    let file = NamedTempFile::new().unwrap();
+    let path = file.path().to_str().unwrap().to_string();
+    let db = Database::new(&path).unwrap();
+    let signer = Keys::generate().public_key().to_hex();
+    db.add_team_member("Peter", &signer, Role::Signer).unwrap();
+    db.ensure_primary_identity(&Keys::generate().public_key().to_hex(), chrono::Utc::now()).unwrap();
+    drop(db);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("ALTER TABLE identity_access DROP COLUMN role; ALTER TABLE identities DROP COLUMN admin_only; PRAGMA user_version = 18;")
+        .unwrap();
+
+    let db = Database::new(&path).unwrap();
+    assert!(migrated_events(&file).is_empty(), "no grants, so nothing is recorded");
+    assert!(!db.grants_matter().unwrap());
+    assert!(db.may_use_identity(&signer, None).unwrap(), "with only the primary, everyone may still use it");
+}

@@ -44,11 +44,18 @@ pub mod action {
     pub const IDENTITY_RENAMED: &str = "identity_renamed";
     pub const IDENTITY_ACCESS_GRANTED: &str = "identity_access_granted";
     pub const IDENTITY_ACCESS_REMOVED: &str = "identity_access_removed";
+    /// Departments (#147): a lead appointed to or removed from a department (a grant's role
+    /// changed), one `department_migrated` per grant that migration 19 made a membership, and an
+    /// identity marked or unmarked administrator only.
+    pub const DEPARTMENT_LEAD_APPOINTED: &str = "department_lead_appointed";
+    pub const DEPARTMENT_LEAD_REMOVED: &str = "department_lead_removed";
+    pub const DEPARTMENT_MIGRATED: &str = "department_migrated";
+    pub const IDENTITY_ADMIN_ONLY_CHANGED: &str = "identity_admin_only_changed";
     /// A NIP-46 app was refused for going over its connection's rate limit (#101). Recorded at most
     /// once a minute per connection, however hard the app pushes.
     pub const CONNECTION_RATE_LIMITED: &str = "connection_rate_limited";
     /// A `sign_event` of a kind that needs approval was held (#102), and how it ended: approved or
-    /// rejected by an administrator, timed out, or cancelled because its connection ended.
+    /// rejected by an administrator or a lead of its department (#147), timed out, or cancelled because its connection ended.
     pub const APPROVAL_REQUESTED: &str = "approval_requested";
     pub const APPROVAL_APPROVED: &str = "approval_approved";
     pub const APPROVAL_REJECTED: &str = "approval_rejected";

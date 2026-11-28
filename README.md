@@ -214,9 +214,9 @@ counts refusals. An administrator can choose a tighter or looser limit when issu
 10 to 600 a minute in the console. See "Rate limits" in
 [`backend/README.md`](backend/README.md#rate-limits-101).
 
-Some kinds can need an administrator's approval before the bunker signs them (#102): a bot or a
-member drafts a note, and it waits under **Approvals**, with a preview, until an administrator
-approves or rejects it. The app is told either way, and every step is in the audit log. A request
+Some kinds can need approval before the bunker signs them (#102): a bot or a member drafts a note,
+and it waits under **Approvals**, with a preview, until an administrator, or a lead of the
+department it signs for (#147), approves or rejects it. The app is told either way, and every step is in the audit log. A request
 nobody decides times out after 30 minutes by default, and nothing is signed. See "Approval before
 signing" in [`backend/README.md`](backend/README.md#approval-before-signing-102).
 
@@ -312,8 +312,29 @@ podman compose run --rm -e BUNKER_NSEC_FILE=/run/secrets/brand_b bunker import-k
 ```
 
 then restart the bunker. Each identity is encrypted under the same root credential and travels in
-backups. Under **Config**, **Identities** lists them; on a member's team page, **May sign as** says
-which they may use, and a connection token is issued for one of them, which its app then signs as.
+backups. Under **Config**, **Identities** lists them, and a connection token is issued for one of
+them, which its app then signs as.
+
+Each identity is a **department** (#147): its members are the team members who may sign as it, and
+a person can be in any number of departments. **Departments** lists them. On a member's team page,
+**Departments** sets their role in each: not in it, a member, or its **lead**. A lead runs their
+department day to day, without being an administrator:
+
+- they add existing team members to it, register new people's keys into it as signers, and remove
+  its members, or themselves;
+- they issue and revoke its connections for any of its members, with approval kinds, and approve or
+  reject its held requests, their own included;
+- they edit its identity's profile, follows and relays, rename it, create a new identity, which
+  starts a department they lead, and retire their own department's identity.
+
+A lead can't act on another department, change anyone's role, remove anyone from the bunker, or
+read the logs, metrics, relays or configuration. Only administrators appoint and remove leads.
+Administrators may sign as every identity, and have every lead's powers in every department.
+
+An identity can instead be **administrator only**, such as the company root: it belongs to no
+department, nobody can be granted it, and only administrators sign as it, manage its connections
+and approve its requests. Mark one on **Departments** once nobody is in it, or with
+`bunker import-key --admin-only` (the primary) or `--add --admin-only` (another identity).
 An administrator can **Retire** an identity other than the primary: its apps are disconnected, its
 key is destroyed, and its signatures stay in the log.
 An administrator edits each identity's own Nostr account from **Config**, **Identities**:
@@ -321,9 +342,12 @@ An administrator edits each identity's own Nostr account from **Config**, **Iden
 Sales" for the Sales identity. The bunker signs each change as the identity, and the signing log
 records it under the administrator, with Console as the app (#150). Changes are published to the
 identity's own NIP-65 relays and the profile relays, as for a member's own, not the bunker's relays.
-With only one identity, **May sign as**, the choice of identity and the identity names on
-connections and in the log do not appear, and there is nothing to retire, but **Profile**,
-**Follows** and **Relays** do, for that identity. See "More than one identity" in
+With only one identity and no leads, a member's **Departments**, the choice of identity and the
+identity names on connections and in the log do not appear, and there is nothing to retire, but
+**Profile**, **Follows** and **Relays** do, for that identity. Until a second identity is added or a
+first lead is appointed, everyone on the team may sign as it. From then on its grants decide, for
+good: a member taken out of its department does not get it back when the last lead steps down. An
+administrator only identity is used by administrators alone. See "More than one identity" in
 [`backend/README.md`](backend/README.md#more-than-one-identity-103).
 
 ### The key and backups
@@ -358,7 +382,12 @@ Only keys registered with the bunker can use it, each with one of two roles (#77
 | Admin | Everything: the dashboard with metrics and activity, Team (add and remove members, and change their roles), Config (including the bunker relays and log retention), Logs (including the export), and everything a signer can do. |
 | Signer | A dashboard with the bunker's health, their connected apps and their own recent signatures; their profile, follows and relays; their connected apps (NIP-46), including issuing connection tokens for themselves, as the identities they are granted and without approval kinds (#142). |
 
-The team list and each member's profile are for administrators only. An administrator changes a
+A signer who leads a department (#147) can also do what "More than one identity" lists for a lead,
+for that department only, and opens **Departments**. The team list shows "Lead of Sales" beside
+their role.
+
+Each member's profile page is for administrators only. A lead reads the team list to add people to
+their department, but changes nobody's role. An administrator changes a
 member's role from **Team** in one step. Both roles sign, so a role change keeps the apps connected
 for the member. The last administrator cannot be demoted, just as they cannot be removed.
 

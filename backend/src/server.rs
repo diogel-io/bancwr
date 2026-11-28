@@ -1,7 +1,7 @@
 use crate::health::{Check, Overall};
 use crate::registry::{canonical_pubkey, Role};
 use crate::state::AppState;
-use crate::db::{RemoveOutcome, RoleChangeOutcome};
+use crate::db::{Departments, RemoveOutcome, RoleChangeOutcome};
 use crate::proxy_auth::{Access, Guard, Nonces};
 use axum::{
     extract::{Path, State},
@@ -225,11 +225,55 @@ pub async fn get_config(
     })
 }
 
-/// Get team members
+/// An error from the team routes: their plain-text refusals as before, and the JSON refusals
+/// (`forbidden`, `not_your_department`) the department checks add (#147).
+pub struct TeamError(axum::response::Response);
+
+impl TeamError {
+    fn json(status: StatusCode, error: &str, message: &str) -> Self {
+        use axum::response::IntoResponse;
+        TeamError((status, Json(serde_json::json!({ "error": error, "message": message }))).into_response())
+    }
+}
+
+impl From<(StatusCode, String)> for TeamError {
+    fn from(error: (StatusCode, String)) -> Self {
+        use axum::response::IntoResponse;
+        TeamError(error.into_response())
+    }
+}
+
+impl axum::response::IntoResponse for TeamError {
+    fn into_response(self) -> axum::response::Response {
+        self.0
+    }
+}
+
+/// Whether the caller may read the team and register signers into departments (#147): an
+/// administrator, or the lead of any department. Read from the database on every request.
+fn leads_or_administers(state: &AppState, who: &Option<axum::Extension<crate::proxy_auth::Caller>>) -> Result<(String, bool), TeamError> {
+    let (pubkey, administrator) = crate::connections_api::caller(who.clone());
+    if administrator {
+        return Ok((pubkey, true));
+    }
+    match state.db.leads_any_department(&pubkey) {
+        Ok(true) => Ok((pubkey, false)),
+        Ok(false) => Err(TeamError::json(StatusCode::FORBIDDEN, "forbidden", "Only an administrator or a department lead can do this.")),
+        Err(e) => {
+            error!("Failed to read the caller's departments: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()).into())
+        }
+    }
+}
+
+/// Get team members: names, npubs and roles. Administrators, and department leads, who add
+/// existing members to their departments (#147).
 /// GET /api/bunker/team
 pub async fn get_team(
     State(state): State<AppState>,
-) -> Result<Json<Vec<TeamMemberResponse>>, (StatusCode, String)> {
+    who: Option<axum::Extension<crate::proxy_auth::Caller>>,
+) -> Result<Json<Vec<TeamMemberResponse>>, TeamError> {
+    leads_or_administers(&state, &who)?;
     match state.db.get_team_members() {
         Ok(members) => {
             let response: Vec<TeamMemberResponse> = members.into_iter().map(Into::into).collect();
@@ -237,24 +281,34 @@ pub async fn get_team(
         }
         Err(e) => {
             error!("Failed to fetch team: {}", e);
-            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()))
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()).into())
         }
     }
 }
 
 /// Add team member
 /// POST /api/bunker/team
+///
+/// Administrators add anyone. A department lead (#147) registers a signer only, into one or more of
+/// the departments they lead (403 `not_your_department` otherwise), under every other check an
+/// administrator's registration goes through: a key held as an identity is refused (T2). The
+/// member and their grants are stored in one transaction, with the lead as actor.
 pub async fn add_team_member(
     State(state): State<AppState>,
     who: Option<axum::Extension<crate::proxy_auth::Caller>>,
     Json(request): Json<AddTeamMemberRequest>,
-) -> Result<Json<TeamOperationResponse>, (StatusCode, String)> {
+) -> Result<Json<TeamOperationResponse>, TeamError> {
+    let (by, administrator) = leads_or_administers(&state, &who)?;
+    let not_your_department = || TeamError::json(StatusCode::FORBIDDEN, "not_your_department", "A lead registers signers only, into departments they lead.");
     // The two roles of #143: administrator and signer. Older names (`admin`, `user`, and #77's
     // third role) are refused with 400.
     let role: Role = request
         .role
         .parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid role".to_string()))?;
+    if !administrator && role != Role::Signer {
+        return Err(not_your_department());
+    }
 
     // Any valid key, as an npub or hex, stored in one canonical form.
     let pubkey = canonical_pubkey(&request.pubkey)
@@ -269,48 +323,42 @@ pub async fn add_team_member(
         (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
     })?;
     if state.keyring.is_identity(&pubkey).await || stored_identity.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "The bunker's own key cannot be registered".to_string()));
+        return Err((StatusCode::BAD_REQUEST, "The bunker's own key cannot be registered".to_string()).into());
     }
 
-    // Which identities they may sign as (#103), checked before anything is stored.
-    let several = state.db.has_several_identities().map_err(|e| {
-        error!("Failed to read identities: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
-    })?;
-    let mut grants: Vec<Option<String>> = Vec::new();
-    if several {
-        match &request.identities {
-            None => grants.push(None),
-            Some(keys) => {
-                for key in keys {
-                    let parsed = PublicKey::parse(key.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
-                    let identity = state.keyring.identity_of(&parsed).await.ok_or((StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
-                    if !grants.contains(&identity) {
-                        grants.push(identity);
-                    }
-                }
-            }
+    // Which identities they may sign as (#103), their departments (#147). The keys named are resolved here; whether grants matter, whether a lead leads each one and
+    // whether any is administrator only are read in the transaction that stores the member, so
+    // none of them can change in between.
+    let mut named: Vec<Option<String>> = Vec::new();
+    if let Some(keys) = &request.identities {
+        for key in keys {
+            let parsed = PublicKey::parse(key.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+            let identity = state.keyring.identity_of(&parsed).await.ok_or((StatusCode::BAD_REQUEST, "Invalid identity".to_string()))?;
+            named.push(identity);
         }
     }
+    let departments = match &request.identities {
+        None => Departments::Default,
+        Some(_) => Departments::Named(&named),
+    };
+    let acting_lead = if administrator { None } else { Some(by.as_str()) };
 
     match state.db.find_member_by_pubkey(&pubkey) {
-        Ok(Some(_)) => return Err((StatusCode::CONFLICT, "This key is already registered".to_string())),
+        Ok(Some(_)) => return Err((StatusCode::CONFLICT, "This key is already registered".to_string()).into()),
         Ok(None) => {}
         Err(e) => {
             error!("Failed to look up team member: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()));
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()).into());
         }
     }
 
-    let (by, _) = crate::connections_api::caller(who);
-    match state.db.add_team_member_as(&request.name, &pubkey, role, crate::audit::actor(&by)) {
-        Ok(_) => {
+    match state.db.add_team_member_with(&request.name, &pubkey, role, crate::audit::actor(&by), acting_lead, departments) {
+        Ok(crate::db::AddMemberOutcome::NotYourDepartment) => Err(not_your_department()),
+        Ok(crate::db::AddMemberOutcome::AdminOnly) => {
+            Err((StatusCode::CONFLICT, "That identity is administrator only, so nobody can be granted it.".to_string()).into())
+        }
+        Ok(crate::db::AddMemberOutcome::Added(_)) => {
             info!("Added team member: {}", request.name);
-            for identity in &grants {
-                if let Err(e) = state.db.grant_identity(identity.as_deref(), &pubkey, crate::audit::actor(&by), chrono::Utc::now()) {
-                    error!("Failed to grant a new member an identity: {}", e);
-                }
-            }
             Ok(Json(TeamOperationResponse {
                 success: true,
                 message: "Team member added".to_string(),
@@ -318,7 +366,7 @@ pub async fn add_team_member(
         }
         Err(e) => {
             error!("Failed to add team member: {}", e);
-            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into())
         }
     }
 }
@@ -467,26 +515,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/bunker/metrics", get(get_metrics))
         // Read-only (#42): the signing key is encrypted at rest and set with `bunker import-key` (#94).
         .route("/api/bunker/config", get(get_config))
-        // Reading the team and changing it, a role included (#99), are the administrator's (#77,
-        // #143).
-        .route("/api/bunker/team", get(get_team).post(add_team_member))
+        // Removing a member and changing a role (#99) are the administrator's (#77, #143, #147).
         .route("/api/bunker/team/:id", delete(remove_team_member).patch(change_team_member_role))
         // The bunker's own NIP-46 relays (#78): NIP46_RELAYS when set, otherwise the console's list.
-        .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays))
-        // Deciding requests held for approval (#102): administrators only.
-        .route("/api/bunker/approvals/:id/approve", post(crate::approvals_api::approve))
-        .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject))
-        // The bunker's identities (#103): creating one with a key the bunker generates and retiring
-        // one (#146), renaming one, and who may sign as it.
-        .route("/api/bunker/identities", post(crate::identities_api::create_identity))
-        .route("/api/bunker/identities/:pubkey", patch(crate::identities_api::rename_identity).delete(crate::identities_api::retire_identity))
-        .route(
-            "/api/bunker/identities/:pubkey/members/:member",
-            put(crate::identities_api::grant_identity).delete(crate::identities_api::remove_identity_grant),
-        )
-        // An identity's profile, follows and relays, edited in the console (#150): signed as the
-        // identity, for those kinds and a Blossom upload authorisation only, and logged.
-        .route("/api/bunker/identities/:pubkey/sign", post(crate::identities_api::sign_as_identity));
+        .route("/api/bunker/relays", get(crate::relays_api::get_relays).put(crate::relays_api::replace_relays));
     // Also the service identity's: sign-in looks the presented key up before any session exists.
     let lookup = Router::new().route("/api/bunker/team/by-pubkey/:pubkey", get(get_team_member_by_pubkey));
     // Administrators and signers, each scoped to the caller: their connection tokens (#142) and
@@ -507,7 +539,23 @@ pub fn create_router(state: AppState) -> Router {
         // Requests held for approval (#102): administrators see all, signers their own.
         .route("/api/bunker/approvals", get(crate::approvals_api::list_approvals))
         // The identities each may sign as (#103): administrators see all.
-        .route("/api/bunker/identities", get(crate::identities_api::list_identities));
+        .route("/api/bunker/identities", get(crate::identities_api::list_identities).post(crate::identities_api::create_identity))
+        // Department routes (#147): open to every signer at the guard, and each handler allows
+        // administrators and the leads of the department the request names, read from the
+        // database on every request. Reading the team and registering signers into a lead's
+        // departments; deciding held requests (#102, amendment 1 to the signing approval ADR);
+        // creating (the creator leads it), renaming and retiring identities (#146); who may sign as
+        // each (#103), where only administrators appoint leads or mark one administrator only; and
+        // an identity's profile, follows and relays, signed as it in the console (#150).
+        .route("/api/bunker/team", get(get_team).post(add_team_member))
+        .route("/api/bunker/approvals/:id/approve", post(crate::approvals_api::approve))
+        .route("/api/bunker/approvals/:id/reject", post(crate::approvals_api::reject))
+        .route("/api/bunker/identities/:pubkey", patch(crate::identities_api::rename_identity).delete(crate::identities_api::retire_identity))
+        .route(
+            "/api/bunker/identities/:pubkey/members/:member",
+            put(crate::identities_api::grant_identity).delete(crate::identities_api::remove_identity_grant),
+        )
+        .route("/api/bunker/identities/:pubkey/sign", post(crate::identities_api::sign_as_identity));
 
     // No CORS layer: browsers only ever call the frontend's Nitro server, which reaches the bunker
     // server-side. Without CORS headers, a browser on another site cannot call it. There is no
