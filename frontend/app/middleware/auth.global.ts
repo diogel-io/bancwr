@@ -9,6 +9,9 @@ import { canOpen, isLeadRoute } from '~/utils/access'
 const PUBLIC_PAGES = new Set(['/sign-in', '/no-access'])
 
 export default defineNuxtRouteMiddleware(async (to) => {
+  // Taken before the first await, while the Nuxt context is still set: during SSR it forwards the
+  // browser's session cookie, which a plain $fetch does not, so a reload stays signed in.
+  const requestFetch = useRequestFetch()
   const state = await useAuth().refresh()
 
   if (state.status === 'signed-out') {
@@ -21,7 +24,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
     return navigateTo('/')
   }
   // A page only a department lead may open as well (#147): read whether they lead one now.
-  const lead = !canOpen(state.role, to.path) && isLeadRoute(to.path) && await leadsADepartment()
+  const lead = !canOpen(state.role, to.path) && isLeadRoute(to.path) && await leadsADepartment(requestFetch)
   if (!canOpen(state.role, to.path, lead)) {
     // Fatal, or a client-side navigation is only cancelled and the user is left wondering why.
     return abortNavigation(createError({
@@ -35,9 +38,9 @@ export default defineNuxtRouteMiddleware(async (to) => {
 })
 
 /** Whether the signed-in member leads any department (#147), as the bunker lists it now. */
-async function leadsADepartment(): Promise<boolean> {
+async function leadsADepartment(requestFetch: ReturnType<typeof useRequestFetch>): Promise<boolean> {
   try {
-    const identities = await $fetch<BunkerIdentity[]>('/api/bunker/identities')
+    const identities = await requestFetch<BunkerIdentity[]>('/api/bunker/identities')
     return identities.some(identity => identity.my_role === 'lead')
   } catch {
     return false

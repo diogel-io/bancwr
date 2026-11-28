@@ -27,9 +27,9 @@ const state = vi.hoisted(() => ({
 }))
 
 const all = (): BunkerIdentity[] => [
-  { pubkey: SALES, npub: 'npub1sales', label: 'Sales', is_primary: false, available: true, members: [PAM, PETER], leads: [PAM], my_role: 'lead' },
-  { pubkey: SUPPORT, npub: 'npub1support', label: 'Support', is_primary: false, available: true, members: [JAMES], leads: [] },
-  { pubkey: ROOT, npub: 'npub1root', label: 'Company root', is_primary: false, available: true, members: [], leads: [], admin_only: true }
+  { pubkey: SALES, npub: 'npub1sales', label: 'Sales', is_primary: false, available: true, members: [PAM, PETER], leads: [PAM], grants_matter: true, my_role: 'lead' },
+  { pubkey: SUPPORT, npub: 'npub1support', label: 'Support', is_primary: false, available: true, members: [JAMES], leads: [], grants_matter: true },
+  { pubkey: ROOT, npub: 'npub1root', label: 'Company root', is_primary: false, available: true, members: [], leads: [], grants_matter: true, admin_only: true }
 ]
 
 registerEndpoint('/api/bunker/status', () => ({ status: 'healthy', pubkey: 'npub1test', version: '0.1.0', checks: [] }))
@@ -171,9 +171,17 @@ describe('Departments page', () => {
   })
 
   it('says everyone may sign as the primary while grants don\'t matter yet', async () => {
-    state.identities = [{ pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, members: [], leads: [] }]
+    state.identities = [{ pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, members: [], leads: [], grants_matter: false }]
     const component = await mount('administrator')
     await vi.waitFor(() => expect(component.find('[data-testid="department-everyone"]').exists()).toBe(true))
     expect(component.find('[data-testid="department-mark-admin-only"]').exists()).toBe(false)
+  })
+
+  it('keeps an emptied primary\'s grants deciding, as the bunker says, so it may be marked', async () => {
+    // A lead was appointed once, and every grant has since been removed.
+    state.identities = [{ pubkey: 'e'.repeat(64), npub: 'npub1e', label: 'Primary', is_primary: true, available: true, members: [], leads: [], grants_matter: true }]
+    const component = await mount('administrator')
+    await vi.waitFor(() => expect(component.find('[data-testid="department-mark-admin-only"]').exists()).toBe(true))
+    expect(component.find('[data-testid="department-everyone"]').exists()).toBe(false)
   })
 })

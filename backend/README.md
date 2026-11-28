@@ -343,7 +343,7 @@ Audit actions, each recorded in the same transaction as the change:
 | `identity_added` | `bunker import-key --add` adds an identity (#103), with no actor, or an administrator creates one in the console (#146), as actor | `label=…` |
 | `identity_retired` | An administrator retires an identity (#146) | `label=… connections_revoked=… tokens_revoked=…` |
 | `identity_renamed` | An administrator renames one | `label=…` |
-| `identity_access_granted`, `identity_access_removed` | An administrator or a lead (#147) adds a member to a department (grants them its identity), or removes them | `role=member` or `role=lead` on a grant |
+| `identity_access_granted`, `identity_access_removed` | An administrator or a lead (#147) adds a member to a department (grants them its identity), or removes them. Also recorded with no actor for each member the bunker grants the primary when grants start to matter | `role=member` or `role=lead` on a grant; `reason=grants_matter` on the bunker's own |
 | `department_lead_appointed`, `department_lead_removed` | An administrator appoints a lead, a lead creates an identity (#147), or a lead is made a member | `role=lead` on a new grant; `from=…;to=…` on a changed one |
 | `department_migrated` | Migration 19 made an existing grant a department membership (#147), one per grant, with no actor | `role=member;granted_at=…` |
 | `identity_admin_only_changed` | An administrator marks or unmarks an identity administrator only, or `import-key --admin-only` does (#147) | `admin_only=true` or `admin_only=false` |
@@ -737,20 +737,24 @@ lead" applies only to identities they hold a `lead` grant on, checked on every r
 - **`GET /api/bunker/identities`** lists `pubkey`, `npub`, `label`, `is_primary`, `available`
   (unlocked in the running bunker), `admin_only` (#147), `my_role` (the caller's own role in its
   department, when they hold a grant) and, for administrators and its leads, `members` (leads
-  included), `leads` and, on each identity but the primary, `usage` (`connections` and `tokens`:
-  what retiring it would revoke). Retired identities
+  included), `leads`, `grants_matter` (whether grants decide who may use the primary yet) and, on
+  each identity but the primary, `usage` (`connections` and `tokens`: what retiring it would
+  revoke). Retired identities
   are left out; an administrator gets them too with `?retired=true`, each with `retired_at`. `PATCH`
   renames one (`{"label":"…"}`, 1 to 100 characters), for an administrator or a lead of its
   department, and an administrator marks or unmarks it with `{"admin_only":true|false}` (#147).
   Marking is refused with `409 {"error":"has_members"}` while anyone but an administrator may use
-  it, so nobody loses access without their removal being recorded. `PUT
+  it, so nobody loses access without their removal being recorded. A label and a mark in one
+  request change together, or neither does. `PUT
   /api/bunker/identities/:pubkey/members/:member`, with an optional `{"role":"member"|"lead"}`
   (`member` by default), adds a member to the department or changes their role; `DELETE` removes
   them, revoking their connections and unused tokens for it. A lead adds `member`s, removes members
   and themselves, and may make themselves a `member`; appointing a lead, or removing or demoting
   another lead, is an administrator's. Making a lead a member keeps their grant and connections. A
   member whose stored role is not recognised is `400 {"error":"member_cannot_sign"}`, and a role
-  that is neither is `400 {"error":"invalid_role"}`.
+  that is neither, or a body that is not such an object, is `400 {"error":"invalid_role"}`, never
+  read as `member`. A lead's authority, and whether the member is another lead, are read in the
+  transaction that makes the change.
 - **Its own profile, follows and relays** (#150): `POST /api/bunker/identities/:pubkey/sign`, by
   an administrator or a lead of its department (#147), signs an event the console built as the identity and returns it. The body
   is a template, `{"kind":…,"created_at":…,"tags":[…],"content":"…"}`, and nothing else: the

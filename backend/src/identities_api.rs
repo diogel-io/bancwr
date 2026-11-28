@@ -31,11 +31,12 @@
 //! department (#147).
 use crate::connections_api::{api_error, caller, database_error, ApiError};
 use crate::console_signing::{self, EventTemplate};
-use crate::db::{AdminOnlyOutcome, GrantOutcome, Identity, NewIdentity, RetireOutcome, MAX_IDENTITY_LABEL_CHARS};
+use crate::db::{AddIdentityRefusal, AdminOnlyOutcome, GrantOutcome, Identity, NewIdentity, RemoveGrantOutcome, RetireOutcome, MAX_IDENTITY_LABEL_CHARS};
 use crate::proxy_auth::Caller;
 use crate::registry::{canonical_pubkey, DepartmentRole};
 use crate::state::AppState;
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::StatusCode,
     Extension, Json,
@@ -62,6 +63,11 @@ pub struct IdentityResponse {
     /// The leads of its department (#147), hex: listed with `members`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leads: Option<Vec<String>>,
+    /// Whether grants decide who may use the primary (#103, #147), as the bunker holds it: listed
+    /// with `members`. False only before any identity is added beside the primary or any lead is
+    /// appointed, while everyone who may sign may use the primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants_matter: Option<bool>,
     /// Belongs to no department (#147): only administrators use it.
     #[serde(default)]
     pub admin_only: bool,
@@ -116,13 +122,14 @@ pub struct GrantRequest {
 struct Department {
     members: Vec<String>,
     leads: Vec<String>,
+    grants_matter: bool,
 }
 
 async fn response(state: &AppState, identity: Identity, department: Option<Department>, usage: Option<IdentityUsage>, my_role: Option<DepartmentRole>) -> IdentityResponse {
     let available = identity.retired_at.is_none() && state.keyring.is_identity(&identity.pubkey).await;
-    let (members, leads) = match department {
-        Some(d) => (Some(d.members), Some(d.leads)),
-        None => (None, None),
+    let (members, leads, grants_matter) = match department {
+        Some(d) => (Some(d.members), Some(d.leads), Some(d.grants_matter)),
+        None => (None, None, None),
     };
     IdentityResponse {
         npub: crate::registry::npub(&identity.pubkey),
@@ -132,6 +139,7 @@ async fn response(state: &AppState, identity: Identity, department: Option<Depar
         available,
         members,
         leads,
+        grants_matter,
         admin_only: identity.admin_only,
         my_role,
         usage,
@@ -144,6 +152,7 @@ fn department(state: &AppState, reference: Option<&str>) -> Result<Department, A
     Ok(Department {
         leads: grants.iter().filter(|g| g.role == Some(DepartmentRole::Lead)).map(|g| g.member_pubkey.clone()).collect(),
         members: grants.into_iter().map(|g| g.member_pubkey).collect(),
+        grants_matter: state.db.grants_matter().map_err(database_error)?,
     })
 }
 
@@ -271,6 +280,8 @@ pub async fn create_identity(
     let new = NewIdentity { admin_only: false, lead: if administrator { None } else { crate::audit::actor(&by) } };
     match state.db.add_identity_with(&pubkey, label, &key_file, crate::audit::actor(&by), new, Utc::now()).map_err(database_error)? {
         Ok(()) => {}
+        // No longer a lead by the time it would be stored (#147): read in the same transaction.
+        Err(AddIdentityRefusal::NotALead) => return Err(forbidden("Only an administrator or a department lead can create identities.")),
         Err(_) => return Err(api_error(StatusCode::CONFLICT, "key_in_use", "The generated key is already in use. Try again.")),
     }
     state.keyring.add(crate::signer::Signer::new(secret_key)).await;
@@ -340,22 +351,22 @@ pub async fn rename_identity(
     if request.admin_only.is_some() && !administrator {
         return Err(forbidden("Only an administrator can mark an identity administrator only."));
     }
-    if let Some(admin_only) = request.admin_only {
-        match state.db.set_identity_admin_only(identity.reference(), admin_only, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
-            AdminOnlyOutcome::Changed => info!("Identity {} is now {}", identity.pubkey, if admin_only { "administrator only" } else { "open to departments" }),
-            AdminOnlyOutcome::Unchanged => {}
-            AdminOnlyOutcome::NotFound => return Err(not_found()),
-            AdminOnlyOutcome::HasMembers => {
-                return Err(api_error(
-                    StatusCode::CONFLICT,
-                    "has_members",
-                    "Members may still sign as this identity. Remove them from it first, so nobody loses access without it being recorded.",
-                ))
-            }
+    // The mark and the label change together or not at all, with their audit events.
+    match state.db.update_identity(&identity.pubkey, identity.reference(), label, request.admin_only, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
+        AdminOnlyOutcome::Changed | AdminOnlyOutcome::Unchanged => {}
+        AdminOnlyOutcome::NotFound => return Err(not_found()),
+        AdminOnlyOutcome::HasMembers => {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "has_members",
+                "Members may still sign as this identity. Remove them from it first, so nobody loses access without it being recorded.",
+            ))
         }
     }
-    if let Some(label) = label {
-        state.db.rename_identity(&identity.pubkey, label, crate::audit::actor(&by), Utc::now()).map_err(database_error)?;
+    if let Some(admin_only) = request.admin_only {
+        info!("Identity {} is {}", identity.pubkey, if admin_only { "administrator only" } else { "open to departments" });
+    }
+    if label.is_some() {
         info!("Renamed identity {}", identity.pubkey);
     }
     Ok(Json(json!({ "success": true })))
@@ -371,6 +382,27 @@ fn signing_member(state: &AppState, key: &str) -> Result<String, ApiError> {
     }
 }
 
+/// The role a grant body asks for (#147): `member` for an empty body, which the console and older
+/// clients send. A body that is not a valid `GrantRequest`, or names another role, is refused
+/// before anything is written, never read as `member`.
+fn grant_role(body: &[u8]) -> Result<DepartmentRole, ApiError> {
+    const INVALID: &str = "A department role is member or lead.";
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(DepartmentRole::Member);
+    }
+    let invalid = || api_error(StatusCode::BAD_REQUEST, "invalid_role", INVALID);
+    // An object only: serde would also read a struct from an array.
+    let value: Value = serde_json::from_slice(body).map_err(|_| invalid())?;
+    if !value.is_object() {
+        return Err(invalid());
+    }
+    let request: GrantRequest = serde_json::from_value(value).map_err(|_| invalid())?;
+    match request.role {
+        None => Ok(DepartmentRole::Member),
+        Some(role) => role.parse().map_err(|_| invalid()),
+    }
+}
+
 /// Grant a member an identity, adding them to its department with a `role` of `member` (the
 /// default) or `lead` (#147). PUT /api/bunker/identities/:pubkey/members/:member
 ///
@@ -381,34 +413,30 @@ pub async fn grant_identity(
     State(state): State<AppState>,
     who: Option<Extension<Caller>>,
     Path((key, member)): Path<(String, String)>,
-    request: Option<Json<GrantRequest>>,
+    body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let (by, administrator) = caller(who);
     const GRANT: &str = "Only an administrator or a lead of this department can add members to it.";
     may_lead_somewhere(&state, &by, administrator, GRANT)?;
     let identity = find(&state, &key)?;
     may_manage(&state, &by, administrator, &identity, GRANT)?;
-    let role = match request.and_then(|Json(r)| r.role) {
-        None => DepartmentRole::Member,
-        Some(role) => role.parse().map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_role", "A department role is member or lead."))?,
-    };
+    let role = grant_role(&body)?;
     let member = signing_member(&state, &member)?;
-    if !administrator {
-        if role == DepartmentRole::Lead {
-            return Err(forbidden("Only an administrator can appoint a lead."));
-        }
-        let current = state.db.find_grant(identity.reference(), &member).map_err(database_error)?;
-        if current.is_some_and(|g| g.role == Some(DepartmentRole::Lead)) && member != by {
-            return Err(forbidden("Only an administrator can remove another lead."));
-        }
+    if !administrator && role == DepartmentRole::Lead {
+        return Err(forbidden("Only an administrator can appoint a lead."));
     }
-    match state.db.grant_identity_as(identity.reference(), &member, role, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
+    // A lead's authority, and whether the member is another lead, are read in the same transaction
+    // as the write (#147).
+    let acting_lead = if administrator { None } else { Some(by.as_str()) };
+    match state.db.grant_identity_by(identity.reference(), &member, role, crate::audit::actor(&by), acting_lead, Utc::now()).map_err(database_error)? {
         GrantOutcome::Granted => info!("Granted {} the identity {} as {}", member, identity.pubkey, role),
         GrantOutcome::RoleChanged => info!("{} is now a {} of the identity {}", member, role, identity.pubkey),
         GrantOutcome::Unchanged => {}
         GrantOutcome::AdminOnly => {
             return Err(api_error(StatusCode::CONFLICT, "admin_only", "This identity is administrator only: it has no members, and only administrators use it."))
         }
+        GrantOutcome::NotALead => return Err(forbidden(GRANT)),
+        GrantOutcome::AnotherLead => return Err(forbidden("Only an administrator can remove another lead.")),
     }
     Ok(Json(json!({ "success": true })))
 }
@@ -426,19 +454,17 @@ pub async fn remove_identity_grant(
     let identity = find(&state, &key)?;
     may_manage(&state, &by, administrator, &identity, REMOVE)?;
     let member = canonical_pubkey(&member).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_pubkey", "That is not a valid npub or hex key."))?;
-    // A lead removes a member, or themselves; another lead only an administrator (#147).
-    if !administrator && member != by {
-        let current = state.db.find_grant(identity.reference(), &member).map_err(database_error)?;
-        if current.is_some_and(|g| g.role == Some(DepartmentRole::Lead)) {
-            return Err(forbidden("Only an administrator can remove another lead."));
-        }
-    }
-    match state.db.remove_identity_grant(identity.reference(), &member, crate::audit::actor(&by), Utc::now()).map_err(database_error)? {
-        Some((connections, tokens)) => {
+    // A lead removes a member, or themselves; another lead only an administrator (#147). Read in
+    // the same transaction as the removal.
+    let acting_lead = if administrator { None } else { Some(by.as_str()) };
+    match state.db.remove_identity_grant_by(identity.reference(), &member, crate::audit::actor(&by), acting_lead, Utc::now()).map_err(database_error)? {
+        RemoveGrantOutcome::Removed { connections, tokens } => {
             info!("Removed {}'s grant of {}: {} connections and {} tokens revoked", member, identity.pubkey, connections, tokens);
             Ok(Json(json!({ "success": true, "connections_revoked": connections, "tokens_revoked": tokens })))
         }
-        None => Err(api_error(StatusCode::NOT_FOUND, "not_found", "That member is not granted that identity.")),
+        RemoveGrantOutcome::NotGranted => Err(api_error(StatusCode::NOT_FOUND, "not_found", "That member is not granted that identity.")),
+        RemoveGrantOutcome::NotALead => Err(forbidden(REMOVE)),
+        RemoveGrantOutcome::AnotherLead => Err(forbidden("Only an administrator can remove another lead.")),
     }
 }
 

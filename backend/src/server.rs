@@ -375,7 +375,11 @@ pub async fn add_team_member(
     }
 
     match state.db.add_team_member_with(&request.name, &pubkey, role, crate::audit::actor(&by), &grants) {
-        Ok(_) => {
+        // Marked administrator only since it was checked above (#147): read again in the transaction.
+        Ok(crate::db::AddMemberOutcome::AdminOnly) => {
+            Err((StatusCode::CONFLICT, "That identity is administrator only, so nobody can be granted it.".to_string()).into())
+        }
+        Ok(crate::db::AddMemberOutcome::Added(_)) => {
             info!("Added team member: {}", request.name);
             Ok(Json(TeamOperationResponse {
                 success: true,

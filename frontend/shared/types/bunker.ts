@@ -257,6 +257,11 @@ export interface BunkerIdentity {
   members?: string[]
   /** The leads of its department (#147), hex: listed with `members`. */
   leads?: string[]
+  /**
+   * Whether grants decide who may use the primary (#103, #147), as the bunker holds it: listed
+   * with `members`. False only while everyone who may sign may use the primary.
+   */
+  grants_matter?: boolean
   /** Belongs to no department (#147): only administrators use it, as the company root does. */
   admin_only?: boolean
   /** The signed-in member's own role in its department, when they hold a grant of it (#147). */

@@ -85,10 +85,12 @@ async fn a_member_in_two_departments_may_sign_as_both_and_no_other() {
     assert_eq!(keys, expected, "Sales and Support, not the primary or the root");
     assert!(listed.iter().all(|i| i.my_role == Some(DepartmentRole::Member) && i.members.is_none()));
 
-    for (identity, allowed) in [(&c.sales, true), (&c.support, true), (&c.root, false)] {
+    for identity in [&c.sales, &c.support] {
         let res = send(&c.app, Method::POST, "/api/bunker/connections/tokens", &c.sam, Some(json!({ "label": "x", "kinds": [1], "identity": identity }))).await;
-        assert_eq!(res.status() == StatusCode::OK, allowed, "{} -> {}", identity, res.status());
+        assert_eq!(res.status(), StatusCode::OK, "{}", identity);
     }
+    let root = send(&c.app, Method::POST, "/api/bunker/connections/tokens", &c.sam, Some(json!({ "label": "x", "kinds": [1], "identity": c.root }))).await;
+    assert_eq!(error(root).await, (StatusCode::BAD_REQUEST, json!("no_identity_access")));
 }
 
 #[tokio::test]
@@ -153,6 +155,15 @@ async fn only_an_administrator_appoints_leads_and_marks_an_identity_administrato
     assert!(c.app.db.may_lead(&c.james, Some(&c.support)).unwrap());
     let bad = send(&c.app, Method::PUT, &format!("/api/bunker/identities/{}/members/{}", c.support, c.james), &admin, Some(json!({ "role": "boss" }))).await;
     assert_eq!(error(bad).await, (StatusCode::BAD_REQUEST, json!("invalid_role")));
+    // A body that is not a grant request is refused, never read as `member`: James stays a lead.
+    for body in [json!({ "role": 7 }), json!("lead"), json!([])] {
+        let bad = send(&c.app, Method::PUT, &format!("/api/bunker/identities/{}/members/{}", c.support, c.james), &admin, Some(body.clone())).await;
+        assert_eq!(error(bad).await, (StatusCode::BAD_REQUEST, json!("invalid_role")), "{}", body);
+    }
+    assert!(c.app.db.may_lead(&c.james, Some(&c.support)).unwrap());
+    // The access mode is the bunker's own, listed with each department.
+    let listed: Vec<IdentityResponse> = send(&c.app, Method::GET, "/api/bunker/identities", &admin, None).await.json().await.unwrap();
+    assert!(listed.iter().all(|i| i.grants_matter == Some(true)), "an identity beside the primary");
 
     // The root refuses grants; Support, with members, can't be marked.
     let refused = send(&c.app, Method::PUT, &format!("/api/bunker/identities/{}/members/{}", c.root, c.peter), &admin, None).await;
@@ -306,6 +317,17 @@ async fn a_lead_decides_their_departments_held_requests_their_own_included_and_n
     let peters_event = approved.iter().find(|e| e.member_pubkey.as_deref() == Some(c.peter.as_str())).unwrap();
     assert!(!peters_event.detail.as_deref().unwrap().contains("self=true"));
     assert_eq!(c.app.db.signature_count().unwrap(), 2);
+    // And she rejects one of Sales's, which is recorded as hers.
+    hold(&c, &peter_app, &c.sales).await;
+    let held: Vec<ApprovalResponse> = send(&c.app, Method::GET, "/api/bunker/approvals", &c.pam, None).await.json().await.unwrap();
+    assert_eq!(held.len(), 1);
+    let res = send(&c.app, Method::POST, &format!("/api/bunker/approvals/{}/reject", held[0].id), &c.pam, Some(json!({}))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let rejected = c.app.db.audit_events().unwrap().into_iter().find(|e| e.action == action::APPROVAL_REJECTED).unwrap();
+    assert_eq!(rejected.actor_pubkey.as_deref(), Some(c.pam.as_str()));
+    let listed: Vec<ApprovalResponse> = send(&c.app, Method::GET, "/api/bunker/approvals", &c.pam, None).await.json().await.unwrap();
+    assert!(listed.is_empty());
+    assert_eq!(c.app.db.signature_count().unwrap(), 2, "nothing more was signed");
 }
 
 #[tokio::test]

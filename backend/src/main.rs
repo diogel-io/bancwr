@@ -188,6 +188,10 @@ fn add_identity(args: &[String]) -> i32 {
             eprintln!("Could not add the identity: that key is a team member's, and an identity's key can never sign in.");
             1
         }
+        Ok(Err(bunker::db::AddIdentityRefusal::NotALead)) => {
+            eprintln!("Could not add the identity: the member who would lead it leads no department.");
+            1
+        }
         Err(e) => {
             eprintln!("Could not add the identity: the database could not be updated.");
             eprintln!("Detail: {}", e);

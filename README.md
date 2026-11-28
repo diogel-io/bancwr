@@ -343,8 +343,11 @@ Sales" for the Sales identity. The bunker signs each change as the identity, and
 records it under the administrator, with Console as the app (#150). Changes are published to the
 identity's own NIP-65 relays and the profile relays, as for a member's own, not the bunker's relays.
 With only one identity and no leads, a member's **Departments**, the choice of identity and the
-identity names on connections and in the log do not appear, and everyone on the team may sign as it, and there is nothing to retire, but **Profile**,
-**Follows** and **Relays** do, for that identity. See "More than one identity" in
+identity names on connections and in the log do not appear, and there is nothing to retire, but
+**Profile**, **Follows** and **Relays** do, for that identity. Until a second identity is added or a
+first lead is appointed, everyone on the team may sign as it. From then on its grants decide, for
+good: a member taken out of its department does not get it back when the last lead steps down. An
+administrator only identity is used by administrators alone. See "More than one identity" in
 [`backend/README.md`](backend/README.md#more-than-one-identity-103).
 
 ### The key and backups

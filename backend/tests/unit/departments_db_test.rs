@@ -1,7 +1,7 @@
 // Departments in the database (#147, departments ADR): a grant's role, administrator only
 // identities, who may use and who leads an identity, and what each change records.
 use bunker::audit::action;
-use bunker::db::{AdminOnlyOutcome, Database, GrantOutcome, NewIdentity};
+use bunker::db::{AddIdentityRefusal, AddMemberOutcome, AdminOnlyOutcome, Database, GrantOutcome, NewIdentity, RemoveGrantOutcome};
 use bunker::registry::{DepartmentRole, Role};
 use chrono::Utc;
 use nostr::prelude::*;
@@ -209,4 +209,81 @@ fn a_member_registered_into_departments_is_granted_them_in_one_go() {
     let added = db.audit_events().unwrap().into_iter().find(|e| e.action == action::MEMBER_ADDED && e.member_pubkey.as_deref() == Some(&new)).unwrap();
     assert_eq!(added.actor_pubkey.as_deref(), Some(lead.as_str()));
     assert_eq!(added.detail, Some(format!("role=signer;departments={}", sales)));
+}
+
+#[test]
+fn the_primary_grants_made_when_grants_start_to_matter_are_each_recorded() {
+    let (db, admin, signer) = bunker();
+    let lead = hex();
+    db.add_team_member("Pam", &lead, Role::Signer).unwrap();
+    db.grant_identity_as(None, &lead, DepartmentRole::Lead, Some(&admin), Utc::now()).unwrap();
+
+    let granted: Vec<_> = db.audit_events().unwrap().into_iter().filter(|e| e.action == action::IDENTITY_ACCESS_GRANTED && e.identity_pubkey.is_none()).collect();
+    let mut members: Vec<&str> = granted.iter().filter_map(|e| e.member_pubkey.as_deref()).collect();
+    members.sort();
+    let mut expected = vec![admin.as_str(), signer.as_str(), lead.as_str()];
+    expected.sort();
+    assert_eq!(members, expected, "one event for each new grant, the lead's included, none twice");
+    assert!(granted.iter().filter(|e| e.member_pubkey.as_deref() != Some(lead.as_str())).all(|e| e.actor_pubkey.is_none()));
+}
+
+#[test]
+fn registering_a_member_into_an_administrator_only_department_stores_nothing() {
+    let (db, admin, _) = bunker();
+    let root = hex();
+    db.add_identity_with(&root, "Company root", "line", None, NewIdentity { admin_only: true, lead: None }, Utc::now()).unwrap().unwrap();
+    let new = hex();
+    let outcome = db.add_team_member_with("Paul", &new, Role::Signer, Some(&admin), &[Some(root.clone())]).unwrap();
+    assert_eq!(outcome, AddMemberOutcome::AdminOnly);
+    assert!(db.find_member_by_pubkey(&new).unwrap().is_none(), "the member was not stored either");
+    assert!(db.identity_grants(Some(&root)).unwrap().is_empty());
+}
+
+#[test]
+fn a_member_who_leads_nothing_now_cannot_start_a_department() {
+    let (db, _, signer) = bunker();
+    let key = hex();
+    let refused = db.add_identity_with(&key, "Marketing", "line", Some(&signer), NewIdentity { admin_only: false, lead: Some(&signer) }, Utc::now()).unwrap();
+    assert_eq!(refused, Err(AddIdentityRefusal::NotALead));
+    assert!(db.find_identity(&key).unwrap().is_none());
+}
+
+#[test]
+fn a_lead_changes_no_grant_once_they_no_longer_lead_and_never_another_leads() {
+    let (db, _, signer) = bunker();
+    let sales = add(&db, "Sales");
+    let (pam, lee) = (hex(), hex());
+    db.add_team_member("Pam", &pam, Role::Signer).unwrap();
+    db.add_team_member("Lee", &lee, Role::Signer).unwrap();
+    db.grant_identity_as(Some(&sales), &pam, DepartmentRole::Lead, None, Utc::now()).unwrap();
+    db.grant_identity_as(Some(&sales), &lee, DepartmentRole::Lead, None, Utc::now()).unwrap();
+    db.grant_identity(Some(&sales), &signer, None, Utc::now()).unwrap();
+
+    // Another lead, read in the same transaction as the write.
+    let member = DepartmentRole::Member;
+    assert_eq!(db.grant_identity_by(Some(&sales), &lee, member, Some(&pam), Some(&pam), Utc::now()).unwrap(), GrantOutcome::AnotherLead);
+    assert_eq!(db.remove_identity_grant_by(Some(&sales), &lee, Some(&pam), Some(&pam), Utc::now()).unwrap(), RemoveGrantOutcome::AnotherLead);
+    assert!(db.may_lead(&lee, Some(&sales)).unwrap());
+
+    // Pam steps down: she may still make herself a member, and then changes nothing.
+    assert_eq!(db.grant_identity_by(Some(&sales), &pam, member, Some(&pam), Some(&pam), Utc::now()).unwrap(), GrantOutcome::RoleChanged);
+    assert_eq!(db.remove_identity_grant_by(Some(&sales), &signer, Some(&pam), Some(&pam), Utc::now()).unwrap(), RemoveGrantOutcome::NotALead);
+    assert_eq!(db.grant_identity_by(Some(&sales), &signer, member, Some(&pam), Some(&pam), Utc::now()).unwrap(), GrantOutcome::NotALead);
+    assert!(db.may_use_identity(&signer, Some(&sales)).unwrap(), "Sam keeps Sales");
+}
+
+#[test]
+fn a_refused_mark_leaves_the_label_unchanged_too() {
+    let (db, _, signer) = bunker();
+    let sales = add(&db, "Sales");
+    db.grant_identity(Some(&sales), &signer, None, Utc::now()).unwrap();
+    let outcome = db.update_identity(&sales, Some(&sales), Some("Sales EMEA"), Some(true), None, Utc::now()).unwrap();
+    assert_eq!(outcome, AdminOnlyOutcome::HasMembers);
+    assert_eq!(db.find_identity(&sales).unwrap().unwrap().label, "Sales");
+    assert!(!actions(&db).contains(&action::IDENTITY_RENAMED.to_string()));
+
+    db.remove_identity_grant(Some(&sales), &signer, None, Utc::now()).unwrap();
+    assert_eq!(db.update_identity(&sales, Some(&sales), Some("Sales EMEA"), Some(true), None, Utc::now()).unwrap(), AdminOnlyOutcome::Changed);
+    let identity = db.find_identity(&sales).unwrap().unwrap();
+    assert!(identity.admin_only && identity.label == "Sales EMEA");
 }
