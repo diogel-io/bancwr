@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.0](https://github.com/diogel-io/bancwr/compare/v0.1.1...v0.2.0) (2026-11-28)
+
+
+### Features
+
+* **connections:** connect apps from their nostrconnect:// codes ([0125164](https://github.com/diogel-io/bancwr/commit/0125164d9dbbe464394ee8c3d23a1533273c9234))
+* **connections:** connect apps from their nostrconnect:// codes ([d5bef46](https://github.com/diogel-io/bancwr/commit/d5bef46938583265ebd61a75cd6a10de1da4159f)), closes [#148](https://github.com/diogel-io/bancwr/issues/148)
+* **connections:** offer 1-hour and 8-hour connection lifetimes ([4dc3be9](https://github.com/diogel-io/bancwr/commit/4dc3be9280f8a1847b4688825d1f93b8556097b4))
+* **connections:** offer 1-hour and 8-hour connection lifetimes ([fb50674](https://github.com/diogel-io/bancwr/commit/fb5067435afb9f5ae0d7b6754f77b18439c0f5dc)), closes [#149](https://github.com/diogel-io/bancwr/issues/149)
+* **console:** a Departments page, and leads across the console ([c8706eb](https://github.com/diogel-io/bancwr/commit/c8706eba49d5afc866e5bb8e3e774075ab902088)), closes [#147](https://github.com/diogel-io/bancwr/issues/147)
+* **departments:** departments with leads who manage them ([9dc72f7](https://github.com/diogel-io/bancwr/commit/9dc72f7467c8cecff6ee142298f5a31ed5092d92))
+* **departments:** leads who manage their department's identity ([a614839](https://github.com/diogel-io/bancwr/commit/a61483992096c79e371254b06b46b1f987883144)), closes [#147](https://github.com/diogel-io/bancwr/issues/147)
+* **identities:** create and retire identities from the console ([25c4b20](https://github.com/diogel-io/bancwr/commit/25c4b20443c2e1d20b6a136b41e2418c9f012067))
+* **identities:** create and retire identities from the console ([66255f3](https://github.com/diogel-io/bancwr/commit/66255f3d8ed92c3fed140f6c7c41dc39601ad52b)), closes [#146](https://github.com/diogel-io/bancwr/issues/146)
+* **identities:** edit each identity's profile, follows and relays ([16d038f](https://github.com/diogel-io/bancwr/commit/16d038f7dfb043f79ed1ec2c7ed29938599e4ec9))
+* **identities:** edit each identity's profile, follows and relays ([6b1cd9d](https://github.com/diogel-io/bancwr/commit/6b1cd9da85fd447283f17d0ce3ba1d44977e9887)), closes [#150](https://github.com/diogel-io/bancwr/issues/150)
+
+
+### Bug Fixes
+
+* **bancwr:** address the departments review and the SSR lead check ([#147](https://github.com/diogel-io/bancwr/issues/147)) ([ad2ec18](https://github.com/diogel-io/bancwr/commit/ad2ec1889a5bea0ff69666a51e8e9cdfe1fadcda))
+* **bancwr:** decide registrations and renames in their transactions ([#147](https://github.com/diogel-io/bancwr/issues/147)) ([5dcffa0](https://github.com/diogel-io/bancwr/commit/5dcffa0f67edf0964f62f71f5672c6dca00e8006))
+* **departments:** keep grants deciding after the last lead steps down ([be8dc65](https://github.com/diogel-io/bancwr/commit/be8dc65af02e70fa4fa321d6ba47c08b4d5eb9d3)), closes [#147](https://github.com/diogel-io/bancwr/issues/147)
+* **identities:** address review of the identity editing pages ([02a7253](https://github.com/diogel-io/bancwr/commit/02a7253010f199916853ea7b532b862bed9d9029)), closes [#150](https://github.com/diogel-io/bancwr/issues/150)
+* **identities:** give each identity's editing pages a route of their own ([84f730e](https://github.com/diogel-io/bancwr/commit/84f730ebcb6a1b7603b20a217d2b233d5992a0ae))
+* **identities:** give each identity's editing pages a route of their own ([ece0f4d](https://github.com/diogel-io/bancwr/commit/ece0f4df75354cc865e9a680ee16a42382030b81))
+
 ## [0.1.1](https://github.com/diogel-io/bancwr/compare/v0.1.0...v0.1.1) (2026-11-25)
 
 
